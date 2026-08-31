@@ -6,6 +6,10 @@ __pycache__/
 *.log
 chroma_db/
 
+# Local memory databases
+*.db
+*.sqlite3
+
 # Environments
 .venv/
 venv/

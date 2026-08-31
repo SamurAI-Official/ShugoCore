@@ -26,6 +26,7 @@ class Autonomy:
         self.vector_db = decision_engine.vector_db
         self.execution_layer = decision_engine.execution_layer
         self.subconscious = decision_engine.subconscious
+        self.memory = decision_engine.memory
         self.logger = logging.getLogger(__name__)
 
     def generate_task(self, task_type: str, content: str = '') -> Dict[str, Any]:
@@ -45,6 +46,7 @@ class Autonomy:
         Executes a task autonomously, handling decision-making, execution, learning, and logging.
         """
         try:
+            self.memory.note_step(f"autonomous task: {task.get('type', 'unknown')}")
             self.logger.info(f"Starting autonomous execution for task: {task['type']} - {task.get('content', 'N/A')}")
             decision = self.decision_engine.make_decision(task)
             self.logger.info(f"Decision made: {decision}")
@@ -52,8 +54,21 @@ class Autonomy:
             self.logger.info(f"Task execution result: {result}")
             self.reinforcement_learning.update_model_performance(task, decision, result)
             self.logging_manager.log_decision(task, decision, result)
+            # Tier 1: episodic outcome record; consolidation/promotion into
+            # Tier 2 (and eventually Tier 3) happens in the memory worker.
+            self.memory.record_event(
+                "task_result",
+                {"task_type": task.get("type", "unknown"),
+                 "status": str(result.get("status", "unknown")) if isinstance(result, dict) else "unknown"},
+            )
+            self.memory.resolve_step()
             return result
         except Exception as e:
+            self.memory.record_event(
+                "task_failure",
+                {"task_type": task.get("type", "unknown"), "error": str(e)[:200]},
+            )
+            self.memory.resolve_step()
             self.logging_manager.log_error("Error during autonomous task execution", e)
             return {'status': 'error', 'message': str(e)}
 

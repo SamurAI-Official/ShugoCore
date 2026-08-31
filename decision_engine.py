@@ -10,6 +10,7 @@ except ImportError:
     _HAS_TORCH = False
 from subconscious import SubconsciousModel
 from execution_layer import ExecutionLayer
+from memory_system import MemoryManager, SemanticMemory, CoreIdentity
 from model_manager import ModelManager
 from reinforcement_learning import ReinforcementLearning
 from task_manager import TaskManager
@@ -20,7 +21,10 @@ from autonomy import Autonomy
 logging.basicConfig(level=logging.INFO)
 
 class DecisionEngine:
-    def __init__(self, models: List[Dict[str, Any]], vector_db_config: Dict[str, Any], news_api_key: str):
+    def __init__(self, models: List[Dict[str, Any]], vector_db_config: Dict[str, Any], news_api_key: str,
+                 memory_db_path: str = "semantic_memory.db",
+                 semantic_memory: Optional[SemanticMemory] = None,
+                 core_identity: Optional[CoreIdentity] = None):
         self.models = models
         self.vector_db = VectorDB(vector_db_config)
 
@@ -38,6 +42,17 @@ class DecisionEngine:
         self.reinforcement_learning = ReinforcementLearning(self.model_manager)
         self.task_manager = TaskManager()
         self.logging_manager = LoggingManager()
+
+        # Tiered memory system:
+        #   Tier 0 (scratchpad) / Tier 1 (episodic) are isolated to this engine.
+        #   Tier 2 (semantic) / Tier 3 (world model) are shareable across
+        #   planning nodes - pass semantic_memory / core_identity to share.
+        self.memory = MemoryManager(
+            agent_id="decision_engine",
+            semantic=semantic_memory if semantic_memory is not None else SemanticMemory(db_path=memory_db_path),
+            core=core_identity,
+        )
+
         self.autonomy = Autonomy(self)
         self.logger = logging.getLogger(__name__)
         self.news_api_key = news_api_key
@@ -51,6 +66,13 @@ class DecisionEngine:
         selected_models = self.select_models(task)
         model_outputs = []
 
+        # Tier 1: cheap, non-blocking episodic record of the request
+        self.memory.record_event(
+            "decision_requested",
+            {"task_type": task.get("type", "unknown"),
+             "content": str(task.get("content", ""))[:200]},
+        )
+
         for model in selected_models:
             try:
                 output = self.subconscious.get_model_output(model['id'], task)
@@ -63,7 +85,17 @@ class DecisionEngine:
         if not model_outputs:
             raise ValueError("No models available to make a decision.")
 
-        return self.aggregate_outputs(model_outputs)
+        decision = self.aggregate_outputs(model_outputs)
+
+        # Enrich the decision with long-term context retrieved from Tier 2
+        try:
+            context = self.memory.retrieve_context(str(task.get("content", "")))
+            decision["memory_context"] = [fact["content"] for fact in context["semantic"]]
+        except Exception as e:
+            self.logger.warning(f"Memory context retrieval failed: {e}")
+            decision["memory_context"] = []
+
+        return decision
 
     def aggregate_outputs(self, model_outputs: List[tuple]) -> Dict[str, Any]:
         """
@@ -86,13 +118,34 @@ class DecisionEngine:
         """Executes the given task and returns the result."""
         if not self.check_ethics(task):
             self.logger.warning(f"Task {task} failed ethical checks.")
+            self.memory.record_event("policy_block", {"task": str(task)[:200]})
+            self.memory.resolve_step()
             return {"error": "Ethical violation detected."}
 
+        self.memory.note_step(f"executing: {task.get('type', 'unknown')}")
         decision = self.make_decision(task)
         result = self.execution_layer.execute(decision)
         self.reinforcement_learning.update_model_performance(task, decision, result)
         self.logging_manager.log_decision(task, decision, result)
+
+        # Tier 1: episodic record of the tool execution outcome; consolidation
+        # into Tier 2 happens asynchronously in the memory worker.
+        self.memory.record_event(
+            "tool_execution",
+            {"task_type": task.get("type", "unknown"),
+             "action_type": decision.get("action_type"),
+             "status": str(result.get("status", "unknown")) if isinstance(result, dict) else "unknown",
+             "detail": str(result)[:200]},
+        )
+        self.memory.resolve_step()
         return result
+
+    def shutdown(self):
+        """Flush pending episodic events and stop background memory maintenance."""
+        try:
+            self.memory.consolidate_now()
+        finally:
+            self.memory.shutdown()
 
     def add_model(self, model: Dict[str, Any]):
         """Adds a new model to the system."""
@@ -143,6 +196,12 @@ class DecisionEngine:
 
     def check_ethics(self, task: Dict[str, Any]) -> bool:
         """Check if the task passes ethical guidelines."""
+        # Tier 3: immutable world-model invariants are evaluated first
+        allowed, reason = self.memory.check_policy(task)
+        if not allowed:
+            self.logger.warning(f"Tier 3 invariant violation ({reason}) for task: {task}")
+            return False
+
         ethical = True
 
         # Check for harm
@@ -231,3 +290,5 @@ if __name__ == "__main__":
     decision_engine.regular_news_update("latest technology")
 
     apply_ethics_laws()
+
+    decision_engine.shutdown()

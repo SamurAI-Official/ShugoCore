@@ -1,5 +1,7 @@
 # Core dependency (used by decision_engine.py and execution_layer.py for HTTP calls)
-requests
+# Pinned to a floor that includes the 2023-2024 CVE fixes (CVE-2023-32681,
+# CVE-2024-35195) - keep raising it as new advisories land.
+requests>=2.32.0
 
 # Optional dependencies:
 # torch     - enables CUDA/accelerated device selection in decision_engine.py and subconscious.py

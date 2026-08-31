@@ -1,4 +1,5 @@
 import logging
+import threading
 from typing import List, Dict, Any
 
 class ModelManager:
@@ -8,6 +9,7 @@ class ModelManager:
         """
         self.models = models  # List of available models with metadata
         self.model_performance = {model['id']: 1.0 for model in models}  # Track performance
+        self._lock = threading.RLock()  # shared with RL / task threads
         self.logger = logging.getLogger(__name__)
     
     def select_models(self, task: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -41,30 +43,34 @@ class ModelManager:
         """
         Retrieve the performance score of a model.
         """
-        return self.model_performance.get(model_id, 1.0)
+        with self._lock:
+            return self.model_performance.get(model_id, 1.0)
     
     def update_model_performance(self, model_id: str, success: bool):
         """
         Update model performance based on task success (multiplicative).
         """
-        if model_id in self.model_performance:
-            self.model_performance[model_id] *= 1.1 if success else 0.9
-            self.logger.info(f"Updated performance for {model_id}: {self.model_performance[model_id]}")
+        with self._lock:
+            if model_id in self.model_performance:
+                self.model_performance[model_id] *= 1.1 if success else 0.9
+                self.logger.info(f"Updated performance for {model_id}: {self.model_performance[model_id]}")
 
     def set_model_performance(self, model_id: str, performance: float):
         """
         Set model performance to an explicit value (used by reinforcement learning).
         """
-        if model_id in self.model_performance:
-            self.model_performance[model_id] = max(0.0, performance)
-            self.logger.info(f"Set performance for {model_id}: {self.model_performance[model_id]}")
+        with self._lock:
+            if model_id in self.model_performance:
+                self.model_performance[model_id] = max(0.0, performance)
+                self.logger.info(f"Set performance for {model_id}: {self.model_performance[model_id]}")
     
     def add_model(self, model: Dict[str, Any]):
         """
         Dynamically add a new model and initialize its performance tracking.
         """
-        self.models.append(model)
-        self.model_performance[model['id']] = 1.0  # Initialize with neutral weight
+        with self._lock:
+            self.models.append(model)
+            self.model_performance[model['id']] = 1.0  # Initialize with neutral weight
         self.logger.info(f"Added new model: {model['id']}")
 
     def update_models(self, environment_data: Dict[str, Any]):

@@ -1,5 +1,8 @@
 import logging
+import os
 from datetime import datetime
+
+from security import RedactionFilter
 
 class LoggingManager:
     def __init__(self, log_file: str = "decision_engine.log", level: int = logging.INFO):
@@ -10,11 +13,15 @@ class LoggingManager:
         # Avoid duplicate handlers on re-instantiation
         if not self.logger.handlers:
         
-            # Log to file
+            # Log to file (0600: logs may contain operational detail)
             file_handler = logging.FileHandler(log_file)
             file_handler.setLevel(level)
             formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
             file_handler.setFormatter(formatter)
+            try:
+                os.chmod(log_file, 0o600)
+            except OSError:
+                pass
             
             # Add file handler to logger
             self.logger.addHandler(file_handler)
@@ -24,6 +31,12 @@ class LoggingManager:
             console_handler.setLevel(level)
             console_handler.setFormatter(formatter)
             self.logger.addHandler(console_handler)
+            
+            # Redact secrets from every record (defense in depth - secrets
+            # should never reach logs, but scrubbing is the last line).
+            redaction = RedactionFilter()
+            file_handler.addFilter(redaction)
+            console_handler.addFilter(redaction)
         else:
             self.logger.info("Logger already configured; skipping handler setup.")
     

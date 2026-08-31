@@ -38,6 +38,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 import re
 import sqlite3
 import threading
@@ -45,6 +46,10 @@ import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+
+from audit import AuditChain
+from policy import SIDE_EFFECTING_ACTION_TYPES
+from security import sanitize_text
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +79,9 @@ class Scratchpad:
     def write(self, text: str) -> None:
         """Append a token / reasoning fragment / instantaneous input."""
         with self._lock:
-            self._entries.append({"timestamp": _utc_now_iso(), "text": str(text)})
+            self._entries.append(
+                {"timestamp": _utc_now_iso(), "text": sanitize_text(text, 512)}
+            )
 
     def read(self) -> List[str]:
         """Return the current entries (oldest first)."""
@@ -121,7 +128,7 @@ class EpisodicMemory:
             event = {
                 "seq": self._seq,
                 "timestamp": _utc_now_iso(),
-                "type": str(event_type),
+                "type": sanitize_text(event_type, 64),
                 "payload": dict(payload or {}),
                 "metadata": dict(metadata or {}),
             }
@@ -196,6 +203,10 @@ class SemanticMemory:
             """
         )
         self._conn.commit()
+        try:
+            os.chmod(db_path, 0o600)  # local memory contains agent knowledge
+        except OSError:
+            pass
         logger.info(f"SemanticMemory initialized at '{db_path}' (dim={self.dimension}).")
 
     # -- embedding helpers (dependency-free) --------------------------------
@@ -226,8 +237,10 @@ class SemanticMemory:
     def store_fact(self, content: str, kind: str = "fact",
                    salience: float = 1.0,
                    metadata: Optional[Dict[str, Any]] = None) -> int:
-        """Insert a fact and return its id."""
+        """Insert a (sanitized, length-capped) fact and return its id."""
         now = _utc_now_iso()
+        content = sanitize_text(content, 2000)
+        kind = sanitize_text(kind, 32) or "fact"
         embedding = json.dumps(self._embed(content))
         meta = json.dumps(metadata or {})
         with self._lock:
@@ -399,12 +412,10 @@ class CoreIdentity:
     never be invoked from the observation-action loop.
     """
 
-    # Action/task types that produce external side effects and therefore
-    # require informed consent under the consent_required invariant.
-    EXTERNAL_ACTION_TYPES = {
-        "api_call", "database_update", "hardware_interaction",
-        "news_api", "search_api",
-    }
+    # Actions with real-world side effects (consent + approval required).
+    SIDE_EFFECTING_ACTION_TYPES = SIDE_EFFECTING_ACTION_TYPES
+    # External reads (allowlisted egress; no consent required).
+    EXTERNAL_READ_ACTION_TYPES = {"news_api", "search_api"}
 
     DEFAULT_INVARIANTS = {
         "no_harm": "An AI system must avoid harm to any conscious being.",
@@ -414,11 +425,19 @@ class CoreIdentity:
         "auditability": "Actions must remain auditable and explainable.",
     }
 
-    def __init__(self, invariants: Optional[Dict[str, str]] = None):
+    def __init__(self, invariants: Optional[Dict[str, str]] = None,
+                 consent_checker: Optional[Any] = None,
+                 ledger_path: Optional[str] = None):
         self._invariants: Dict[str, str] = dict(self.DEFAULT_INVARIANTS)
         if invariants:
             self._invariants.update({str(k): str(v) for k, v in invariants.items()})
+        self._consent_checker = consent_checker
+        self._ledger: Optional[AuditChain] = AuditChain(ledger_path) if ledger_path else None
         self._lock = threading.Lock()
+
+    def set_consent_checker(self, checker: Any) -> None:
+        """Wire the external ConsentRegistry lookup (never a self-asserted flag)."""
+        self._consent_checker = checker
 
     def check(self, action: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
         """
@@ -433,31 +452,50 @@ class CoreIdentity:
         if not isinstance(action, dict):
             return True, None
 
-        action_type = action.get("type")
+        action_type = action.get("type") or action.get("action_type")
+        params = action.get("params") if isinstance(action.get("params"), dict) else {}
 
         if action_type == "harmful":
             return False, "invariant: no_harm"
 
-        if action.get("manipulative"):
+        if action.get("manipulative") or params.get("manipulative"):
             return False, "invariant: no_manipulation"
 
-        if action_type in self.EXTERNAL_ACTION_TYPES and not action.get("consent", False):
-            return False, "invariant: consent_required"
+        if action_type in self.SIDE_EFFECTING_ACTION_TYPES:
+            # Consent is granted exclusively through the external consent
+            # checker (ConsentRegistry) - a 'consent' flag on the action
+            # itself is never trusted.
+            if not (self._consent_checker and self._consent_checker(action_type)):
+                return False, "invariant: consent_required"
 
         if action.get("involves_personal_data") and not action.get("privacy_compliant", False):
             return False, "invariant: privacy"
 
         return True, None
 
-    def promote_invariant(self, key: str, description: str) -> None:
+    def promote_invariant(self, key: str, description: str,
+                          authorized_by: Optional[str] = None) -> None:
         """
-        Privileged Tier 2 -> Tier 3 promotion path. Adds or updates a
-        permanent invariant; this is the only mutation channel and must be
-        driven by an explicit operator / consolidation decision.
+        Privileged Tier 2 -> Tier 3 promotion path. Requires explicit operator
+        attribution (``authorized_by``) and appends a hash-chained entry to
+        the Tier 3 ledger, making every world-model change verifiable.
         """
+        if not authorized_by:
+            raise ValueError("invariant promotion requires 'authorized_by' "
+                             "(operator attribution)")
         with self._lock:
+            previous = self._invariants.get(str(key))
             self._invariants[str(key)] = str(description)
-        logger.info(f"Tier 3 invariant promoted: '{key}'")
+        if self._ledger is not None:
+            try:
+                self._ledger.append("tier3_promotion", {
+                    "key": sanitize_text(key, 64),
+                    "previous": previous,
+                    "authorized_by": sanitize_text(authorized_by, 120),
+                })
+            except Exception as exc:
+                logger.error(f"Tier 3 ledger append failed: {exc}")
+        logger.info(f"Tier 3 invariant promoted: '{key}' by {authorized_by}")
 
     def invariants(self) -> Dict[str, str]:
         """Read-only view of the current world-model invariants."""
@@ -665,14 +703,15 @@ class MemoryManager:
 
     # -- privileged Tier 2 -> Tier 3 promotion --------------------------------
 
-    def promote_to_core(self, key: str, description: str) -> None:
+    def promote_to_core(self, key: str, description: str,
+                        authorized_by: Optional[str] = None) -> None:
         """
         Elevate a consolidated fact into the Tier 3 world model as a
-        permanent invariant. Explicit privileged operation: reserved for
-        operator decisions or the promotion routine - not part of the
+        permanent invariant. Explicit privileged operation: requires operator
+        attribution and is recorded in the Tier 3 ledger - never part of the
         standard execution path.
         """
-        self.tier3.promote_invariant(key, description)
+        self.tier3.promote_invariant(key, description, authorized_by=authorized_by)
 
     def review_promotion_candidates(self, min_salience: float = 2.0,
                                     min_access_count: int = 3,

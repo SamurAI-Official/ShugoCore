@@ -12,7 +12,12 @@ class ReinforcementLearning:
         """
         Adjusts model weights based on task outcomes.
         """
-        success = result.get('success', False)
+        if isinstance(result, dict):
+            success = (result.get('success')
+                       if result.get('success') is not None
+                       else result.get('status') == 'success')
+        else:
+            success = False
         # Iterate over the model IDs in the model_outputs dict
         for model_id in decision.get('model_outputs', {}):
             current_performance = self.model_manager.get_model_performance(model_id)

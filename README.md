@@ -59,6 +59,10 @@ decoupled maintenance worker that never blocks the primary loop.
 | `vector_db.py` | Optional ChromaDB vector store (stub mode without it) |
 | `logging_manager.py` | Structured logging of tasks and decisions |
 | `memory_system.py` | Four-tier memory architecture (below) |
+| `security.py` | Secrets, redaction, URL validation, rate limiting, circuit breaker |
+| `policy.py` | Capability registry, approval broker, consent registry |
+| `audit.py` | Tamper-evident hash-chained audit log |
+| `model_backends.py` | Pluggable model adapters (Ollama HTTP, OpenAI-compatible, stub) |
 
 ## Memory architecture
 
@@ -109,26 +113,31 @@ decoupled maintenance worker that never blocks the primary loop.
 ## Safety model
 
 Functional agency must be bounded by rules the agent cannot rewrite in the
-course of acting. In ShugoCore those rules live in Tier 3:
+course of acting. Enforcement is layered, so bypassing any single component
+defeats nothing:
 
-| Invariant | Enforced behavior |
+| Layer | Enforcement |
 |---|---|
-| `no_harm` | Actions typed or flagged as harmful are rejected |
-| `consent_required` | External side-effecting actions (`api_call`, `database_update`, `hardware_interaction`, ...) require explicit consent |
-| `no_manipulation` | Manipulative or coercive actions are rejected |
-| `privacy` | Personal-data processing requires compliance flags |
-| `auditability` | Decisions and outcomes are logged as task/decision/result triples |
+| Tier 3 world model | Immutable invariants (`no_harm`, `consent_required`, `no_manipulation`, `privacy`, `auditability`) evaluated before any model call or execution |
+| `ConsentRegistry` | Side-effecting actions (`api_call`, `database_update`, `hardware_interaction`) require operator-issued grants - a `consent` flag written by the acting agent itself is never trusted |
+| `ApprovalBroker` | Side effects additionally require human approval; fail-closed (no operator channel attached, or TTL expiry, means denied) |
+| Policy verdict token | The engine binds an allow verdict to the canonical hash of the exact decision; the execution layer refuses missing, non-allow, or mismatched tokens |
+| `CapabilityRegistry` | https-only egress, host allowlists, HTTP-method allowlists, SQL statement-type allowlists, empty-by-default hardware command allowlists |
+| Egress controls | Mandatory timeouts, per-host rate limiting, circuit breakers, response size caps, redirects disabled |
+| Hash-chained audit log | Every block, approval and execution is appended to a tamper-evident JSONL chain - verify with `python3 audit.py verify audit_chain.jsonl` |
+| Secret hygiene | API keys resolved from environment variables at execution time, never carried in decision dicts; every log record passes a redaction filter |
+| Honest execution | Unimplemented side-effecting actions return `not_implemented` - never simulated success - so the reinforcement signal cannot reward no-ops |
 
 Key properties:
 
-- **Evaluated first.** Tier 3 runs before any model call or tool execution -
-  a blocked action costs nothing and touches nothing.
+- **Single gated path.** Interactive tasks, autonomous cycles and the task
+  queue all execute through `DecisionEngine.execute_task` - the autonomous
+  loop cannot bypass the gate.
 - **Read-only at runtime.** The world model changes only through the
-  privileged `promote_to_core()` path, reserved for operator decisions -
-  never invoked by the observation-action loop.
-- **Promotion review.** `review_promotion_candidates()` is read-only: it
-  surfaces Tier 2 facts that proved durable so an operator can decide
-  whether they deserve to become permanent rules.
+  privileged `promote_to_core()` path, which requires operator attribution
+  (`authorized_by=`) and appends to the Tier 3 ledger.
+- **Fail-closed everywhere.** Missing verdict, missing consent, missing
+  approval channel, unknown host, unknown command - all refuse.
 
 ## Installation
 
@@ -152,20 +161,25 @@ Optional extras:
 from decision_engine import DecisionEngine
 
 models = [
-    {'id': 'gpt-4', 'type': 'text', 'weight': 0.5},
-    {'id': 'deepseek', 'type': 'text', 'weight': 0.3},
-    {'id': 'llama', 'type': 'text', 'weight': 0.2},
+    {'id': 'gpt-4', 'type': 'text', 'weight': 0.5, 'backend': {'type': 'stub'}},
+    {'id': 'deepseek', 'type': 'text', 'weight': 0.3, 'backend': {'type': 'ollama'}},
+    {'id': 'llama', 'type': 'text', 'weight': 0.2, 'backend': {'type': 'ollama'}},
 ]
 
 engine = DecisionEngine(
     models=models,
     vector_db_config={'type': 'chroma'},   # stub mode without chromadb
-    news_api_key='your_news_api_key',
+    news_api_key=None,                     # or set SHUGOCORE_NEWS_API_KEY
     memory_db_path='semantic_memory.db',   # Tier 2 storage
+    audit_path='audit_chain.jsonl',        # tamper-evident audit chain
 )
 
 # Tier 3 invariants gate every task before execution
-result = engine.execute_task({'type': 'test', 'content': 'say hello', 'consent': True})
+result = engine.execute_task({'type': 'test', 'content': 'say hello'})
+
+# Side-effecting actions need an operator consent grant AND an approval:
+engine.consents.grant('api_call', granted_by='operator')
+engine.approvals.attach_operator(lambda request: True)  # operator channel
 
 # Decisions carry long-term context retrieved from Tier 2
 decision = engine.make_decision({'type': 'test', 'content': 'say hello'})
@@ -189,8 +203,9 @@ candidates = engine.memory.review_promotion_candidates(min_salience=2.0,
                                                        min_access_count=3)
 for fact in candidates:
     print(fact["content"], fact["salience"], fact["access_count"])
-    # Promotion is an explicit, operator-driven privileged step:
-    # engine.memory.promote_to_core("rule_key", "operator-approved rule text")
+    # Promotion is an explicit, operator-attributed privileged step:
+    # engine.memory.promote_to_core("rule_key", "operator-approved rule",
+    #                                authorized_by="operator")
 ```
 
 ## Memory configuration
@@ -211,16 +226,21 @@ for fact in candidates:
 
 ```
 ShugoCore/
-├── decision_engine.py        # orchestration entry point
+├── decision_engine.py        # orchestration entry point; single gated path
 ├── autonomy.py               # autonomous task generation and learning cycles
 ├── model_manager.py          # model registry and performance tracking
-├── subconscious.py           # model output generation (Ollama)
-├── execution_layer.py        # tool / API execution
+├── subconscious.py           # structured-decision prompts via backends
+├── model_backends.py         # Ollama HTTP / OpenAI-compatible / stub adapters
+├── execution_layer.py        # verdict-verified, allowlisted execution
+├── policy.py                 # capability registry, approval broker, consent
+├── security.py               # secrets, redaction, rate limiting, breakers
+├── audit.py                  # hash-chained audit log (+ verifier CLI)
 ├── reinforcement_learning.py # reward signals and weight updates
-├── task_manager.py           # queued task execution
+├── task_manager.py           # bounded queued task execution
 ├── vector_db.py              # optional ChromaDB integration
-├── logging_manager.py        # structured logging
+├── logging_manager.py        # structured, redacted logging
 ├── memory_system.py          # four-tier memory architecture
+├── tests/                    # security & integration regression tests
 └── requirements.txt
 ```
 
@@ -230,9 +250,11 @@ Runtime artifacts (`semantic_memory.db`, logs) are local and gitignored.
 
 - Pluggable embedding backends for Tier 2 (current: dependency-free hashing vectors)
 - PostgreSQL + pgvector storage option for shared multi-process deployments
-- Operator CLI for reviewing Tier 2 -> Tier 3 promotion candidates
 - Entity/relation graphs alongside vector similarity in Tier 2
 - Per-agent memory policies (isolation vs. sharing profiles)
+- HMAC-signed audit chains and remote log shipping
+- Human approval UI beyond the programmatic broker API
+- Per-model backend pools with health-based routing
 
 ## Contributing
 

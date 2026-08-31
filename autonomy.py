@@ -43,17 +43,16 @@ class Autonomy:
     
     def execute_autonomous_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Executes a task autonomously, handling decision-making, execution, learning, and logging.
+        Executes a task autonomously through the decision engine's single
+        gated path (ethics gate -> decision -> consent/approval -> verdict
+        token -> execution). The autonomous loop can never bypass the gate.
         """
         try:
             self.memory.note_step(f"autonomous task: {task.get('type', 'unknown')}")
-            self.logger.info(f"Starting autonomous execution for task: {task['type']} - {task.get('content', 'N/A')}")
-            decision = self.decision_engine.make_decision(task)
-            self.logger.info(f"Decision made: {decision}")
-            result = self.execution_layer.execute(decision)
+            self.logger.info(f"Starting autonomous execution for task: "
+                             f"{task.get('type', 'unknown')} - {task.get('content', 'N/A')}")
+            result = self.decision_engine.execute_task(task)
             self.logger.info(f"Task execution result: {result}")
-            self.reinforcement_learning.update_model_performance(task, decision, result)
-            self.logging_manager.log_decision(task, decision, result)
             # Tier 1: episodic outcome record; consolidation/promotion into
             # Tier 2 (and eventually Tier 3) happens in the memory worker.
             self.memory.record_event(
@@ -66,11 +65,12 @@ class Autonomy:
         except Exception as e:
             self.memory.record_event(
                 "task_failure",
-                {"task_type": task.get("type", "unknown"), "error": str(e)[:200]},
+                {"task_type": task.get("type", "unknown"), "error": type(e).__name__},
             )
             self.memory.resolve_step()
             self.logging_manager.log_error("Error during autonomous task execution", e)
-            return {'status': 'error', 'message': str(e)}
+            # Sanitized error: internal details never leave the process.
+            return {'status': 'error', 'message': type(e).__name__}
 
     def autonomous_learning_cycle(self, tasks: List[Dict[str, Any]], max_iterations: int = 50):
         """

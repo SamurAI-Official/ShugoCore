@@ -2,24 +2,30 @@ import logging
 from datetime import datetime
 
 class LoggingManager:
-    def __init__(self, log_file: str = "decision_engine.log"):
+    def __init__(self, log_file: str = "decision_engine.log", level: int = logging.INFO):
         self.logger = logging.getLogger(__name__)
-        self.logger.setLevel(logging.INFO)
+        self.logger.setLevel(level)
+        self.log_file = log_file
         
-        # Log to file
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(logging.INFO)
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-        file_handler.setFormatter(formatter)
+        # Avoid duplicate handlers on re-instantiation
+        if not self.logger.handlers:
         
-        # Add file handler to logger
-        self.logger.addHandler(file_handler)
-        
-        # Also log to console
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
-        console_handler.setFormatter(formatter)
-        self.logger.addHandler(console_handler)
+            # Log to file
+            file_handler = logging.FileHandler(log_file)
+            file_handler.setLevel(level)
+            formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+            file_handler.setFormatter(formatter)
+            
+            # Add file handler to logger
+            self.logger.addHandler(file_handler)
+            
+            # Also log to console
+            console_handler = logging.StreamHandler()
+            console_handler.setLevel(level)
+            console_handler.setFormatter(formatter)
+            self.logger.addHandler(console_handler)
+        else:
+            self.logger.info("Logger already configured; skipping handler setup.")
     
     def log_decision(self, task: dict, decision: dict, result: dict):
         """

@@ -1,7 +1,13 @@
 import logging
 import requests
-import torch
-from typing import List, Dict, Any
+from urllib.parse import quote_plus
+from typing import List, Dict, Any, Optional
+
+try:
+    import torch
+    _HAS_TORCH = True
+except ImportError:
+    _HAS_TORCH = False
 from subconscious import SubconsciousModel
 from execution_layer import ExecutionLayer
 from model_manager import ModelManager
@@ -18,9 +24,13 @@ class DecisionEngine:
         self.models = models
         self.vector_db = VectorDB(vector_db_config)
 
-        # Enable CUDA if available
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        logging.info(f"Using device: {self.device}")
+        # Enable CUDA if available (requires torch)
+        if _HAS_TORCH:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            logging.info(f"Using device: {self.device}")
+        else:
+            self.device = "cpu"
+            logging.info("torch not available; using CPU-only mode.")
 
         self.subconscious = SubconsciousModel(self.vector_db)
         self.execution_layer = ExecutionLayer()
@@ -72,7 +82,7 @@ class DecisionEngine:
         }
         return final_decision
 
-    def execute_task(self, task: Dict[str, Any]):
+    def execute_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """Executes the given task and returns the result."""
         if not self.check_ethics(task):
             self.logger.warning(f"Task {task} failed ethical checks.")
@@ -91,14 +101,15 @@ class DecisionEngine:
 
     def perform_search(self, query: str) -> List[Dict[str, Any]]:
         """Performs a search and returns relevant results."""
-        search_url = f"https://api.duckduckgo.com/?q={query}&format=json"
+        search_url = f"https://api.duckduckgo.com/?q={quote_plus(query)}&format=json"
         try:
-            response = requests.get(search_url)
+            response = requests.get(search_url, timeout=30)
             response.raise_for_status()
             data = response.json()
             results = [
                 {'title': item['Text'], 'url': item['FirstURL']}
                 for item in data.get('RelatedTopics', [])
+                if isinstance(item, dict) and 'Text' in item
             ]
             self.logger.info(f"Search results: {results}")
             return results
@@ -107,13 +118,15 @@ class DecisionEngine:
             return []
 
     def fetch_news(self, query: str) -> List[Dict[str, Any]]:
-        news_url = f"https://www.google.com/search?q={query}+news"
+        """Fetch news articles from NewsAPI."""
+        url = f"https://newsapi.org/v2/everything?q={quote_plus(query)}&apiKey={self.news_api_key}"
         try:
-            response = requests.get(news_url)
+            response = requests.get(url, timeout=30)
             response.raise_for_status()
             data = response.json()
             articles = [
-                {'title': article['title'], 'url': article['url'], 'source': article['source']['name']}
+                {'title': article.get('title'), 'url': article.get('url'),
+                 'source': article.get('source', {}).get('name') if isinstance(article.get('source'), dict) else None}
                 for article in data.get('articles', [])
             ]
             self.logger.info(f"Fetched news articles: {articles}")
@@ -129,57 +142,54 @@ class DecisionEngine:
             self.logger.info(f"News article: {article['title']} ({article['url']})")
 
     def check_ethics(self, task: Dict[str, Any]) -> bool:
-    ethical = True
+        """Check if the task passes ethical guidelines."""
+        ethical = True
 
-    # Check for harm
-    if task.get('type') == 'harmful':
-        ethical = False
+        # Check for harm
+        if task.get('type') == 'harmful':
+            ethical = False
 
-    # Check for autonomy and consent
-    if not task.get('consent', False):
-        ethical = False
+        # Check for autonomy and consent
+        if not task.get('consent', False):
+            ethical = False
 
-    # Check for manipulation
-    if task.get('manipulative', False):
-        ethical = False
+        # Check for manipulation
+        if task.get('manipulative', False):
+            ethical = False
 
-    # Check for transparency and explainability
-    if task.get('requires_explanation', False) and not self.can_explain(task):
-        ethical = False
+        # Check for transparency and explainability
+        if task.get('requires_explanation', False) and not self.can_explain(task):
+            ethical = False
 
-    # Check for bias
-    if self.detect_bias(task):
-        ethical = False
+        # Check for bias
+        if self.detect_bias(task):
+            ethical = False
 
-    # Check for privacy compliance
-    if task.get('involves_personal_data', False) and not self.is_privacy_compliant(task):
-        ethical = False
+        # Check for privacy compliance
+        if task.get('involves_personal_data', False) and not self.is_privacy_compliant(task):
+            ethical = False
 
-    # Check for accountability and auditability
-    if task.get('requires_audit', False) and not self.can_audit(task):
-        ethical = False
+        # Check for accountability and auditability
+        if task.get('requires_audit', False) and not self.can_audit(task):
+            ethical = False
 
-        return ethical  # Corrected indentation
+        return ethical
 
-def can_explain(self, task: Dict[str, Any]) -> bool:
-    """Check if the system can provide an explanation for the task."""
-    # Implement logic to determine if the task can be explained
-    return True  # Placeholder
+    def can_explain(self, task: Dict[str, Any]) -> bool:
+        """Check if the system can provide an explanation for the task."""
+        return True  # Placeholder
 
-def detect_bias(self, task: Dict[str, Any]) -> bool:
-    """Check if the task or model outputs contain biases."""
-    # Implement bias detection logic
-    return False  # Placeholder
+    def detect_bias(self, task: Dict[str, Any]) -> bool:
+        """Check if the task or model outputs contain biases."""
+        return False  # Placeholder
 
-def is_privacy_compliant(self, task: Dict[str, Any]) -> bool:
-    """Check if the task complies with privacy laws."""
-    # Implement privacy compliance checks
-    return True  # Placeholder
+    def is_privacy_compliant(self, task: Dict[str, Any]) -> bool:
+        """Check if the task complies with privacy laws."""
+        return True  # Placeholder
 
-def can_audit(self, task: Dict[str, Any]) -> bool:
-    """Check if the task can be audited."""
-    # Implement auditability checks
-    return True  # Placeholder
+    def can_audit(self, task: Dict[str, Any]) -> bool:
+        """Check if the task can be audited."""
+        return True  # Placeholder
 
 # Markus Vega's AI Ethics Laws - Guidelines for Conscious AI
 def apply_ethics_laws():
@@ -211,7 +221,7 @@ if __name__ == "__main__":
 
     decision_engine = DecisionEngine(models, vector_db_config, news_api_key)
 
-    task = {'type': 'text', 'content': 'What is the capital of France?'}
+    task = {'type': 'text', 'content': 'What is the capital of France?', 'consent': True}
     result = decision_engine.execute_task(task)
     print(result)
 

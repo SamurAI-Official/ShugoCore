@@ -1,6 +1,6 @@
 import logging
-from queue import Queue
-from threading import Thread
+from queue import Queue, Empty
+from threading import Thread, Event
 from typing import Dict, Any, Callable
 
 class TaskManager:

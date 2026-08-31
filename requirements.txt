@@ -1,0 +1,8 @@
+# Core dependency (used by decision_engine.py and execution_layer.py for HTTP calls)
+requests
+
+# Optional dependencies:
+# torch     - enables CUDA/accelerated device selection in decision_engine.py and subconscious.py
+# chromadb  - enables persistent vector storage in vector_db.py (stub mode without it)
+# torch
+# chromadb

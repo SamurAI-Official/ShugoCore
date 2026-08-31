@@ -1,9 +1,14 @@
 import logging
-import torch
-import subprocess
 import json
+import subprocess
 from typing import List, Dict, Any
 from collections import defaultdict
+
+try:
+    import torch
+    _HAS_TORCH = True
+except ImportError:
+    _HAS_TORCH = False
 
 class SubconsciousModel:
     def __init__(self, vector_db: Any):
@@ -12,9 +17,13 @@ class SubconsciousModel:
         self.model_success_history = defaultdict(lambda: {'successes': 0, 'failures': 0})  # Track model success rates
         self.logger = logging.getLogger(__name__)
 
-        # Check if CUDA is available
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.logger.info(f"Using device: {self.device}")
+        # Check if CUDA is available (requires torch)
+        if _HAS_TORCH:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self.logger.info(f"Using device: {self.device}")
+        else:
+            self.device = "cpu"
+            self.logger.info("torch not available; using CPU-only fallback.")
 
     def store_decision(self, task: Dict[str, Any], decision: Dict[str, Any], result: Any):
         """
@@ -30,15 +39,21 @@ class SubconsciousModel:
         self.past_decisions[task_type].append(decision_record)
 
         # Track model performance based on success/failure
-        for model in decision:
-            model_id = model['id']
-            if result.get('success', False):  # Assume 'success' is part of the result dict
+        # Iterate over model IDs from the model_outputs dict (decision has aggregated_output + model_outputs)
+        for model_id in decision.get('model_outputs', {}):
+            is_success = result.get('status') == 'success'
+            if is_success:
                 self.model_success_history[model_id]['successes'] += 1
             else:
                 self.model_success_history[model_id]['failures'] += 1
 
         # Optionally, store data in the vector database
-        self.vector_db.store(task_type, decision, result)
+        if self.vector_db is not None:
+            self.vector_db.store_vector(
+                id=task_type,
+                vector=[0.0] * self.vector_db.dimension if hasattr(self.vector_db, 'dimension') else [0.0],
+                metadata={'decision': str(decision), 'result': str(result)}
+            )
 
     def retrieve_past_decision(self, task: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
@@ -72,19 +87,31 @@ class SubconsciousModel:
             successes.append(success_data['successes'])
             failures.append(success_data['failures'])
 
-        # Convert to torch tensors
-        successes_tensor = torch.tensor(successes, dtype=torch.float32, device=self.device)
-        failures_tensor = torch.tensor(failures, dtype=torch.float32, device=self.device)
-        total_attempts = successes_tensor + failures_tensor
+        # Calculate success rates (works with or without torch)
+        if _HAS_TORCH:
+            successes_tensor = torch.tensor(successes, dtype=torch.float32, device=self.device)
+            failures_tensor = torch.tensor(failures, dtype=torch.float32, device=self.device)
+            total_attempts = successes_tensor + failures_tensor
+            success_rates_tensor = torch.where(
+                total_attempts > 0,
+                successes_tensor / total_attempts,
+                torch.zeros_like(successes_tensor)
+            )
+            success_rates = success_rates_tensor.tolist()
+        else:
+            success_rates = [
+                (s / (s + f)) if (s + f) > 0 else 0.0
+                for s, f in zip(successes, failures)
+            ]
 
-        # Calculate success rates
-        success_rates = torch.where(total_attempts > 0, successes_tensor / total_attempts, torch.zeros_like(successes_tensor))
-
-        # Update model weights
+        # Update model weights (return new list to avoid mutating input)
+        weighted_models = []
         for i, model in enumerate(models):
-            model['weight'] = success_rates[i].item()  # Convert back to Python float
+            new_model = dict(model)
+            new_model['weight'] = success_rates[i]
+            weighted_models.append(new_model)
 
-        return models
+        return weighted_models
 
     def log_model_success(self, model_id: str, success: bool):
         """
@@ -114,8 +141,14 @@ class SubconsciousModel:
                 capture_output=True, text=True
             )
             if result.returncode == 0:
-                models = json.loads(result.stdout)
-                return models  # Assuming the result is in JSON format with model names
+                # Parse the text table output from 'ollama list'
+                lines = result.stdout.strip().split('\n')
+                models = []
+                for line in lines[1:]:  # Skip header row
+                    parts = line.split()
+                    if parts:
+                        models.append(parts[0])  # First column is the model name
+                return models
             else:
                 self.logger.error(f"Failed to fetch model list: {result.stderr}")
                 return []
@@ -148,13 +181,13 @@ class SubconsciousModel:
             self.logger.error(f"Error calling Ollama model {model_name}: {e}")
             return ""
 
-    def get_model_output(self, model_name: str, input_data: str) -> str:
+    def get_model_output(self, model_name: str, input_data: Any) -> str:
         """
         Get output from a specified model, ensuring consistent output format.
         
         Args:
         - model_name: The model to query (e.g., 'gpt-4', 'deepseek', 'llama').
-        - input_data: The input text for the model.
+        - input_data: The input data for the model (may be a string or a task dict).
         
         Returns:
         - The model's output in a standardized format.
@@ -166,8 +199,14 @@ class SubconsciousModel:
             self.logger.error(f"Model {model_name} is not available.")
             return ""
         
+        # Convert input_data to string if it's a dict (e.g. a task)
+        if isinstance(input_data, dict):
+            input_text = input_data.get('content', str(input_data))
+        else:
+            input_text = str(input_data)
+        
         # Call the model and get the response
-        model_output = self.call_ollama_model(model_name, input_data)
+        model_output = self.call_ollama_model(model_name, input_text)
         
         # Return the response in the required format (e.g., string)
         return model_output.strip()  # Ensure no extra spaces or newlines
@@ -180,6 +219,8 @@ if __name__ == "__main__":
     vector_db = None
     
     subconscious = SubconsciousModel(vector_db)
+    if not _HAS_TORCH:
+        print("WARNING: torch not installed; using CPU-only fallback.")
 
     # Fetch available models from Ollama
     available_models = subconscious.get_available_models()

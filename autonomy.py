@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 from typing import TYPE_CHECKING, List, Dict, Any
 
 if TYPE_CHECKING:
@@ -34,9 +35,7 @@ class Autonomy:
         task = {
             'type': task_type,
             'content': content,
-            'timestamp': logging.Formatter.formatTime(
-                logging.LogRecord("", 0, "", 0, "", [], None), "%Y-%m-%d %H:%M:%S"
-            )
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
         self.logging_manager.log_task_execution(task, True, "Generated new task.")
         return task
@@ -56,17 +55,26 @@ class Autonomy:
             return result
         except Exception as e:
             self.logging_manager.log_error("Error during autonomous task execution", e)
-            return {}
+            return {'status': 'error', 'message': str(e)}
 
-    def autonomous_learning_cycle(self, tasks: List[Dict[str, Any]]):
+    def autonomous_learning_cycle(self, tasks: List[Dict[str, Any]], max_iterations: int = 50):
         """
         Runs a cycle of autonomous decision-making and execution, incorporating feedback dynamically.
+        
+        Args:
+        - tasks: List of tasks to execute.
+        - max_iterations: Maximum number of tasks to process (prevents infinite feedback loops).
         """
-        for task in tasks:
+        iteration = 0
+        for task in list(tasks):
+            if iteration >= max_iterations:
+                self.logger.warning(f"Reached max_iterations ({max_iterations}); stopping autonomous cycle.")
+                break
             result = self.execute_autonomous_task(task)
             self.logger.info(f"Autonomous cycle completed for task: {task['type']} - Result: {result}")
             if 'feedback' in result:
                 tasks.append(self.generate_task('feedback', result['feedback']))
+            iteration += 1
     
     def evaluate_task_performance(self, task: Dict[str, Any], result: Dict[str, Any]) -> float:
         """

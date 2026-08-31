@@ -30,6 +30,8 @@ class ExecutionLayer:
                 result = self.execute_news_api_call(decision)
             elif action_type == 'search_api':
                 result = self.execute_search_api_call(decision)
+            elif action_type == 'multi_step_process':
+                result = self.execute_multi_step_process(decision)
             else:
                 result = {'status': 'error', 'message': 'Unknown action type'}
 

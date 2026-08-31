@@ -359,6 +359,23 @@ class SemanticMemory:
             ).fetchall()
         return [self._row_to_fact(row) for row in rows]
 
+    def candidates_for_promotion(self, min_salience: float = 2.0,
+                                 min_access_count: int = 3,
+                                 limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Facts that repeatedly proved relevant (high salience and frequently
+        re-accessed). Used by promotion review before elevation into the
+        Tier 3 world model.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT {self._SELECT_COLUMNS} FROM facts "
+                "WHERE salience >= ? AND access_count >= ? "
+                "ORDER BY salience DESC, access_count DESC LIMIT ?",
+                (float(min_salience), int(min_access_count), max(0, int(limit))),
+            ).fetchall()
+        return [self._row_to_fact(row) for row in rows]
+
     def count(self) -> int:
         with self._lock:
             return int(self._conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0])
@@ -656,6 +673,22 @@ class MemoryManager:
         standard execution path.
         """
         self.tier3.promote_invariant(key, description)
+
+    def review_promotion_candidates(self, min_salience: float = 2.0,
+                                    min_access_count: int = 3,
+                                    limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Read-only Tier 2 -> Tier 3 promotion review: return consolidated
+        facts whose salience and access history indicate durable relevance.
+        Promotion itself remains an explicit privileged decision via
+        ``promote_to_core``, so Tier 3 stays immutable during standard
+        execution.
+        """
+        return self.tier2.candidates_for_promotion(
+            min_salience=min_salience,
+            min_access_count=min_access_count,
+            limit=limit,
+        )
 
 
 

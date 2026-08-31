@@ -81,6 +81,7 @@ class Autonomy:
         - max_iterations: Maximum number of tasks to process (prevents infinite feedback loops).
         """
         iteration = 0
+        self.memory.record_event("cycle_started", {"planned_tasks": len(list(tasks))})
         for task in list(tasks):
             if iteration >= max_iterations:
                 self.logger.warning(f"Reached max_iterations ({max_iterations}); stopping autonomous cycle.")
@@ -90,6 +91,16 @@ class Autonomy:
             if 'feedback' in result:
                 tasks.append(self.generate_task('feedback', result['feedback']))
             iteration += 1
+
+        # End-of-cycle consolidation: compress this cycle's episodic events
+        # into Tier 2 facts so long-run state stays bounded. The background
+        # memory worker also does this periodically; doing it here makes the
+        # bound deterministic per cycle.
+        try:
+            stats = self.memory.consolidate_now()
+            self.logger.info(f"Memory consolidation after cycle: {stats}")
+        except Exception as e:
+            self.logging_manager.log_error("Memory consolidation failed after cycle", e)
     
     def evaluate_task_performance(self, task: Dict[str, Any], result: Dict[str, Any]) -> float:
         """
@@ -111,5 +122,13 @@ class Autonomy:
         try:
             self.vector_db.update(environment_data)
             self.model_manager.update_models(environment_data)
+            # Persist the observation in long-term memory (Tier 2) so future
+            # decisions can retrieve it via similarity search.
+            self.memory.tier2.store_fact(
+                content=f"Environment update: {str(environment_data)[:300]}",
+                kind="environment",
+                salience=1.2,
+                metadata={"source": "adapt_to_environment"},
+            )
         except Exception as e:
             self.logging_manager.log_error("Error adapting to environment", e)

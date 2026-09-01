@@ -206,6 +206,7 @@ class StubROS2Interface(BaseROS2Interface):
         self._published_log: List[Dict[str, Any]] = []
         self._last_publish_time: Dict[str, float] = {}
         self._lock = threading.Lock()
+        self._connected = True  # test-controllable connection health
         self._canned_joint_state = JointState(
             name=["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"],
             position=[0.0] * 6, velocity=[0.0] * 6, effort=[0.0] * 6,
@@ -280,9 +281,13 @@ class StubROS2Interface(BaseROS2Interface):
     def get_canned_laser_scan(self) -> LaserScan:
         return self._canned_laser
 
+    def set_connected(self, value: bool) -> None:
+        """Simulate connection health (testing connection-loss behavior)."""
+        self._connected = bool(value)
+
     def check_connection(self) -> bool:
-        """Stub: always reports healthy (no real connection to monitor)."""
-        return True
+        """Report simulated connection health."""
+        return self._connected
 
 
 # ---------------------------------------------------------------------------

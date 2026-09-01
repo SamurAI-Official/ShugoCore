@@ -6,8 +6,10 @@ robotics execution handler — all in stub mode (no real ROS 2/Gazebo required).
 """
 
 import math
+import time
 import unittest
 
+from fallbacks import FallbackController
 from ros2_interface import (
     JointState, JointTrajectory, JointTrajectoryPoint, LaserScan,
     Pose, Twist, Vector3, StubROS2Interface, create_ros2_interface,
@@ -505,6 +507,203 @@ class TestDecisionEngineIntegration(unittest.TestCase):
         self.assertIsNone(engine.robotics_handler)
 
 
+
+
+class _FakeGovernor:
+    """Minimal governor stand-in recording fallback notifications.
+
+    Implements the full governor surface FallbackController relies on
+    (halt/pause/safe_state/resume) so fallback escalation paths are
+    exercised end-to-end in tests instead of raising AttributeError inside
+    a swallowed exception.
+    """
+
+    def __init__(self):
+        self.notifications = []
+
+    def seconds_since_progress(self):
+        return None
+
+    def halt(self, reason: str = "") -> None:
+        self.notifications.append(("halt", reason))
+
+    def pause(self, reason: str = "") -> None:
+        self.notifications.append(("pause", reason))
+
+    def safe_state(self, reason: str = "") -> None:
+        self.notifications.append(("safe_state", reason))
+
+    def resume(self, resumed_by: str = "") -> None:
+        self.notifications.append(("resume", resumed_by))
+
+
+class TestPhase4ConnectionLoss(unittest.TestCase):
+    """Phase 4: connection-loss detection must fail safe before hardware."""
+
+    def _make(self, **kwargs):
+        ros2 = StubROS2Interface()
+        handler = RoboticsExecutionHandler(ros2=ros2, **kwargs)
+        return ros2, handler
+
+    def test_connection_loss_refuses_navigate(self):
+        ros2, h = self._make()
+        ros2.set_connected(False)
+        result = h.handle({"action_type": "robot_navigate",
+                           "params": {"linear_x": 0.5}})
+        self.assertEqual(result["status"], "refused")
+        self.assertEqual(result["reason"], "ros2 connection lost")
+        # Nothing may be published into silence
+        self.assertEqual(len(ros2.get_published_messages("/cmd_vel")), 0)
+
+    def test_connection_loss_refuses_manipulate(self):
+        ros2, h = self._make()
+        ros2.set_connected(False)
+        result = h.handle({"action_type": "robot_manipulate",
+                           "params": {"target": {"x": 0.1, "y": 0.0, "z": 0.3}}})
+        self.assertEqual(result["status"], "refused")
+        self.assertEqual(len(ros2.get_published_messages(
+            "/arm_controller/follow_joint_trajectory")), 0)
+
+    def test_connection_loss_reports_to_fallback(self):
+        ros2 = StubROS2Interface()
+        governor = _FakeGovernor()
+        fallback = FallbackController(governor)
+        h = RoboticsExecutionHandler(ros2=ros2, fallback=fallback)
+        ros2.set_connected(False)
+        result = h.handle({"action_type": "robot_navigate",
+                           "params": {"linear_x": 0.5}})
+        self.assertEqual(result["status"], "refused")
+        # ros2_connection_lost escalates to safe_state per severity table
+        self.assertEqual(fallback.mode, "safe_state")
+        # The governor itself must have been notified (not just the mode flag)
+        self.assertTrue(any(kind == "safe_state" for kind, _ in governor.notifications),
+                        "fallback reported escalation without notifying governor")
+
+    def test_connection_restored_allows_navigate(self):
+        ros2, h = self._make()
+        ros2.set_connected(False)
+        self.assertEqual(h.handle({"action_type": "robot_navigate",
+                                   "params": {"linear_x": 0.5}})["status"],
+                         "refused")
+        ros2.set_connected(True)
+        self.assertEqual(h.handle({"action_type": "robot_navigate",
+                                   "params": {"linear_x": 0.5}})["status"],
+                         "success")
+
+
+class TestPhase4CrossModule(unittest.TestCase):
+    """Phase 4: full intent -> command -> physics -> state pipeline."""
+
+    def _make(self, **kwargs):
+        ros2 = StubROS2Interface()
+        gazebo = StubGazeboSimulation()
+        handler = RoboticsExecutionHandler(ros2=ros2, gazebo=gazebo, **kwargs)
+        return ros2, gazebo, handler
+
+    def test_navigate_updates_gazebo_pose(self):
+        ros2, gazebo, h = self._make()
+        gazebo.spawn_urdf("<robot/>",
+                          Pose(position=Vector3(0, 0, 0)), "robot")
+        result = h.handle({"action_type": "robot_navigate",
+                           "params": {"linear_x": 1.0}})
+        self.assertEqual(result["status"], "success")
+        # Bridge: handler's published command drives the simulated physics
+        twist = ros2.get_published_messages("/cmd_vel")[-1]["message"]
+        gazebo.apply_command(twist)
+        gazebo.step(iterations=100)
+        pose = gazebo.get_model_pose("robot")
+        self.assertGreater(pose.position.x, 0.0)
+        gazebo.shutdown()
+
+    def test_navigate_clamp_visible_in_gazebo(self):
+        ros2, gazebo, h = self._make(max_linear_velocity=0.4)
+        gazebo.spawn_urdf("<robot/>", Pose(), "robot")
+        h.handle({"action_type": "robot_navigate",
+                  "params": {"linear_x": 50.0}})
+        twist = ros2.get_published_messages("/cmd_vel")[-1]["message"]
+        gazebo.apply_command(twist)
+        gazebo.step(iterations=100)
+        # 0.4 m/s * 1s must be far below the raw 50 m/s request
+        self.assertLess(gazebo.get_model_pose("robot").position.x, 1.0)
+        gazebo.shutdown()
+
+    def test_scan_returns_sensor_data(self):
+        ros2, gazebo, h = self._make()
+        gazebo.spawn_urdf("<robot/>", Pose(), "robot")
+        result = h.handle({"action_type": "robot_scan", "params": {}})
+        self.assertEqual(result["status"], "success")
+        self.assertIn("scan", result)
+        self.assertIsInstance(result["scan"], list)
+        gazebo.shutdown()
+
+    def test_query_state_returns_joint_state(self):
+        ros2, gazebo, h = self._make()
+        result = h.handle({"action_type": "robot_query_state", "params": {}})
+        self.assertEqual(result["status"], "success")
+        self.assertIn("joints", result)
+        self.assertIsInstance(result["joints"], list)
+
+    def test_navigate_estop_reset_navigate_cycle(self):
+        """Full operational cycle: move -> e-stop -> reset -> move."""
+        ros2, gazebo, h = self._make()
+        gazebo.spawn_urdf("<robot/>", Pose(), "robot")
+        self.assertEqual(h.handle({"action_type": "robot_navigate",
+                                   "params": {"linear_x": 0.8}})["status"],
+                         "success")
+        # Emergency stop: always available, bypasses every gate
+        stop = h.handle({"action_type": "robot_stop", "params": {}})
+        self.assertEqual(stop["status"], "success")
+        self.assertTrue(h.is_emergency_stopped())
+        self.assertEqual(ros2.get_published_messages("/cmd_vel")[-1]
+                         ["message"].linear.x, 0.0)
+        # While stopped, motion is refused
+        self.assertEqual(h.handle({"action_type": "robot_navigate",
+                                   "params": {"linear_x": 0.8}})["status"],
+                         "refused")
+        # Operator reset restores motion
+        h.reset_emergency_stop(reset_by="operator")
+        self.assertFalse(h.is_emergency_stopped())
+        self.assertEqual(h.handle({"action_type": "robot_navigate",
+                                   "params": {"linear_x": 0.8}})["status"],
+                         "success")
+        gazebo.shutdown()
+
+    def test_obstacle_feedback_estops_robot(self):
+        """Sensor feedback detects obstacle -> automatic emergency stop."""
+        ros2 = StubROS2Interface()
+        # Put an obstacle inside the detection radius on the canned scan
+        scan = ros2.get_canned_laser_scan()
+        scan.ranges = [0.2] * len(scan.ranges)
+        # gazebo=False: ROS 2-only hardware mode — the scan must come from
+        # the ROS 2 feed, not an auto-created simulator.
+        h = RoboticsExecutionHandler(ros2=ros2, gazebo=False)
+        h.start_sensor_feedback(obstacle_distance=0.5, check_interval=0.05)
+        deadline = time.monotonic() + 2.0
+        while not h.is_emergency_stopped() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        h.stop_sensor_feedback()
+        self.assertTrue(h.is_emergency_stopped(),
+                        "obstacle within radius did not trigger e-stop")
+        # Zero-velocity stop command must have been published
+        self.assertEqual(ros2.get_published_messages("/cmd_vel")[-1]
+                         ["message"].linear.x, 0.0)
+
+    def test_full_pipeline_deterministic(self):
+        """Two identical command streams produce identical final poses."""
+        results = []
+        for _ in range(2):
+            ros2, gazebo, h = self._make()
+            gazebo.spawn_urdf("<robot/>", Pose(), "robot")
+            h.handle({"action_type": "robot_navigate",
+                      "params": {"linear_x": 0.6, "angular_z": 0.3}})
+            twist = ros2.get_published_messages("/cmd_vel")[-1]["message"]
+            gazebo.apply_command(twist)
+            gazebo.step(iterations=50)
+            pose = gazebo.get_model_pose("robot")
+            results.append((round(pose.position.x, 9), round(pose.position.y, 9),
+                            round(pose.orientation.z, 9)))
+            gazebo.shutdown()
+        self.assertEqual(results[0], results[1])
 
 
 class TestPhase3Quality(unittest.TestCase):

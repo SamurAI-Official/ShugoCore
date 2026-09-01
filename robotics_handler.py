@@ -39,7 +39,7 @@ class RoboticsExecutionHandler:
     """
 
     def __init__(self, ros2=None, moveit=None, gazebo=None,
-                 capabilities=None, audit=None,
+                 capabilities=None, audit=None, fallback=None,
                  max_linear_velocity: float = 1.0,
                  max_angular_velocity: float = 1.0,
                  max_acceleration: float = 0.5,
@@ -48,9 +48,15 @@ class RoboticsExecutionHandler:
                  watchdog_timeout: float = 5.0):
         self._ros2 = ros2 or create_ros2_interface()
         self._moveit = moveit or create_moveit_planner()
-        self._gazebo = gazebo or create_gazebo_simulation()
+        if gazebo is False:
+            # Explicitly disabled: ROS 2-only hardware setup (no simulation).
+            # Sensor data then comes from the ROS 2 feed, not a simulator.
+            self._gazebo = None
+        else:
+            self._gazebo = gazebo if gazebo is not None else create_gazebo_simulation()
         self._capabilities = capabilities
         self._audit = audit
+        self._fallback = fallback
         self._max_linear_velocity = max(0.01, float(max_linear_velocity))
         self._max_angular_velocity = max(0.01, float(max_angular_velocity))
         self._max_acceleration = max(0.01, float(max_acceleration))
@@ -101,6 +107,12 @@ class RoboticsExecutionHandler:
             return self._handle_stop(decision)
         if action_type in ROBOTICS_READ_ACTION_TYPES:
             return self._handle_read(decision)
+        # E-stop latch: refuse all motion while active. Read-only actions
+        # above stay available for situational awareness; only an operator
+        # reset (reset_emergency_stop) clears this.
+        if self.is_emergency_stopped():
+            return {"status": "refused",
+                    "reason": "emergency stop active (operator reset required)"}
         if action_type == "robot_navigate":
             return self._handle_navigate(decision)
         if action_type == "robot_manipulate":
@@ -109,9 +121,32 @@ class RoboticsExecutionHandler:
             return self._handle_gripper(decision)
         return {"status": "error", "message": f"unknown robotics action: {action_type}"}
 
+    def _check_connection(self) -> bool:
+        """Fail-safe connection pre-check for motion commands.
+
+        Returns True when the ROS 2 middleware is reachable. When it is not,
+        reports 'ros2_connection_lost' to the fallback controller (escalating
+        per its severity rules) and returns False so the caller refuses the
+        motion command instead of publishing into silence.
+        """
+        if self._ros2.check_connection():
+            return True
+        logger.warning("ROS 2 connection lost — refusing motion command")
+        self._audit_log("ros2_connection_lost", {})
+        if self._fallback is not None:
+            try:
+                self._fallback.report_violation(
+                    "ros2_connection_lost", "motion command refused")
+            except Exception as exc:  # FallbackHalt propagates deliberately
+                if type(exc).__name__ != "FallbackHalt":
+                    logger.error(f"fallback report failed: {exc}")
+        return False
+
     def _handle_navigate(self, decision: Dict[str, Any]) -> Dict[str, Any]:
         """Handle mobile base navigation via /cmd_vel."""
-        params = decision.get("params", {})
+        if not self._check_connection():
+            return {"status": "refused", "reason": "ros2 connection lost"}
+        params = decision.get("params") or {}  # or-{}: explicit None must not crash
         linear = Vector3(
             x=self._clamp_velocity(params.get("linear_x", 0.0), self._max_linear_velocity),
             y=self._clamp_velocity(params.get("linear_y", 0.0), self._max_linear_velocity),
@@ -128,10 +163,12 @@ class RoboticsExecutionHandler:
 
     def _handle_manipulate(self, decision: Dict[str, Any]) -> Dict[str, Any]:
         """Handle arm manipulation via MoveIt 2. Plans, validates, then executes."""
-        params = decision.get("params", {})
+        params = decision.get("params") or {}  # or-{}: explicit None must not crash
         target = params.get("target", {})
         if not target:
             return {"status": "error", "message": "no target specified"}
+        if not self._check_connection():
+            return {"status": "refused", "reason": "ros2 connection lost"}
         # Check workspace bounds
         if not self._check_workspace(target):
             return {"status": "refused", "reason": "target outside workspace bounds"}
@@ -155,7 +192,9 @@ class RoboticsExecutionHandler:
 
     def _handle_gripper(self, decision: Dict[str, Any]) -> Dict[str, Any]:
         """Handle gripper command."""
-        params = decision.get("params", {})
+        if not self._check_connection():
+            return {"status": "refused", "reason": "ros2 connection lost"}
+        params = decision.get("params") or {}  # or-{}: explicit None must not crash
         position = float(params.get("position", 0.0))
         trajectory = JointTrajectory(
             joint_names=["gripper_joint"],
@@ -177,16 +216,43 @@ class RoboticsExecutionHandler:
         return {"status": "success", "action": "emergency_stop"}
 
     def _handle_read(self, decision: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle read-only queries (state, scan)."""
+        """Handle read-only queries (state, scan).
+
+        Prefers the simulation as the state source; falls back to the ROS 2
+        interface (e.g. canned/live /joint_states and /scan) when no
+        simulation is attached, and fails with a clear error when neither
+        source is available rather than crashing.
+        """
         action_type = decision.get("action_type", "")
         if action_type == "robot_query_state":
-            model = decision.get("params", {}).get("model", "robot")
-            joints = self._gazebo.get_joint_states(model)
-            return {"status": "success", "joints": joints.position if joints else []}
+            model = (decision.get("params") or {}).get("model", "robot")
+            if self._gazebo is not None:
+                joints = self._gazebo.get_joint_states(model)
+                return {"status": "success",
+                        "joints": joints.position if joints else []}
+            getter = getattr(self._ros2, "get_canned_joint_state", None)
+            if getter is not None:
+                joints = getter()
+                return {"status": "success", "source": "ros2",
+                        "joints": joints.position if joints else []}
+            return {"status": "error",
+                    "message": "no state source (no simulation, no ROS 2 state feed)"}
         if action_type == "robot_scan":
-            scan = self._gazebo.get_sensor_data("/scan")
-            return {"status": "success", "scan": scan.ranges if scan else []}
+            scan = self._get_scan()
+            if scan is None:
+                return {"status": "error",
+                        "message": "no scan source (no simulation, no ROS 2 scan feed)"}
+            source = "gazebo" if self._gazebo is not None else "ros2"
+            return {"status": "success", "source": source,
+                    "scan": scan.ranges if scan else []}
         return {"status": "error", "message": f"unknown read action: {action_type}"}
+
+    def _get_scan(self):
+        """Acquire a laser scan: simulation first, ROS 2 feed as fallback."""
+        if self._gazebo is not None:
+            return self._gazebo.get_sensor_data("/scan")
+        getter = getattr(self._ros2, "get_canned_laser_scan", None)
+        return getter() if getter is not None else None
 
     def _clamp_velocity(self, value: float, limit: float) -> float:
         """Clamp velocity to [-limit, limit]."""
@@ -260,9 +326,20 @@ class RoboticsExecutionHandler:
         self._ros2.publish("/cmd_vel", Twist())
 
     def _continuous_loop(self) -> None:
-        """Background loop: republish the last Twist at the configured rate."""
+        """Background loop: republish the last Twist at the configured rate.
+
+        Dead-man behavior: if the ROS 2 connection is lost mid-stream, the
+        loop stops itself and publishes zero velocity (safe stop) rather
+        than continuing to command a robot it can no longer observe.
+        """
         interval = 1.0 / self._continuous_rate
         while not self._continuous_stop_event.wait(timeout=interval):
+            if not self._ros2.check_connection():
+                logger.warning("Connection lost during continuous navigation — safe stop")
+                self._continuous_stop_event.set()
+                self._ros2.publish("/cmd_vel", Twist())
+                self._continuous_thread = None
+                return
             self._ros2.publish("/cmd_vel", self._continuous_twist)
             self._update_watchdog()
 
@@ -298,7 +375,7 @@ class RoboticsExecutionHandler:
         """Background loop: check sensors for safety-critical conditions."""
         while not self._sensor_stop_event.wait(timeout=self._sensor_check_interval):
             try:
-                scan = self._gazebo.get_sensor_data("/scan")
+                scan = self._get_scan()
                 if scan is None:
                     continue
                 # Check for obstacles within threshold

@@ -139,17 +139,20 @@ class FallbackController:
         self._audit("fallback_trigger",
                     {"trigger": kind, "severity": severity,
                      "detail": str(detail)[:200]})
+        # Notify the governor BEFORE latching mode: if the governor cannot
+        # engage the state, the fallback must not claim it did. Latching
+        # first silently faked safety when governor notification failed.
         if severity == "halt":
-            self.mode = "halted"
             self.governor.halt(reason)
+            self.mode = "halted"
             self._audit("fallback_halt", {"reason": reason})
             raise FallbackHalt(reason)
         if severity == "safe_state":
-            self.mode = "safe_state"
             self.governor.safe_state(reason)
+            self.mode = "safe_state"
         else:
-            self.mode = "paused"
             self.governor.pause(reason)
+            self.mode = "paused"
 
     # -- operator surface ---------------------------------------------------------
 

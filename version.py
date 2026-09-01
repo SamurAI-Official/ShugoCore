@@ -1,6 +1,6 @@
 """ShugoCore version (SemVer: frozen for the 1.x series)."""
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 VERSION = __version__
 
 # Breaking-change policy for the 1.x series:

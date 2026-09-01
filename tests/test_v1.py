@@ -287,8 +287,8 @@ class EngineV1IntegrationTestCase(unittest.TestCase):
 
 
 class VersionTestCase(unittest.TestCase):
-    def test_version_is_1_0(self):
-        self.assertEqual(__version__, "1.1.0")
+    def test_version_is_1_2(self):
+        self.assertEqual(__version__, "1.2.0")
 
 
 if __name__ == "__main__":

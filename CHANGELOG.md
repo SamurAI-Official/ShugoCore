@@ -4,6 +4,44 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.2.0]
+
+### Added — Multiphase stress-test suite (97 tests) and robustness fixes
+
+- `tests/test_android_lifecycle_stress.py` (30 tests): lifecycle churn
+  (200 full create/pause/resume/destroy cycles), concurrent pause/resume
+  races, monitor-thread recreation, power/thermal edge cases and streak
+  semantics, `SecureStoreSecretProvider` failure modes, node start/stop
+  leak detection, bridge-death-mid-run, flaky sensor bridges, and a
+  required 5-second sensor soak (monotonic heartbeats, bounded log).
+- `tests/test_ros2_transport_stress.py` (27 tests): bridge death,
+  post-shutdown publish/subscribe, garbage drains, concurrent publish
+  bursts, rate-limiter + emergency-stop bypass, payload round-trip
+  fidelity, NaN/Inf sanitization, cross-transport parity.
+- `tests/test_thermal_stress.py` (20 tests): ladder transitions,
+  1000-cycle oscillation soak, thermal/accelerator-failure interaction,
+  garbage thermal values, recovery semantics.
+- `tests/test_model_execution_stress.py` (20 tests) plus
+  `tests/fake_llama_server.py`: a loopback llama.cpp/Ollama/LM Studio
+  wire-protocol test double driving the real `requests` HTTP paths —
+  launcher detection, timeouts, malformed/500/empty responses, and
+  concurrent generation.
+
+### Fixed — found by the stress suite
+
+- `AndroidShugoCoreNode.stop()` leaked its memory-worker thread
+  (`MemoryManager.shutdown()` was never invoked; one thread leaked per
+  node instantiation).
+- `JavaBridgeROS2Interface.spin_once` crashed on malformed payloads
+  returned by `drainMessages` (unguarded JSON parse).
+- `RosBridgeInterface.spin_once` crashed on valid-JSON-but-not-dict
+  packets (e.g. a bare string).
+
+### Changed
+
+- Package version aligned at 1.2.0 across `pyproject.toml`,
+  `version.py`, and the test pin.
+
 ## [1.1.0]
 
 ### Added - Android compute nodes (hardware-agnostic mobile integration)

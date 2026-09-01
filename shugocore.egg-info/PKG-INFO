@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: shugocore
-Version: 1.1.0
+Version: 1.2.0
 Summary: A continuous orchestration layer for synthetic functional agency: multi-model decisions, tool execution, four-tier memory, deterministic safety interlocks.
 Author: SamurAI-Official
 License: MIT

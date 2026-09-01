@@ -13,6 +13,7 @@ chroma_db/
 # Audit / ledger artifacts (append-only runtime state)
 audit_chain.jsonl
 tier3_ledger.jsonl
+*.jsonl
 
 # Environments
 .venv/

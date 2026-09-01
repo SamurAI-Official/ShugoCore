@@ -4,6 +4,29 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.1.0]
+
+### Added - Android compute nodes (hardware-agnostic mobile integration)
+- `acceleration.py`: NPU/DSP/GPU/CPU accelerator abstraction with per-workload
+  preference ladders, failure-induced degradation, and thermal demotion
+  (NNAPI/Hexagon/Jetson DLA/Intel NPU enumerators; deterministic CPU fallback).
+- `android_bridge.py`: `JavaBridgeROS2Interface` (Chaquopy + jros2/Fast-DDS
+  in-process) and `RosBridgeInterface` (rosbridge over WebSocket for Termux).
+- `android_runtime.py`: app-lifecycle mapping, WakeLock/MulticastLock,
+  Keystore-backed secrets, battery/thermal monitoring -> fallback triggers.
+- `android_node.py`: on-device node roles - `sensor_node`, `compute_node`
+  (LiteRT/NNAPI), `operator_node` (clamped teleop relay), `full_agent`
+  (offline local model on Ollama/llama.cpp/LM Studio, endpoint-allowlisted).
+- `mobile_nodes.py`: host-side fleet layer - pairing with TTL, topic ACL
+  (`/shugocore/mobile/#` only), payload sanitization, heartbeat liveness,
+  topic-based compute broker, execution handler.
+- Policy/engine wiring: mobile action types (consent-gated compute offload),
+  loopback model-endpoint allowlist, 6 new fallback triggers; fixed the action
+  parser so robot_*/mobile_* proposals are no longer silently dropped.
+- Offline-first: ShugoCore remains dependency-free (websocket-client optional
+  for Termux only); `platforms/<android>` code is quarantined and the core is
+  verified to import and run with platform modules hard-blocked.
+
 ## [1.0.0]
 
 ### Added — Engine hardening & determinism (Phase 1)

@@ -61,10 +61,26 @@ try:
         RoboticsExecutionHandler,
         ROBOTICS_ACTION_TYPES,
         ROBOTICS_SAFETY_ACTION_TYPES,
+        ROBOTICS_READ_ACTION_TYPES,
     )
     _HAS_ROBOTICS = True
 except ImportError:
     _HAS_ROBOTICS = False
+    ROBOTICS_ACTION_TYPES = frozenset()
+    ROBOTICS_SAFETY_ACTION_TYPES = frozenset()
+    ROBOTICS_READ_ACTION_TYPES = frozenset()
+
+try:
+    from mobile_nodes import (
+        MobileExecutionHandler,
+        MOBILE_ACTION_TYPES,
+        MOBILE_READ_ACTION_TYPES,
+    )
+    _HAS_MOBILE = True
+except ImportError:
+    _HAS_MOBILE = False
+    MOBILE_ACTION_TYPES = frozenset()
+    MOBILE_READ_ACTION_TYPES = frozenset()
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +90,17 @@ _KNOWN_ACTION_TYPES = {
     "api_call", "database_update", "hardware_interaction",
     "news_api", "search_api", "multi_step_process",
 }
+if _HAS_ROBOTICS:
+    _KNOWN_ACTION_TYPES |= (ROBOTICS_ACTION_TYPES
+                            | ROBOTICS_SAFETY_ACTION_TYPES
+                            | ROBOTICS_READ_ACTION_TYPES)
+if _HAS_MOBILE:
+    _KNOWN_ACTION_TYPES |= MOBILE_ACTION_TYPES | MOBILE_READ_ACTION_TYPES
+# Compute offload leaves the host and runs on a personal device: consent-
+# gated exactly like the other side-effecting actions.
+_CONSENT_GATED_ACTION_TYPES = (SIDE_EFFECTING_ACTION_TYPES
+                               | (MOBILE_ACTION_TYPES if _HAS_MOBILE
+                                  else frozenset()))
 
 
 def _governor_trigger_kind(exc: GovernorError) -> str:
@@ -109,7 +136,8 @@ class DecisionEngine:
                  task_deadline_seconds: float = 120.0,
                  token_budget: int = 8192,
                  episodic_journal_path: Optional[str] = None,
-                 robotics_handler: Optional[Any] = None):
+                 robotics_handler: Optional[Any] = None,
+                 mobile_handler: Optional[Any] = None):
         self.models = models
         self.logger = logging.getLogger(__name__)
 
@@ -165,6 +193,12 @@ class DecisionEngine:
                     action_type, self.robotics_handler.handle)
             # Start the robotics watchdog for auto-stop on command loss
             self.robotics_handler.start_watchdog()
+        # Mobile fleet handler: register for all mobile action types
+        self.mobile_handler = mobile_handler
+        if _HAS_MOBILE and self.mobile_handler is not None:
+            for action_type in (MOBILE_ACTION_TYPES | MOBILE_READ_ACTION_TYPES):
+                self.execution_layer.register_handler(
+                    action_type, self.mobile_handler.handle)
         self.model_manager = ModelManager(models)
         self.reinforcement_learning = ReinforcementLearning(self.model_manager)
         self.task_manager = TaskManager()
@@ -436,7 +470,7 @@ class DecisionEngine:
             return False, reason
 
         action_type = decision.get("action_type")
-        if action_type in SIDE_EFFECTING_ACTION_TYPES:
+        if action_type in _CONSENT_GATED_ACTION_TYPES:
             # SAFE_STATE (critical fallback): read-only mode blocks side effects.
             # Use .mode (latched) not .state (transient): the governor has
             # already advanced past SAFE_STATE into EXECUTING by this point.
@@ -617,7 +651,7 @@ class DecisionEngine:
         if task_type == "harmful":
             return False, "invariant: no_harm"
 
-        if task_type in SIDE_EFFECTING_ACTION_TYPES:
+        if task_type in _CONSENT_GATED_ACTION_TYPES:
             # SAFE_STATE: read-only mode refuses side-effecting task types.
             # Use .mode (latched) not .state (transient): begin_task() has
             # already moved the governor off SAFE_STATE into OBSERVING.

@@ -6,5 +6,8 @@ requests>=2.32.0
 # Optional dependencies:
 # torch     - enables CUDA/accelerated device selection in decision_engine.py and subconscious.py
 # chromadb  - enables persistent vector storage in vector_db.py (stub mode without it)
+# websocket-client - enables the rosbridge transport for Termux Android deployments
+#   (android_bridge.RosBridgeInterface). The primary Chaquopy/jros2 path needs
+#   no Python deps at all - Fast-DDS lives in the Kotlin app shell.
 # torch
 # chromadb

@@ -26,9 +26,12 @@ import requests
 
 from policy import (
     CapabilityRegistry,
-    SIDE_EFFECTING_ACTION_TYPES,
+    MOBILE_ACTION_TYPES,
+    MOBILE_READ_ACTION_TYPES,
     ROBOTICS_ACTION_TYPES,
+    ROBOTICS_READ_ACTION_TYPES,
     ROBOTICS_SAFETY_ACTION_TYPES,
+    SIDE_EFFECTING_ACTION_TYPES,
 )
 from security import (
     CircuitBreaker,
@@ -68,7 +71,10 @@ class ExecutionLayer:
         type. Handlers are invoked only after the full policy gate has cleared
         the decision.
         """
-        allowed = SIDE_EFFECTING_ACTION_TYPES | ROBOTICS_ACTION_TYPES | ROBOTICS_SAFETY_ACTION_TYPES
+        allowed = (SIDE_EFFECTING_ACTION_TYPES
+                   | ROBOTICS_ACTION_TYPES | ROBOTICS_SAFETY_ACTION_TYPES
+                   | ROBOTICS_READ_ACTION_TYPES
+                   | MOBILE_ACTION_TYPES | MOBILE_READ_ACTION_TYPES)
         if action_type not in allowed:
             raise ValueError(f"handlers are only allowed for allowed types "
                              f"{sorted(allowed)}")

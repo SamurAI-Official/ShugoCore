@@ -33,9 +33,16 @@ ROBOTICS_ACTION_TYPES = {"robot_navigate", "robot_manipulate", "robot_gripper"}
 ROBOTICS_SAFETY_ACTION_TYPES = {"robot_stop"}
 # Robotics read-only actions: no consent required.
 ROBOTICS_READ_ACTION_TYPES = {"robot_query_state", "robot_scan"}
+# Mobile fleet actions: compute offload to paired Android nodes (privacy-
+# relevant - requests leave the host and run on a personal device).
+MOBILE_ACTION_TYPES = {"mobile_request_compute"}
+# Mobile fleet read-only actions.
+MOBILE_READ_ACTION_TYPES = {"mobile_list_nodes", "mobile_node_status"}
 KNOWN_ACTION_TYPES = (SIDE_EFFECTING_ACTION_TYPES | EXTERNAL_READ_ACTION_TYPES
                       | ROBOTICS_ACTION_TYPES | ROBOTICS_SAFETY_ACTION_TYPES
-                      | ROBOTICS_READ_ACTION_TYPES | {"multi_step_process"})
+                      | ROBOTICS_READ_ACTION_TYPES | MOBILE_ACTION_TYPES
+                      | MOBILE_READ_ACTION_TYPES | {"multi_step_process"})
+
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +80,56 @@ class CapabilityRegistry:
         self.joint_limits = dict(config.get("joint_limits", {}))
         self.max_payload = max(0.0, float(config.get("max_payload", 5.0)))
         self.watchdog_timeout = max(0.1, float(config.get("watchdog_timeout", 5.0)))
+        # Mobile fleet capabilities (Android compute nodes)
+        self.mobile_devices_allowlist = set(
+            config.get("mobile_devices_allowlist", []))
+        self.mobile_max_publish_hz = max(0.1, float(config.get("mobile_max_publish_hz", 30.0)))
+        self.mobile_sensor_topics = list(config.get("mobile_sensor_topics", [
+            "camera", "imu", "gps", "battery", "heartbeat",
+            "compute_result", "teleop"]))
+        self.mobile_compute_timeout = max(0.5, float(config.get("mobile_compute_timeout", 30.0)))
+        # Loopback model endpoints permitted for on-device inference
+        # (Ollama-Termux 11434, llama.cpp server 8080/8081, LM Studio 1234,
+        # generic local servers 5000/8000).
+        self.local_model_ports = set(
+            int(p) for p in config.get("local_model_ports", [11434, 8080, 8081, 1234, 5000, 8000]))
+
+    def validate_mobile_topic(self, device_id: str, topic_tail: str) -> Tuple[bool, str]:
+        """
+        Topic ACL for paired mobile nodes: they may only surface data on the
+        contracted sensor namespace. Actuation topics are unreachable by
+        construction.
+        """
+        device = str(device_id or "").strip()
+        tail = str(topic_tail or "").strip("/")
+        if not device or not tail:
+            return False, "empty mobile topic component"
+        if device not in self.mobile_devices_allowlist:
+            return False, f"device '{device}' is not in the operator pairing allowlist"
+        if tail not in self.mobile_sensor_topics:
+            return False, (f"topic '{tail}' is outside the mobile contract "
+                           f"(allowed: {self.mobile_sensor_topics})")
+        return True, ""
+
+    def validate_model_endpoint(self, url: str) -> Tuple[bool, str]:
+        """
+        On-device inference endpoints must be loopback HTTP(S) on an
+        allowlisted port. Prevents a compromised launcher config from
+        exfiltrating prompts to arbitrary hosts.
+        """
+        from urllib.parse import urlparse
+        parsed = urlparse(str(url or ""))
+        if parsed.scheme not in ("http", "https"):
+            return False, f"scheme '{parsed.scheme}' is not allowed for model endpoints"
+        if parsed.username or parsed.password:
+            return False, "credentials in model endpoint URLs are not allowed"
+        host = (parsed.hostname or "").lower()
+        if host not in ("127.0.0.1", "localhost", "::1"):
+            return False, (f"model endpoint host '{host}' is not loopback "
+                           f"(on-device inference must stay local)")
+        if parsed.port is not None and parsed.port not in self.local_model_ports:
+            return False, f"port {parsed.port} is not in the local model port allowlist"
+        return True, ""
 
     def validate_api_call(self, url: str, method: str) -> Tuple[bool, str]:
         """Scheme/host allowlist + method allowlist for generic API calls."""

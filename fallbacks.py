@@ -44,6 +44,13 @@ DEFAULT_SEVERITIES = {
     "planning_failure": "pause",
     "ros2_connection_lost": "safe_state",
     "gazebo_connection_lost": "pause",
+    # Mobile/Android triggers
+    "mobile_node_lost": "pause",
+    "mobile_sensor_anomaly": "pause",
+    "android_lifecycle_paused": "pause",
+    "device_power_low": "pause",
+    "device_thermal_high": "pause",
+    "accelerator_failure": "pause",
 }
 # Violations that escalate on first occurrence.
 _IMMEDIATE = {"step_budget_exhausted", "task_deadline_exceeded",

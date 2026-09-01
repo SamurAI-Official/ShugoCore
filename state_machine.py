@@ -33,6 +33,9 @@ class AgentState(Enum):
     EXECUTING = "executing"
     EVALUATING = "evaluating"
     CONSOLIDATING = "consolidating"
+    PLANNING = "planning"
+    PHYSICAL_EXECUTING = "physical_executing"
+    EMERGENCY_STOP = "emergency_stop"
     PAUSED = "paused"
     SAFE_STATE = "safe_state"
     HALTED = "halted"
@@ -43,10 +46,13 @@ _ALLOWED = {
     AgentState.IDLE: frozenset({AgentState.OBSERVING}),
     AgentState.OBSERVING: frozenset({AgentState.GATING, AgentState.IDLE}),
     AgentState.GATING: frozenset({AgentState.DECIDING, AgentState.IDLE}),
-    AgentState.DECIDING: frozenset({AgentState.EXECUTING, AgentState.IDLE}),
-    AgentState.EXECUTING: frozenset({AgentState.EVALUATING, AgentState.IDLE}),
+    AgentState.DECIDING: frozenset({AgentState.EXECUTING, AgentState.PLANNING, AgentState.IDLE}),
+    AgentState.PLANNING: frozenset({AgentState.PHYSICAL_EXECUTING, AgentState.IDLE, AgentState.EMERGENCY_STOP}),
+    AgentState.PHYSICAL_EXECUTING: frozenset({AgentState.EVALUATING, AgentState.IDLE, AgentState.EMERGENCY_STOP}),
+    AgentState.EXECUTING: frozenset({AgentState.EVALUATING, AgentState.IDLE, AgentState.EMERGENCY_STOP}),
     AgentState.EVALUATING: frozenset({AgentState.IDLE}),
     AgentState.CONSOLIDATING: frozenset({AgentState.IDLE}),
+    AgentState.EMERGENCY_STOP: frozenset({AgentState.IDLE}),
     AgentState.SAFE_STATE: frozenset({AgentState.OBSERVING}),
     AgentState.PAUSED: frozenset(),
     AgentState.HALTED: frozenset(),

@@ -33,6 +33,17 @@ DEFAULT_SEVERITIES = {
     "invariant_violations": "safe_state",
     "memory_failure": "halt",
     "audit_failure": "halt",
+    # Robotics triggers
+    "collision_detected": "halt",
+    "joint_limit_approached": "safe_state",
+    "velocity_exceeded": "safe_state",
+    "acceleration_exceeded": "safe_state",
+    "workspace_boundary_violated": "safe_state",
+    "emergency_stop_activated": "halt",
+    "human_presence_detected": "safe_state",
+    "planning_failure": "pause",
+    "ros2_connection_lost": "safe_state",
+    "gazebo_connection_lost": "pause",
 }
 # Violations that escalate on first occurrence.
 _IMMEDIATE = {"step_budget_exhausted", "task_deadline_exceeded",

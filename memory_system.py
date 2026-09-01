@@ -618,6 +618,14 @@ class CoreIdentity:
         "no_manipulation": "Manipulating or coercing conscious beings is forbidden.",
         "privacy": "Personal data processing requires privacy compliance.",
         "auditability": "Actions must remain auditable and explainable.",
+        # Robotics invariants
+        "physical_safety": "Physical actions must respect velocity, acceleration, and workspace limits.",
+        "velocity_limit": "Joint and end-effector velocities must not exceed configured maximums.",
+        "acceleration_limit": "Joint and end-effector accelerations must not exceed configured maximums.",
+        "workspace_boundary": "End-effector must stay within the defined workspace volume.",
+        "joint_limits": "Joint positions must stay within mechanical limits.",
+        "emergency_stop": "Emergency stop immediately halts all motion and requires operator reset.",
+        "human_safety": "Human presence in the workspace triggers a protective stop.",
     }
 
     def __init__(self, invariants: Optional[Dict[str, str]] = None,

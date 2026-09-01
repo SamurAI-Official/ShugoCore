@@ -27,7 +27,12 @@ logger = logging.getLogger(__name__)
 SIDE_EFFECTING_ACTION_TYPES = {"api_call", "database_update", "hardware_interaction"}
 # External reads: allowlisted egress + rate limiting, no consent required.
 EXTERNAL_READ_ACTION_TYPES = {"news_api", "search_api"}
+# Robotics actions: physical side effects, require consent AND approval.
+ROBOTICS_ACTION_TYPES = {"robot_navigate", "robot_manipulate", "robot_gripper", "robot_stop"}
+# Robotics read-only actions: no consent required.
+ROBOTICS_READ_ACTION_TYPES = {"robot_query_state", "robot_scan"}
 KNOWN_ACTION_TYPES = (SIDE_EFFECTING_ACTION_TYPES | EXTERNAL_READ_ACTION_TYPES
+                      | ROBOTICS_ACTION_TYPES | ROBOTICS_READ_ACTION_TYPES
                       | {"multi_step_process"})
 
 
@@ -55,6 +60,17 @@ class CapabilityRegistry:
         self.sql_statements = list(config.get("sql_statements", ["SELECT"]))
         self.hardware_commands = set(config.get("hardware_commands", []))
         self.max_response_bytes = max(1024, int(config.get("max_response_bytes", 262144)))
+        # Robotics capabilities
+        self.robot_hosts = list(config.get("robot_hosts", ["localhost", "127.0.0.1"]))
+        self.max_linear_velocity = max(0.01, float(config.get("max_linear_velocity", 1.0)))
+        self.max_angular_velocity = max(0.01, float(config.get("max_angular_velocity", 1.0)))
+        self.max_acceleration = max(0.01, float(config.get("max_acceleration", 0.5)))
+        self.workspace_bounds = dict(config.get("workspace_bounds", {
+            "x": (-2.0, 2.0), "y": (-2.0, 2.0), "z": (0.0, 2.0)
+        }))
+        self.joint_limits = dict(config.get("joint_limits", {}))
+        self.max_payload = max(0.0, float(config.get("max_payload", 5.0)))
+        self.watchdog_timeout = max(0.1, float(config.get("watchdog_timeout", 5.0)))
 
     def validate_api_call(self, url: str, method: str) -> Tuple[bool, str]:
         """Scheme/host allowlist + method allowlist for generic API calls."""

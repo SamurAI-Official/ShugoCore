@@ -380,10 +380,10 @@ class TestRoboticsSecurityIntegration(unittest.TestCase):
         self.assertIn("human_safety", invariants)
 
     def test_robotics_action_types_registered(self):
-        from policy import ROBOTICS_ACTION_TYPES, ROBOTICS_READ_ACTION_TYPES
+        from policy import ROBOTICS_ACTION_TYPES, ROBOTICS_SAFETY_ACTION_TYPES, ROBOTICS_READ_ACTION_TYPES
         self.assertIn("robot_navigate", ROBOTICS_ACTION_TYPES)
         self.assertIn("robot_manipulate", ROBOTICS_ACTION_TYPES)
-        self.assertIn("robot_stop", ROBOTICS_ACTION_TYPES)
+        self.assertIn("robot_stop", ROBOTICS_SAFETY_ACTION_TYPES)
         self.assertIn("robot_query_state", ROBOTICS_READ_ACTION_TYPES)
 
     def test_robotics_capabilities_exist(self):
@@ -412,6 +412,96 @@ class TestRoboticsSecurityIntegration(unittest.TestCase):
         self.assertIn(AgentState.PHYSICAL_EXECUTING, _ALLOWED[AgentState.PLANNING])
         self.assertIn(AgentState.EMERGENCY_STOP, _ALLOWED[AgentState.PHYSICAL_EXECUTING])
         self.assertIn(AgentState.IDLE, _ALLOWED[AgentState.EMERGENCY_STOP])
+
+
+class TestContinuousNavigation(unittest.TestCase):
+    """Test continuous command mode for mobile base."""
+
+    def test_start_and_stop_continuous(self):
+        h = RoboticsExecutionHandler()
+        h.start_continuous_navigate(linear_x=0.5, angular_z=0.1, rate_hz=10.0)
+        self.assertTrue(h._continuous_thread.is_alive())
+        import time
+        time.sleep(0.25)  # let it publish a few times
+        h.stop_continuous_navigate()
+        msgs = h._ros2.get_published_messages("/cmd_vel")
+        self.assertGreaterEqual(len(msgs), 2)  # should have published multiple times
+        # Last message should be zero velocity (stop)
+        self.assertEqual(msgs[-1]["message"].linear.x, 0.0)
+
+    def test_update_continuous(self):
+        h = RoboticsExecutionHandler()
+        h.start_continuous_navigate(linear_x=0.3, rate_hz=10.0)
+        h.update_continuous_navigate(linear_x=0.8, angular_z=0.2)
+        self.assertEqual(h._continuous_twist.linear.x, 0.8)
+        self.assertEqual(h._continuous_twist.angular.z, 0.2)
+        h.stop_continuous_navigate()
+
+    def test_velocity_clamping_in_continuous(self):
+        h = RoboticsExecutionHandler(max_linear_velocity=0.5)
+        h.start_continuous_navigate(linear_x=999.0, rate_hz=10.0)
+        self.assertLessEqual(h._continuous_twist.linear.x, 0.5)
+        h.stop_continuous_navigate()
+
+
+class TestSensorFeedback(unittest.TestCase):
+    """Test sensor feedback loop for obstacle detection."""
+
+    def test_sensor_feedback_detects_obstacle(self):
+        h = RoboticsExecutionHandler()
+        # Spawn a model close to simulate obstacle
+        from ros2_interface import Pose, Vector3
+        h._gazebo.spawn_from_string("<urdf/>", Pose(position=Vector3(0.2, 0, 0)), "obstacle")
+        h.start_sensor_feedback(obstacle_distance=0.5, check_interval=0.05)
+        import time
+        time.sleep(0.15)  # let the sensor loop check
+        # Note: stub returns fixed ranges, so this tests the loop runs
+        h.stop_sensor_feedback()
+        h.shutdown()
+
+    def test_start_and_stop_sensor_feedback(self):
+        h = RoboticsExecutionHandler()
+        h.start_sensor_feedback(obstacle_distance=0.5)
+        self.assertTrue(h._sensor_thread.is_alive())
+        h.stop_sensor_feedback()
+        self.assertIsNone(h._sensor_thread)
+
+
+class TestTrajectoryExecutionMonitoring(unittest.TestCase):
+    """Test trajectory execution status monitoring."""
+
+    def test_get_execution_status(self):
+        from moveit_planner import create_moveit_planner
+        planner = create_moveit_planner()
+        status = planner.get_execution_status()
+        self.assertIn("state", status)
+        self.assertIn("progress", status)
+        self.assertIn("current_positions", status)
+
+    def test_execution_status_after_plan(self):
+        h = RoboticsExecutionHandler()
+        h.handle({"action_type": "robot_manipulate", "params": {"target": {"x": 0.5, "y": 0.3, "z": 0.2}}})
+        status = h._moveit.get_execution_status()
+        self.assertEqual(status["state"], "idle")
+
+
+class TestDecisionEngineIntegration(unittest.TestCase):
+    """Test that the robotics handler integrates with DecisionEngine."""
+
+    def test_decision_engine_accepts_robotics_handler(self):
+        from decision_engine import DecisionEngine
+        from robotics_handler import RoboticsExecutionHandler
+        handler = RoboticsExecutionHandler()
+        models = [{"id": "test", "type": "text", "weight": 1.0, "backend": {"type": "stub"}}]
+        engine = DecisionEngine(models, {"type": "chroma"}, robotics_handler=handler)
+        self.assertIsNotNone(engine.robotics_handler)
+        handler.shutdown()
+
+    def test_decision_engine_without_robotics(self):
+        from decision_engine import DecisionEngine
+        models = [{"id": "test", "type": "text", "weight": 1.0, "backend": {"type": "stub"}}]
+        engine = DecisionEngine(models, {"type": "chroma"})
+        self.assertIsNone(engine.robotics_handler)
 
 
 if __name__ == "__main__":

@@ -24,7 +24,12 @@ from urllib.parse import urlparse
 
 import requests
 
-from policy import CapabilityRegistry, SIDE_EFFECTING_ACTION_TYPES
+from policy import (
+    CapabilityRegistry,
+    SIDE_EFFECTING_ACTION_TYPES,
+    ROBOTICS_ACTION_TYPES,
+    ROBOTICS_SAFETY_ACTION_TYPES,
+)
 from security import (
     CircuitBreaker,
     RateLimiter,
@@ -59,12 +64,14 @@ class ExecutionLayer:
                          handler: Callable[[Dict[str, Any]], Dict[str, Any]]) -> None:
         """
         Operator-installed executor for a side-effecting action type (e.g.
-        ``database_update`` backed by a real connection pool). Handlers are
-        invoked only after the full policy gate has cleared the decision.
+        ``database_update`` backed by a real connection pool) or robotics action
+        type. Handlers are invoked only after the full policy gate has cleared
+        the decision.
         """
-        if action_type not in SIDE_EFFECTING_ACTION_TYPES:
-            raise ValueError(f"handlers are only allowed for side-effecting types "
-                             f"{sorted(SIDE_EFFECTING_ACTION_TYPES)}")
+        allowed = SIDE_EFFECTING_ACTION_TYPES | ROBOTICS_ACTION_TYPES | ROBOTICS_SAFETY_ACTION_TYPES
+        if action_type not in allowed:
+            raise ValueError(f"handlers are only allowed for allowed types "
+                             f"{sorted(allowed)}")
         self._handlers[str(action_type)] = handler
 
 

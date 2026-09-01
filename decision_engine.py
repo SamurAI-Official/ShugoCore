@@ -56,6 +56,16 @@ from telemetry import get_tracer
 from token_budget import ContextBudget, estimate_tokens
 from vector_db import VectorDB
 
+try:
+    from robotics_handler import (
+        RoboticsExecutionHandler,
+        ROBOTICS_ACTION_TYPES,
+        ROBOTICS_SAFETY_ACTION_TYPES,
+    )
+    _HAS_ROBOTICS = True
+except ImportError:
+    _HAS_ROBOTICS = False
+
 logger = logging.getLogger(__name__)
 
 _PROPOSAL_JSON_PATTERN = re.compile(r"\{.*\}", re.DOTALL)
@@ -98,7 +108,8 @@ class DecisionEngine:
                  step_budget: int = 50,
                  task_deadline_seconds: float = 120.0,
                  token_budget: int = 8192,
-                 episodic_journal_path: Optional[str] = None):
+                 episodic_journal_path: Optional[str] = None,
+                 robotics_handler: Optional[Any] = None):
         self.models = models
         self.logger = logging.getLogger(__name__)
 
@@ -146,6 +157,14 @@ class DecisionEngine:
             audit=self.audit,
             request_timeout=request_timeout,
         )
+        # Robotics handler: register for all robotics action types
+        self.robotics_handler = robotics_handler
+        if _HAS_ROBOTICS and self.robotics_handler is not None:
+            for action_type in ROBOTICS_ACTION_TYPES:
+                self.execution_layer.register_handler(
+                    action_type, self.robotics_handler.handle)
+            # Start the robotics watchdog for auto-stop on command loss
+            self.robotics_handler.start_watchdog()
         self.model_manager = ModelManager(models)
         self.reinforcement_learning = ReinforcementLearning(self.model_manager)
         self.task_manager = TaskManager()
@@ -508,6 +527,8 @@ class DecisionEngine:
         finally:
             self.memory.shutdown()
         self.task_manager.stop()
+        if _HAS_ROBOTICS and self.robotics_handler is not None:
+            self.robotics_handler.shutdown()
 
     def add_model(self, model: Dict[str, Any]):
         """Adds a new model to the system (id must be a safe model name)."""

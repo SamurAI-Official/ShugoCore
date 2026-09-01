@@ -28,12 +28,14 @@ SIDE_EFFECTING_ACTION_TYPES = {"api_call", "database_update", "hardware_interact
 # External reads: allowlisted egress + rate limiting, no consent required.
 EXTERNAL_READ_ACTION_TYPES = {"news_api", "search_api"}
 # Robotics actions: physical side effects, require consent AND approval.
-ROBOTICS_ACTION_TYPES = {"robot_navigate", "robot_manipulate", "robot_gripper", "robot_stop"}
+ROBOTICS_ACTION_TYPES = {"robot_navigate", "robot_manipulate", "robot_gripper"}
+# Safety-critical robotics actions: bypass consent/approval gates.
+ROBOTICS_SAFETY_ACTION_TYPES = {"robot_stop"}
 # Robotics read-only actions: no consent required.
 ROBOTICS_READ_ACTION_TYPES = {"robot_query_state", "robot_scan"}
 KNOWN_ACTION_TYPES = (SIDE_EFFECTING_ACTION_TYPES | EXTERNAL_READ_ACTION_TYPES
-                      | ROBOTICS_ACTION_TYPES | ROBOTICS_READ_ACTION_TYPES
-                      | {"multi_step_process"})
+                      | ROBOTICS_ACTION_TYPES | ROBOTICS_SAFETY_ACTION_TYPES
+                      | ROBOTICS_READ_ACTION_TYPES | {"multi_step_process"})
 
 
 # ---------------------------------------------------------------------------

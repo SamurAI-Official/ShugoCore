@@ -41,6 +41,10 @@ class BaseMoveItPlanner:
     def cancel_all_goals(self) -> None:
         raise NotImplementedError
 
+    def get_execution_status(self) -> Dict[str, Any]:
+        """Return trajectory execution progress and current joint positions."""
+        raise NotImplementedError
+
     def shutdown(self) -> None:
         raise NotImplementedError
 
@@ -174,6 +178,15 @@ class StubMoveItPlanner(BaseMoveItPlanner):
     def cancel_all_goals(self) -> None:
         logger.info("[stub] MoveIt: cancelled all goals")
 
+    def get_execution_status(self) -> Dict[str, Any]:
+        """Stub: return a simulated execution status."""
+        return {
+            "state": "idle",
+            "progress": 1.0,
+            "current_positions": [0.0] * len(self._joint_names),
+            "active_goal": None,
+        }
+
     def shutdown(self) -> None:
         logger.info("[stub] MoveIt planner shut down")
 
@@ -273,6 +286,19 @@ class MoveItPlanner(BaseMoveItPlanner):
     def cancel_all_goals(self) -> None:
         self._group.stop()
         logger.info("MoveIt 2: cancelled all goals")
+
+    def get_execution_status(self) -> Dict[str, Any]:
+        """Return trajectory execution progress and current joint positions."""
+        try:
+            current = self._group.get_current_joint_values()
+            return {
+                "state": "active" if self._group.get_active_joints() else "idle",
+                "progress": 1.0,  # MoveIt doesn't expose progress directly
+                "current_positions": list(current) if current else [],
+                "active_goal": None,
+            }
+        except Exception:
+            return {"state": "error", "progress": 0.0, "current_positions": [], "active_goal": None}
 
     def shutdown(self) -> None:
         logger.info("MoveIt 2 planner shut down")

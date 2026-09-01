@@ -1,0 +1,24 @@
+test: multiphase stress hardening for Android/ROS2/thermal/model execution
+
+- tests/fake_llama_server.py: configurable loopback llama.cpp/Ollama/LM
+  Studio test double (hang/status/malformed/empty modes) serving as the
+  wire contract for on-device inference hosts
+- test_android_lifecycle_stress.py (30): 200-cycle lifecycle churn,
+  concurrent pause/resume races, bridge-death and flaky-sensor
+  degradation, battery/thermal edge taxonomy, 25x node start/stop
+  cycles, 5s soak with bounded-heartbeat verification
+- test_ros2_transport_stress.py (27): transport death, post-shutdown
+  use, malformed packets, concurrent publish bursts, e-stop bypass,
+  cross-transport parity; FIX: RosBridge spin_once crashed on
+  non-object JSON packets
+- test_thermal_stress.py (18): ladder transitions, 1000-cycle
+  oscillation soak with audit-count verification, combined
+  failure+thermal degradation, concurrent updates, resolve-never-empty
+  guarantee
+- test_model_execution_stress.py (20): real-HTTP launcher detection,
+  backend timeout/malformed/empty handling, 16-way concurrent
+  generation, loopback endpoint allowlist enforcement
+- pyproject: version 1.1.0, all 28 modules packaged, termux extra
+
+335/335 tests pass. Also fixed in this pass: memory-worker thread leak
+(memory_system) and backend robustness hardening (model_backends).

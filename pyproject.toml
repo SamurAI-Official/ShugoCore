@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "shugocore"
-version = "1.0.0"
+version = "1.1.0"
 description = "A continuous orchestration layer for synthetic functional agency: multi-model decisions, tool execution, four-tier memory, deterministic safety interlocks."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -17,13 +17,17 @@ dependencies = ["requests>=2.32.0"]
 torch = ["torch"]
 chromadb = ["chromadb"]
 telemetry = ["opentelemetry-api>=1.20"]
+termux = ["websocket-client>=1.6"]
 
 [project.scripts]
 shugocore-verify-audit = "audit:cli_main"
 
 [tool.setuptools]
-py-modules = ["audit", "autonomy", "decision_engine", "execution_layer",
-              "fallbacks", "logging_manager", "memory_system", "model_backends",
-              "model_manager", "policy", "reinforcement_learning", "security",
-              "state_machine", "subconscious", "task_manager", "token_budget",
-              "vector_db", "version"]
+py-modules = ["acceleration", "android_bridge", "android_node",
+              "android_runtime", "audit", "autonomy", "decision_engine",
+              "execution_layer", "fallbacks", "gazebo_simulation",
+              "logging_manager", "memory_system", "mobile_nodes",
+              "model_backends", "model_manager", "moveit_planner", "policy",
+              "reinforcement_learning", "robotics_handler", "ros2_interface",
+              "security", "state_machine", "subconscious", "task_manager",
+              "telemetry", "token_budget", "vector_db", "version"]

@@ -1,0 +1,13 @@
+requests>=2.32.0
+
+[chromadb]
+chromadb
+
+[telemetry]
+opentelemetry-api>=1.20
+
+[termux]
+websocket-client>=1.6
+
+[torch]
+torch

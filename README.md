@@ -2,6 +2,7 @@
 
 > A continuous orchestration layer for synthetic functional agency.
 
+[![PyPI](https://img.shields.io/pypi/v/shugocore)](https://pypi.org/project/shugocore/)
 ![Release](https://img.shields.io/badge/release-v1.2.0-blue)
 ![Tests](https://img.shields.io/badge/tests-335%20passing-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%E2%80%933.12-blue)
@@ -200,7 +201,13 @@ the first prompt leaves the process.
 
 Requires Python 3.9+.
 
-**From the GitHub release (v1.2.0):**
+**From PyPI (recommended):**
+
+```bash
+pip install shugocore
+```
+
+**From the GitHub release (identical artifacts):**
 
 ```bash
 pip install https://github.com/SamurAI-Official/ShugoCore/releases/download/v1.2.0/shugocore-1.2.0-py3-none-any.whl
@@ -221,9 +228,9 @@ Optional extras:
 - `torch` - enables CUDA/accelerated device selection (CPU-only mode without it)
 - `chromadb` - enables persistent vector storage in `vector_db.py` (stub mode without it)
 
-> PyPI publication is pending the account's API-token migration; the wheel and
-> sdist above are byte-identical to the `v1.2.0` git tag and the GitHub
-> release assets (sha256 recorded on the release page).
+> Published on [PyPI](https://pypi.org/project/shugocore/1.2.0/) - the wheel
+> and sdist there are byte-identical to the `v1.2.0` git tag and the GitHub
+> release assets (sha256 digests recorded on both).
 
 ## Quickstart
 
@@ -376,7 +383,7 @@ Runtime artifacts (`semantic_memory.db`, logs) are local and gitignored.
 - HMAC-signed audit chains and remote log shipping
 - Human approval UI beyond the programmatic broker API
 - Per-model backend pools with health-based routing
-- Publish `shugocore` to PyPI (blocked on the account's API-token migration; release artifacts already exist)
+- CI trusted publishing to PyPI via GitHub Actions (OIDC, no static token)
 - Android llama.cpp-compatible host server for Termux (self-hosted launcher path)
 - NPU bring-up on real devices (Snapdragon Hexagon / Dimensity APU) against the acceleration ladder
 - Fleet dashboard for mobile nodes: pairing state, thermal headroom, offload telemetry

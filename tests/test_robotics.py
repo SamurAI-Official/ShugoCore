@@ -11,8 +11,9 @@ import unittest
 from ros2_interface import (
     JointState, JointTrajectory, JointTrajectoryPoint, LaserScan,
     Pose, Twist, Vector3, StubROS2Interface, create_ros2_interface,
+    sanitize_twist, validate_joint_trajectory,
 )
-from moveit_planner import StubMoveItPlanner, create_moveit_planner
+from moveit_planner import StubMoveItPlanner, _parse_plan_result, create_moveit_planner
 from gazebo_simulation import StubGazeboSimulation, create_gazebo_simulation
 from robotics_handler import RoboticsExecutionHandler
 
@@ -503,6 +504,172 @@ class TestDecisionEngineIntegration(unittest.TestCase):
         engine = DecisionEngine(models, {"type": "chroma"})
         self.assertIsNone(engine.robotics_handler)
 
+
+
+
+class TestPhase3Quality(unittest.TestCase):
+    """Phase 3 hardening: shared validators, plan parsing, stub IK, sim integration."""
+
+    # -- shared message validators (3.3) -------------------------------------
+
+    def test_sanitize_twist_replaces_nan_inf(self):
+        twist = Twist(linear=Vector3(float("nan"), float("inf"), 0.5),
+                      angular=Vector3(0.0, float("-inf"), 0.1))
+        clean = sanitize_twist(twist)
+        self.assertEqual(clean.linear.x, 0.0)
+        self.assertEqual(clean.linear.y, 0.0)
+        self.assertEqual(clean.linear.z, 0.5)
+        self.assertEqual(clean.angular.y, 0.0)
+        self.assertEqual(clean.angular.z, 0.1)
+
+    def test_sanitize_twist_clamps_extremes(self):
+        twist = Twist(linear=Vector3(1e9, -1e9, 0.0), angular=Vector3(0, 0, 0))
+        clean = sanitize_twist(twist)
+        self.assertEqual(clean.linear.x, 100.0)
+        self.assertEqual(clean.linear.y, -100.0)
+
+    def test_validate_joint_trajectory_rejects_empty(self):
+        traj = JointTrajectory(joint_names=[], points=[])
+        with self.assertRaises(ValueError):
+            validate_joint_trajectory(traj)
+
+    def test_validate_joint_trajectory_rejects_non_monotonic_time(self):
+        traj = JointTrajectory(
+            joint_names=["j1"],
+            points=[JointTrajectoryPoint(positions=[0.0], time_from_start=1.0),
+                    JointTrajectoryPoint(positions=[0.5], time_from_start=0.5)],
+        )
+        with self.assertRaises(ValueError):
+            validate_joint_trajectory(traj)
+
+    def test_validate_joint_trajectory_zeroes_nan_positions(self):
+        traj = JointTrajectory(
+            joint_names=["j1", "j2"],
+            points=[JointTrajectoryPoint(positions=[float("nan"), 0.3],
+                                         time_from_start=0.0),
+                    JointTrajectoryPoint(positions=[float("inf"), 0.6],
+                                         time_from_start=1.0)],
+        )
+        result = validate_joint_trajectory(traj)
+        self.assertEqual(result.points[0].positions, [0.0, 0.3])
+        self.assertEqual(result.points[1].positions, [0.0, 0.6])
+
+    def test_validate_joint_trajectory_accepts_valid(self):
+        traj = JointTrajectory(
+            joint_names=["j1"],
+            points=[JointTrajectoryPoint(positions=[0.0], time_from_start=0.0),
+                    JointTrajectoryPoint(positions=[1.0], time_from_start=2.0)],
+        )
+        self.assertIs(validate_joint_trajectory(traj), traj)
+
+    # -- MoveIt plan-result parsing (3.4) ------------------------------------
+
+    def test_parse_plan_result_tuple_success(self):
+        traj = JointTrajectory(joint_names=["j1"], points=[])
+        self.assertIs(_parse_plan_result((True, traj, 0.5)), traj)
+
+    def test_parse_plan_result_tuple_failure(self):
+        traj = JointTrajectory(joint_names=["j1"], points=[])
+        self.assertIsNone(_parse_plan_result((False, traj, 0.5)))
+
+    def test_parse_plan_result_bare_trajectory(self):
+        class FakeRobotTrajectory:
+            joint_trajectory = JointTrajectory(joint_names=["j1"], points=[])
+        fake = FakeRobotTrajectory()
+        # A bare RobotTrajectory (carries .joint_trajectory) is returned as-is;
+        # downstream code extracts .joint_trajectory when converting to our type.
+        self.assertIs(_parse_plan_result(fake), fake)
+
+    def test_parse_plan_result_bare_trajectory_empty_inner(self):
+        class FakeEmptyTrajectory:
+            joint_trajectory = None
+        self.assertIsNone(_parse_plan_result(FakeEmptyTrajectory()))
+
+    def test_parse_plan_result_none_and_garbage(self):
+        self.assertIsNone(_parse_plan_result(None))
+        self.assertIsNone(_parse_plan_result(()))
+        self.assertIsNone(_parse_plan_result((True, None)))
+
+
+    # -- stub IK quality (3.1) -----------------------------------------------
+
+    def test_stub_ik_maps_pose_axes_to_distinct_joints(self):
+        planner = StubMoveItPlanner()
+        js = planner.compute_ik(Pose(position=Vector3(1.0, 0.0, 0.0)))
+        js_y = planner.compute_ik(Pose(position=Vector3(0.0, 1.0, 0.0)))
+        js_z = planner.compute_ik(Pose(position=Vector3(0.0, 0.0, 1.0)))
+        # Each pose axis drives a different joint: verify cross-independence
+        self.assertNotAlmostEqual(js.position[0], js_y.position[0])
+        self.assertNotAlmostEqual(js_y.position[1], js_z.position[1])
+        self.assertAlmostEqual(js_z.position[2], 0.3)  # 1.0 * scale_z
+
+    def test_stub_ik_respects_joint_limits(self):
+        planner = StubMoveItPlanner()
+        huge = Pose(position=Vector3(1e6, 1e6, 1e6))
+        js = planner.compute_ik(huge)
+        for name, pos in zip(js.name, js.position):
+            lo, hi = planner._joint_limits[name]
+            self.assertGreaterEqual(pos, lo)
+            self.assertLessEqual(pos, hi)
+
+    def test_stub_ik_none_pose_returns_none(self):
+        self.assertIsNone(StubMoveItPlanner().compute_ik(None))
+
+    # -- Gazebo command integration (3.2) ------------------------------------
+
+    def _spawn_robot(self, sim):
+        urdf = "<robot name='test'><link name='base'/></robot>"
+        pose = Pose(position=Vector3(0.0, 0.0, 0.0))
+        self.assertTrue(sim.spawn_from_string(urdf, pose, "test_robot"))
+
+    def test_gazebo_applies_twist_on_step(self):
+        sim = StubGazeboSimulation()
+        self._spawn_robot(sim)
+        sim.apply_command(Twist(linear=Vector3(0.5, 0.0, 0.0),
+                                angular=Vector3(0.0, 0.0, 0.0)))
+        sim.step(iterations=100)  # dt = 0.01 * 100 = 1.0s
+        pose = sim.get_model_pose("test_robot")
+        self.assertAlmostEqual(pose.position.x, 0.5, places=6)
+        self.assertAlmostEqual(pose.position.y, 0.0, places=6)
+        sim.shutdown()
+
+    def test_gazebo_displacement_proportional_to_iterations(self):
+        sim = StubGazeboSimulation()
+        self._spawn_robot(sim)
+        sim.apply_command(Twist(linear=Vector3(1.0, 0.0, 0.0),
+                                angular=Vector3(0, 0, 0)))
+        sim.step(iterations=10)
+        x_10 = sim.get_model_pose("test_robot").position.x
+        sim.step(iterations=20)
+        x_30 = sim.get_model_pose("test_robot").position.x
+        delta_20 = x_30 - x_10
+        self.assertAlmostEqual(delta_20 / max(x_10, 1e-9), 2.0, places=6)
+        sim.shutdown()
+
+    def test_gazebo_angular_z_rotates_orientation(self):
+        sim = StubGazeboSimulation()
+        self._spawn_robot(sim)
+        sim.apply_command(Twist(linear=Vector3(0, 0, 0),
+                                angular=Vector3(0.0, 0.0, 1.0)))
+        sim.step(iterations=50)  # dt = 0.5s
+        pose = sim.get_model_pose("test_robot")
+        self.assertAlmostEqual(pose.orientation.z, 0.5, places=6)
+        sim.shutdown()
+
+    def test_gazebo_paused_does_not_integrate(self):
+        sim = StubGazeboSimulation()
+        self._spawn_robot(sim)
+        sim.pause()
+        sim.apply_command(Twist(linear=Vector3(1.0, 0.0, 0.0),
+                                angular=Vector3(0, 0, 0)))
+        sim.step(iterations=100)
+        pose = sim.get_model_pose("test_robot")
+        self.assertAlmostEqual(pose.position.x, 0.0, places=6)
+        sim.unpause()
+        sim.step(iterations=100)
+        self.assertAlmostEqual(sim.get_model_pose("test_robot").position.x,
+                               1.0, places=6)
+        sim.shutdown()
 
 if __name__ == "__main__":
     unittest.main()

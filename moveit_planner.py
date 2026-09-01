@@ -71,18 +71,24 @@ class StubMoveItPlanner(BaseMoveItPlanner):
 
     def compute_ik(self, pose: Pose, frame_id: str = "base_link",
                    joint_state: Optional[JointState] = None) -> Optional[JointState]:
+        """Stub IK: deterministic placeholder mapping pose to joint positions.
+
+        Each joint gets a distinct value derived from the pose, making the
+        stub useful for testing the planning pipeline without a real solver.
+        NOTE: This is NOT a real IK solution — replace with MoveIt for hardware.
+        """
         if pose is None:
             return None
+        # Distinct scaling per joint for realistic test behavior
+        scales = [0.5, 0.4, 0.3, 0.2, 0.1, 0.05]
+        pose_vals = [pose.position.x, pose.position.y, pose.position.z]
         positions = []
         for i, name in enumerate(self._joint_names):
-            if i == 0:
-                pos = math.sin(pose.position.x) * 0.5
-            elif i == 1:
-                pos = math.sin(pose.position.y) * 0.5
-            elif i == 2:
-                pos = math.sin(pose.position.z) * 0.3
+            if i < 3:
+                pos = pose_vals[i] * scales[i]
             else:
-                pos = 0.0
+                # Remaining joints get small derived values
+                pos = (pose_vals[0] + pose_vals[1]) * scales[i]
             lo, hi = self._joint_limits.get(name, (-math.pi, math.pi))
             positions.append(max(lo, min(hi, pos)))
         return JointState(name=list(self._joint_names), position=positions)
@@ -195,6 +201,32 @@ class StubMoveItPlanner(BaseMoveItPlanner):
 # Real MoveIt 2 implementation
 # ---------------------------------------------------------------------------
 
+def _parse_plan_result(plan: Any) -> Optional[Any]:
+    """
+    Robustly parse a MoveIt plan() result across API variants.
+
+    moveit_commander.plan() returns (success: bool, plan_msg, planning_time);
+    other versions return a bare RobotTrajectory (which carries a
+    .joint_trajectory attribute). Returns the trajectory object, or None on
+    planning failure / unrecognised shapes.
+    """
+    if plan is None:
+        return None
+    # Tuple/list shape: (success, plan_msg[, planning_time])
+    if isinstance(plan, (tuple, list)):
+        if len(plan) >= 2 and isinstance(plan[0], bool):
+            return plan[1] if (plan[0] and plan[1]) else None
+        # (plan_msg, ...) without a success flag: use first non-empty element
+        for element in plan:
+            if element:
+                return element
+        return None
+    # Bare trajectory object (RobotTrajectory carries .joint_trajectory)
+    if hasattr(plan, "joint_trajectory"):
+        return plan if plan.joint_trajectory is not None else None
+    return plan if plan else None
+
+
 class MoveItPlanner(BaseMoveItPlanner):
     """Real MoveIt 2 planner. Only instantiated when moveit is available."""
 
@@ -243,16 +275,24 @@ class MoveItPlanner(BaseMoveItPlanner):
         pose_stamped.pose.position.z = pose.position.z
         pose_stamped.pose.orientation.w = 1.0
         self._group.set_pose_target(pose_stamped)
-        plan = self._group.plan()
-        if not plan or not plan[1]:
+        try:
+            plan = _parse_plan_result(self._group.plan())
+        except Exception as exc:
+            logger.error(f"plan_to_pose failed: {exc}")
+            return None
+        if plan is None:
             return None
         return self._convert_plan(plan)
 
     def plan_to_joint_target(self, joint_targets: Dict[str, float]) -> Optional[JointTrajectory]:
         target = [float(joint_targets.get(name, 0.0)) for name in self._joint_names]
         self._group.set_joint_value_target(target)
-        plan = self._group.plan()
-        if not plan or not plan[1]:
+        try:
+            plan = _parse_plan_result(self._group.plan())
+        except Exception as exc:
+            logger.error(f"plan_to_joint_target failed: {exc}")
+            return None
+        if plan is None:
             return None
         return self._convert_plan(plan)
 
@@ -267,7 +307,11 @@ class MoveItPlanner(BaseMoveItPlanner):
             ros_pose.orientation.w = 1.0
             ros_waypoints.append(ros_pose)
         self._group.set_pose_reference_frame(frame_id)
-        plan, fraction = self._group.compute_cartesian_path(ros_waypoints, 0.01, 0.0)
+        try:
+            plan, fraction = self._group.compute_cartesian_path(ros_waypoints, 0.01, 0.0)
+        except Exception as exc:
+            logger.error(f"plan_cartesian_path failed: {exc}")
+            return None
         if fraction < 1.0:
             logger.warning(f"Cartesian path only {fraction:.1%} achievable")
         return self._convert_plan(plan) if plan else None
@@ -279,8 +323,23 @@ class MoveItPlanner(BaseMoveItPlanner):
         return dict(self._joint_limits)
 
     def validate_trajectory(self, trajectory: JointTrajectory) -> Tuple[bool, str]:
+        """Full trajectory validation (mirrors the ROS 2 interface checks)."""
         if not trajectory.points:
             return False, "empty trajectory"
+        if not trajectory.joint_names:
+            return False, "trajectory has no joint names"
+        for i, point in enumerate(trajectory.points):
+            for label, values in (("positions", point.positions),
+                                  ("velocities", point.velocities),
+                                  ("accelerations", point.accelerations)):
+                for v in values:
+                    if math.isnan(v) or math.isinf(v):
+                        return False, f"point {i}: NaN/Inf in {label}"
+            if point.positions and len(point.positions) != len(trajectory.joint_names):
+                return False, f"point {i}: positions/joint_names size mismatch"
+        for i in range(1, len(trajectory.points)):
+            if trajectory.points[i].time_from_start < trajectory.points[i - 1].time_from_start:
+                return False, f"point {i}: time_from_start must be non-decreasing"
         return True, ""
 
     def cancel_all_goals(self) -> None:

@@ -112,6 +112,46 @@ class Pose:
 
 
 # ---------------------------------------------------------------------------
+# Message validation (shared by stub and real implementations)
+# ---------------------------------------------------------------------------
+
+def sanitize_twist(twist: Twist) -> Twist:
+    """Replace NaN/Inf components with 0 and clamp magnitudes to ±100."""
+    def _clean(v: float) -> float:
+        if math.isnan(v) or math.isinf(v):
+            return 0.0
+        return max(-100.0, min(100.0, v))
+    twist.linear = Vector3(_clean(twist.linear.x), _clean(twist.linear.y),
+                           _clean(twist.linear.z))
+    twist.angular = Vector3(_clean(twist.angular.x), _clean(twist.angular.y),
+                            _clean(twist.angular.z))
+    return twist
+
+
+def validate_joint_trajectory(traj: JointTrajectory) -> JointTrajectory:
+    """
+    Validate and sanitize a joint trajectory in place.
+
+    - NaN/Inf positions/velocities/accelerations are zeroed
+    - Raises ValueError on empty joint names or non-monotonic
+      time_from_start values
+    """
+    if not traj.joint_names:
+        raise ValueError("trajectory has no joint names")
+    for point in traj.points:
+        point.positions = [0.0 if math.isnan(v) or math.isinf(v) else v
+                           for v in point.positions]
+        point.velocities = [0.0 if math.isnan(v) or math.isinf(v) else v
+                            for v in point.velocities]
+        point.accelerations = [0.0 if math.isnan(v) or math.isinf(v) else v
+                               for v in point.accelerations]
+    for i in range(1, len(traj.points)):
+        if traj.points[i].time_from_start < traj.points[i - 1].time_from_start:
+            raise ValueError("trajectory time_from_start must be non-decreasing")
+    return traj
+
+
+# ---------------------------------------------------------------------------
 # Base interface
 # ---------------------------------------------------------------------------
 
@@ -209,20 +249,11 @@ class StubROS2Interface(BaseROS2Interface):
         logger.debug(f"[stub] Published on '{topic}': {message}")
 
     def _validate_twist(self, twist: Twist) -> Twist:
-        def _clean(v: float) -> float:
-            if math.isnan(v) or math.isinf(v):
-                return 0.0
-            return max(-100.0, min(100.0, v))
-        twist.linear = Vector3(_clean(twist.linear.x), _clean(twist.linear.y), _clean(twist.linear.z))
-        twist.angular = Vector3(_clean(twist.angular.x), _clean(twist.angular.y), _clean(twist.angular.z))
-        return twist
+        return sanitize_twist(twist)
 
     def _validate_trajectory(self, traj: JointTrajectory) -> JointTrajectory:
-        for point in traj.points:
-            point.positions = [0.0 if math.isnan(v) or math.isinf(v) else v for v in point.positions]
-            point.velocities = [0.0 if math.isnan(v) or math.isinf(v) else v for v in point.velocities]
-            point.accelerations = [0.0 if math.isnan(v) or math.isinf(v) else v for v in point.accelerations]
-        return traj
+        """Delegate to the shared module-level validator."""
+        return validate_joint_trajectory(traj)
 
     def get_subscription_count(self, topic: str) -> int:
         with self._lock:
@@ -323,6 +354,10 @@ class ROS2Interface(BaseROS2Interface):
             publisher = self._publishers.get(topic)
             if publisher is None:
                 raise RuntimeError(f"No publisher registered for topic '{topic}'")
+            if isinstance(message, Twist):
+                message = sanitize_twist(message)
+            elif isinstance(message, JointTrajectory):
+                message = validate_joint_trajectory(message)
             publisher.publish(message)
         logger.debug(f"Published on '{topic}': {message}")
 

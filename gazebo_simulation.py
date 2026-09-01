@@ -52,13 +52,19 @@ class BaseGazeboSimulation:
 
 
 class StubGazeboSimulation(BaseGazeboSimulation):
-    """Deterministic fallback when Gazebo is not installed."""
+    """Deterministic fallback when Gazebo is not installed.
+
+    Integrates commands: Twist on /cmd_vel updates the model pose
+    (simple kinematic integration). This makes the stub useful for
+    testing the full command→effect chain without real Gazebo.
+    """
 
     def __init__(self, max_models: int = 50):
         self._models: Dict[str, Dict[str, Any]] = {}
         self._max_models = max(1, int(max_models))
         self._paused = False
         self._sim_time = 0.0
+        self._last_twist: Dict[str, Any] = {"linear": Vector3(), "angular": Vector3()}
         self._lock = threading.Lock()
         logger.info("[stub] Gazebo simulation initialized")
 
@@ -114,8 +120,24 @@ class StubGazeboSimulation(BaseGazeboSimulation):
         self._paused = False
 
     def step(self, iterations: int = 1) -> None:
+        """Advance simulation and integrate commands into model poses."""
         if not self._paused:
-            self._sim_time += 0.01 * max(1, int(iterations))
+            dt = 0.01 * max(1, int(iterations))
+            self._sim_time += dt
+            # Simple kinematic integration: move models based on last twist
+            for model in self._models.values():
+                pose = model["pose"]
+                pose.position.x += self._last_twist["linear"].x * dt
+                pose.position.y += self._last_twist["linear"].y * dt
+                pose.orientation.z += self._last_twist["angular"].z * dt
+
+    def apply_command(self, twist: Any) -> None:
+        """Apply a velocity command (Twist) to be integrated in the next step."""
+        with self._lock:
+            self._last_twist = {
+                "linear": Vector3(twist.linear.x, twist.linear.y, twist.linear.z),
+                "angular": Vector3(twist.angular.x, twist.angular.y, twist.angular.z),
+            }
 
     def get_model_pose(self, name: str) -> Optional[Pose]:
         with self._lock:

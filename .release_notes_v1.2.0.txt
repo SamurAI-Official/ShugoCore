@@ -1,0 +1,11 @@
+v1.2.0: Multiphase stress-test suite (97 tests) + 3 robustness fixes
+
+Phase 1 lifecycle churn/soak, Phase 2 ROS transport stress, Phase 3 thermal
+oscillation, Phase 4 model execution vs fake llama.cpp/Ollama server.
+
+Fixes found by stress testing:
+- memory-worker thread leak in AndroidShugoCoreNode.stop()
+- JavaBridgeROS2Interface.spin_once malformed-payload crash
+- RosBridgeInterface non-dict packet crash
+
+335 tests passing, including the required 5-second hardware soak.

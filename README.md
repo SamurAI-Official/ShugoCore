@@ -2,6 +2,12 @@
 
 > A continuous orchestration layer for synthetic functional agency.
 
+![Release](https://img.shields.io/badge/release-v1.2.0-blue)
+![Tests](https://img.shields.io/badge/tests-335%20passing-brightgreen)
+![Python](https://img.shields.io/badge/python-3.9%E2%80%933.12-blue)
+![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android%20%28Termux%2FChaquopy%29-lightgrey)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 ShugoCore coordinates models, tools, and a four-tier memory system so that an
 artificial agent can *act* in an environment, register the consequences, and
 adapt - indefinitely, without context degradation or unbounded state growth.
@@ -63,6 +69,19 @@ decoupled maintenance worker that never blocks the primary loop.
 | `policy.py` | Capability registry, approval broker, consent registry |
 | `audit.py` | Tamper-evident hash-chained audit log |
 | `model_backends.py` | Pluggable model adapters (Ollama HTTP, OpenAI-compatible, stub) |
+| `ros2_interface.py` | ROS 2 abstraction: abstract message types, Twist sanitization, stub and rclpy implementations |
+| `android_bridge.py` | Android ↔ ROS 2 transports: JavaBridge (Chaquopy + jros2/Fast-DDS) and rosbridge (WebSocket); JSON payload codec |
+| `android_runtime.py` | Android app lifecycle (`onCreate`/`onPause`/…), power + thermal monitor → fallback triggers, Keystore-backed secrets |
+| `android_node.py` | On-device node roles (sensor / compute / operator / full_agent) and local llama.cpp launcher detection |
+| `mobile_nodes.py` | Host-side mobile fleet: pairing with TTL, topic ACL, compute offload broker, clamped teleop relay |
+| `acceleration.py` | Hardware acceleration ladder (NPU → DSP → GPU → CPU) with thermal demotion and failure degradation |
+| `robotics_handler.py` | Robotics execution handler: verified Twist/trajectory dispatch, emergency stop, watchdog |
+| `state_machine.py` | Strict interlocks for the observation-action loop |
+| `fallbacks.py` | Deterministic fallback controller (stall / budget / breaker triggers → safe state) |
+| `gazebo_simulation.py` | Gazebo/Ignition simulation layer |
+| `moveit_planner.py` | MoveIt 2 motion planning layer |
+| `telemetry.py` | Telemetry hooks |
+| `token_budget.py` | Context budgeting |
 
 ## Memory architecture
 
@@ -127,6 +146,8 @@ defeats nothing:
 | Hash-chained audit log | Every block, approval and execution is appended to a tamper-evident JSONL chain - verify with `python3 audit.py verify audit_chain.jsonl` |
 | Secret hygiene | API keys resolved from environment variables at execution time, never carried in decision dicts; every log record passes a redaction filter |
 | Honest execution | Unimplemented side-effecting actions return `not_implemented` - never simulated success - so the reinforcement signal cannot reward no-ops |
+| Mobile fleet isolation | Android publishers are confined to `/shugocore/mobile/#`; `operator_node` teleop is clamped and relayed - phones never write actuation topics |
+| Local inference confinement | On-device model endpoints must be loopback HTTP(S) on an allowlisted port (`CapabilityRegistry.validate_model_endpoint`) |
 
 Key properties:
 
@@ -139,9 +160,53 @@ Key properties:
 - **Fail-closed everywhere.** Missing verdict, missing consent, missing
   approval channel, unknown host, unknown command - all refuse.
 
+## Android & mobile compute nodes
+
+ShugoCore runs on Android as a first-class ROS 2 participant (v1.1.0). One
+phone can be a sensor, an offload target, a teleop pendant, or a fully
+offline agent - the role is a config switch, and the same gated
+`DecisionEngine` path runs everywhere.
+
+| Role | What the device does |
+|---|---|
+| `sensor_node` | Publishes IMU / GPS / battery / heartbeat under `/shugocore/mobile/<device>/…` |
+| `compute_node` | Accepts `/compute_request` jobs, runs LiteRT/NNAPI inference, publishes results |
+| `operator_node` | Clamped teleop pendant - relays bounded velocity commands only |
+| `full_agent` | Full loopback agent on an offline llama.cpp / Ollama / LM Studio launcher |
+
+Transports: in-process `JavaBridgeROS2Interface` (Chaquopy + jros2 /
+Fast-DDS) or `RosBridgeInterface` (rosbridge JSON-over-WebSocket, the Termux
+path). `AndroidRuntime` maps the Android app lifecycle onto the agent,
+streams power and thermal state into the fallback controller (sustained
+thermal elevation pauses compute), and resolves secrets from the Android
+Keystore.
+
+Accelerator selection is a policy, not a constant: `acceleration.py`
+prefers NPU → DSP → GPU → CPU per workload, degrades on device failure and
+demotes to CPU-only at thermal level 2 - always with a deterministic CPU
+fallback, so nothing breaks on hardware without an NPU.
+
+The Kotlin-side reference client (bridge contract + Gradle app shell) lives
+in [`clients/android/`](clients/android/); the full integration guide - wire
+topics, security model, launcher matrix, SoC accelerator cheat-sheet, Termux
+fallback - is [`docs/android_integration.md`](docs/android_integration.md).
+
+On-device model execution uses standard local launchers: ShugoCore probes
+llama.cpp (`/health`), Ollama (`/api/tags`) and LM Studio (`/v1/models`),
+and every backend URL must pass the loopback + port allowlist check before
+the first prompt leaves the process.
+
 ## Installation
 
 Requires Python 3.9+.
+
+**From the GitHub release (v1.2.0):**
+
+```bash
+pip install https://github.com/SamurAI-Official/ShugoCore/releases/download/v1.2.0/shugocore-1.2.0-py3-none-any.whl
+```
+
+**From source:**
 
 ```bash
 git clone https://github.com/SamurAI-Official/ShugoCore.git
@@ -152,8 +217,13 @@ python decision_engine.py                # run the built-in demo
 
 Optional extras:
 
+- `websocket-client` - rosbridge (WebSocket) transport for Termux-based Android nodes
 - `torch` - enables CUDA/accelerated device selection (CPU-only mode without it)
 - `chromadb` - enables persistent vector storage in `vector_db.py` (stub mode without it)
+
+> PyPI publication is pending the account's API-token migration; the wheel and
+> sdist above are byte-identical to the `v1.2.0` git tag and the GitHub
+> release assets (sha256 recorded on the release page).
 
 ## Quickstart
 
@@ -208,6 +278,41 @@ for fact in candidates:
     #                                authorized_by="operator")
 ```
 
+## Testing
+
+```bash
+python -m unittest discover -s tests -v     # 335 tests, no native deps
+```
+
+Beyond security and integration regression tests (v1.2.0), the suite includes
+hardware-facing stress suites:
+
+- **Lifecycle** - 200 create/pause/resume/destroy cycles, concurrent
+  pause/resume races, monitor resilience against bridge exceptions and
+  garbage sensor data, power edge cases (boundary thresholds, plugged-in
+  overrides, non-numeric battery values), and 25 node start/stop cycles
+  asserted leak-free at the thread level.
+- **ROS 2 transports** - bridge death mid-run, post-shutdown publish,
+  malformed and non-object JSON packets, concurrent publish bursts under the
+  rate limiter, emergency-stop bypass, round-trip payload fidelity, and
+  rosbridge reconnect after socket drop.
+- **Thermal** - ladder demotion at each level, 1000-cycle oscillation soak,
+  combined thermal + power violations, streak/recovery semantics.
+- **Model execution** - launcher detection and generation exercised against a
+  real loopback HTTP double (`tests/fake_llama_server.py`) that speaks the
+  llama.cpp, Ollama and LM Studio wire protocols with injectable failure
+  modes: hang, HTTP 500, malformed JSON, empty choices, artificial latency.
+
+A `sensor_node` soak runs for 5 seconds at 20 Hz against the pure-Python fake
+bridge and asserts monotonic heartbeats plus bounded, non-runaway output -
+this is the startup-routine safety check for real hardware.
+
+To validate model execution against a genuine llama.cpp server:
+
+```bash
+SHUGOCORE_LIVE_LLAMA_URL=http://127.0.0.1:8080 python -m unittest tests.test_live_llama -v
+```
+
 ## Memory configuration
 
 `MemoryManager` knobs (tuned when constructing `MemoryManager` directly;
@@ -237,10 +342,26 @@ ShugoCore/
 ├── audit.py                  # hash-chained audit log (+ verifier CLI)
 ├── reinforcement_learning.py # reward signals and weight updates
 ├── task_manager.py           # bounded queued task execution
+├── state_machine.py          # execution interlocks (stall / budget / breaker)
+├── fallbacks.py              # deterministic fallback controller
 ├── vector_db.py              # optional ChromaDB integration
 ├── logging_manager.py        # structured, redacted logging
 ├── memory_system.py          # four-tier memory architecture
-├── tests/                    # security & integration regression tests
+├── ros2_interface.py         # ROS 2 abstraction (stub + rclpy)
+├── robotics_handler.py       # robotics execution handler (e-stop, watchdog)
+├── gazebo_simulation.py      # Gazebo/Ignition simulation layer
+├── moveit_planner.py         # MoveIt 2 motion planning layer
+├── acceleration.py           # NPU / DSP / GPU / CPU accelerator policy
+├── android_bridge.py         # JavaBridge + rosbridge transports, payload codec
+├── android_runtime.py        # Android lifecycle, power/thermal monitor
+├── android_node.py           # on-device node roles + launcher detection
+├── mobile_nodes.py           # host-side mobile fleet management
+├── telemetry.py              # telemetry hooks
+├── token_budget.py           # context budgeting
+├── version.py                # SemVer, frozen for the 1.x series
+├── clients/android/          # reference Kotlin bridge client + Gradle shell
+├── docs/android_integration.md  # Android integration guide
+├── tests/                    # security, integration & hardware-stress tests
 └── requirements.txt
 ```
 
@@ -255,10 +376,16 @@ Runtime artifacts (`semantic_memory.db`, logs) are local and gitignored.
 - HMAC-signed audit chains and remote log shipping
 - Human approval UI beyond the programmatic broker API
 - Per-model backend pools with health-based routing
+- Publish `shugocore` to PyPI (blocked on the account's API-token migration; release artifacts already exist)
+- Android llama.cpp-compatible host server for Termux (self-hosted launcher path)
+- NPU bring-up on real devices (Snapdragon Hexagon / Dimensity APU) against the acceleration ladder
+- Fleet dashboard for mobile nodes: pairing state, thermal headroom, offload telemetry
 
 ## Contributing
 
 Issues and pull requests are welcome. Please keep changes consistent with
 the architecture's invariants: Tier 0/1 stay per-agent, Tier 2/3 stay
 shareable, and nothing in the standard execution path may mutate Tier 3.
+Hardware-facing changes must keep the lifecycle, thermal, transport and
+model-execution stress suites green (`python -m unittest discover -s tests`).
 

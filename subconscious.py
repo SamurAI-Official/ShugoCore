@@ -23,8 +23,10 @@ import time
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
+
 from model_backends import BaseBackend, create_backend, validate_model_name
 from security import canonical_json, sanitize_text
+from telemetry import get_tracer
 from vector_db import VectorDB
 
 logger = logging.getLogger(__name__)
@@ -113,13 +115,19 @@ class SubconsciousModel:
             task_json=canonical_json(sanitize_text(canonical_json(task_payload), 2000))
         )
         if not validate_model_name(model_name):
+            logger.error(f"Rejected invalid model name: {model_name!r}")
             return ""
-        try:
-            return str(backend.generate(model_name, prompt,
-                                        timeout=self.request_timeout))
-        except Exception as exc:
-            logger.error(f"Model {model_name} call failed: {type(exc).__name__}")
-            return ""
+        with get_tracer("subconscious").start_span(
+                "backend.generate", {"model": sanitize_text(model_name, 64)}) as span:
+            try:
+                output = str(backend.generate(model_name, prompt,
+                                              timeout=self.request_timeout))
+                span.set_attribute("chars", len(output))
+                return output
+            except Exception as exc:
+                span.set_attribute("error", type(exc).__name__)
+                logger.error(f"Model {model_name} call failed: {type(exc).__name__}")
+                return ""
 
 
     # -- success bookkeeping ---------------------------------------------------

@@ -244,6 +244,13 @@ class CircuitBreaker:
                 return True
             return False
 
+    def is_open(self) -> bool:
+        """Pure read: whether the breaker is currently in the open state."""
+        with self._lock:
+            if self._opened_at is None:
+                return False
+            return time.monotonic() - self._opened_at < self.reset_timeout
+
     def record_success(self) -> None:
         with self._lock:
             self._failures = 0

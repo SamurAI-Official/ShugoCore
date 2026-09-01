@@ -1,0 +1,65 @@
+# Changelog
+
+All notable changes are documented here. This project adheres to
+[Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
+frozen: no breaking changes across any 1.x release.
+
+## [1.0.0]
+
+### Added — Engine hardening & determinism (Phase 1)
+- `state_machine.py`: `ExecutionGovernor` with an allowed-transition matrix,
+  re-entrancy guard (recursive tool->agent->tool loops are refused), per-task
+  step budgets and wall-clock deadlines.
+- `fallbacks.py`: `FallbackController` with deterministic, rule-based safe
+  escalation (`pause` default, `safe_state`/`halt` for critical triggers).
+- `token_budget.py`: dependency-free token estimator and `ContextBudget`
+  with rigid per-section allocations; the Tier 0 scratchpad now evicts on a
+  token ceiling and decisions trim memory context to budget.
+
+### Added — Memory tiers (Phase 2)
+- Tier 1 `EpisodicMemory` is now a crash-safe append-only journal
+  (`episodic_journal_path`) with startup replay and age-based eviction.
+- Tier 2 `SemanticMemory` gained an entity graph (`entities`,
+  `fact_entities`): deterministic extraction, `facts_about` /
+  `related_entities` graph queries, merged with vector similarity in hybrid
+  retrieval.
+- Tier 3 `CoreIdentity.system_prompt()` deterministically renders
+  world-model invariants as immutable operational rules.
+- Async maintenance worker gained a watchdog (health stats) and exponential
+  backoff, escalating to the fallback controller on repeated failures.
+
+### Added — Enterprise & developer surface (Phase 3)
+- `version.py` (`__version__ = "1.0.0"`), `pyproject.toml` (installable
+  package, `shugocore-verify-audit` console script).
+- `telemetry.py`: optional OpenTelemetry hooks with a built-in no-op tracer
+  (zero-dependency guarantee preserved).
+- `benchmarks/run.py`: local-first benchmarks for tool-calling accuracy,
+  memory compaction fidelity and step-execution latency.
+
+### Security & integration (from the previous hardening work)
+- Single gated execution path; hash-bound policy verdict tokens; consent
+  registry; approval broker; capability allowlists; egress controls;
+  redacted logging; tamper-evident audit chain; honest (`not_implemented`)
+  execution.
+
+## [0.4.0] - 2026-08-31
+### Changed
+- README expansion: project positioning, design principles, orchestration
+  loop, safety model, install guide.
+
+## [0.3.0] - 2026-08-31
+### Added
+- Tiered memory system (Tier 0-3) with consolidation pipeline, promotion
+  review, Tier 2->Tier 3 ledger-backed promotion.
+
+## [0.2.0] - 2026-08-31
+### Fixed
+- Integration bugs: optional torch/chromadb, autonomy loop guard, subprocess
+  and URL-construction fixes, missing RL/vector/model APIs, ethics-gate
+  demo task. Added `.gitignore`, `requirements.txt`.
+
+## [0.1.0] - 2026-08-31
+### Added
+- Initial modules: decision engine, autonomy, execution layer, model
+  manager, reinforcement learning, task manager, vector DB, logging,
+  subconscious (Ollama subprocess), memory scaffolding.

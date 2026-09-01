@@ -32,6 +32,7 @@ from security import (
     canonical_hash,
     sanitize_text,
 )
+from telemetry import get_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ class ExecutionLayer:
         self.request_timeout = max(1.0, float(request_timeout))
         self._breakers: Dict[str, CircuitBreaker] = {}
         self._handlers: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {}
+        self.tracer = get_tracer("execution_layer")
 
     def register_handler(self, action_type: str,
                          handler: Callable[[Dict[str, Any]], Dict[str, Any]]) -> None:
@@ -133,6 +135,17 @@ class ExecutionLayer:
         if not self.rate_limiter.acquire(host, timeout=5.0):
             return {"status": "refused", "reason": f"rate limit exceeded for host '{host}'"}
 
+        with self.tracer.start_span("http.request",
+                                    {"host": host, "method": method}) as span:
+            result = self._do_request(method, url, host, breaker, params, json_body)
+            span.set_attribute(
+                "status", result.get("status", "unknown"))
+            span.set_attribute("http_status", result.get("http_status", 0))
+        return result
+
+    def _do_request(self, method: str, url: str, host: str, breaker: CircuitBreaker,
+                    params: Optional[Dict[str, Any]],
+                    json_body: Optional[Any]) -> Dict[str, Any]:
         max_bytes = self.capabilities.max_response_bytes
         try:
             with requests.Session() as session:
@@ -172,6 +185,13 @@ class ExecutionLayer:
             self.audit.append(event_type, payload)
         except Exception as exc:
             logger.error(f"Audit append failed: {exc}")
+
+    def breakers_open_count(self) -> int:
+        """
+        Number of hosts whose circuit breakers are currently open. Used by
+        the fallback controller's deterministic trigger checks.
+        """
+        return sum(1 for breaker in self._breakers.values() if breaker.is_open())
 
 
     # -- action implementations ----------------------------------------------

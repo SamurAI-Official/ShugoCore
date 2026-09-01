@@ -30,6 +30,7 @@ except ImportError:
 from audit import AuditChain
 from autonomy import Autonomy
 from execution_layer import ExecutionLayer
+from fallbacks import FallbackController, FallbackHalt
 from logging_manager import LoggingManager
 from memory_system import CoreIdentity, MemoryManager, SemanticMemory
 from model_backends import create_backend, validate_model_name
@@ -48,8 +49,11 @@ from security import (
     redact,
     sanitize_text,
 )
+from state_machine import AgentState, ExecutionGovernor, GovernorError
 from subconscious import SubconsciousModel
 from task_manager import TaskManager
+from telemetry import get_tracer
+from token_budget import ContextBudget, estimate_tokens
 from vector_db import VectorDB
 
 logger = logging.getLogger(__name__)
@@ -60,6 +64,18 @@ _KNOWN_ACTION_TYPES = {
     "api_call", "database_update", "hardware_interaction",
     "news_api", "search_api", "multi_step_process",
 }
+
+
+def _governor_trigger_kind(exc: GovernorError) -> str:
+    """Map a governor interlock to the fallback controller's trigger kind."""
+    message = str(exc).lower()
+    if "step budget" in message:
+        return "step_budget_exhausted"
+    if "deadline" in message:
+        return "task_deadline_exceeded"
+    if "re-entrant" in message or "paused" in message or "halted" in message:
+        return "runaway_loop"
+    return "runaway_loop"
 
 
 class DecisionEngine:
@@ -76,7 +92,13 @@ class DecisionEngine:
                  consents: Optional[ConsentRegistry] = None,
                  audit_path: Optional[str] = "audit_chain.jsonl",
                  request_timeout: float = 10.0,
-                 subconscious_backend: Optional[Any] = None):
+                 subconscious_backend: Optional[Any] = None,
+                 governor: Optional[ExecutionGovernor] = None,
+                 fallbacks: Optional[FallbackController] = None,
+                 step_budget: int = 50,
+                 task_deadline_seconds: float = 120.0,
+                 token_budget: int = 8192,
+                 episodic_journal_path: Optional[str] = None):
         self.models = models
         self.logger = logging.getLogger(__name__)
 
@@ -92,6 +114,19 @@ class DecisionEngine:
         self.audit = AuditChain(audit_path) if audit_path else None
 
         self.vector_db = VectorDB(vector_db_config)
+
+        # Phase 1: strict state-machine interlocks + deterministic fallbacks.
+        self.governor = governor if governor is not None else ExecutionGovernor(
+            step_budget=step_budget,
+            task_deadline_seconds=task_deadline_seconds,
+            audit=self.audit,
+        )
+        self.fallbacks = fallbacks if fallbacks is not None else FallbackController(
+            governor=self.governor,
+            audit=self.audit,
+        )
+        self.context_budget = ContextBudget(total_tokens=token_budget)
+        self.tracer = get_tracer("decision_engine")
 
         # Enable CUDA if available (requires torch)
         if _HAS_TORCH:
@@ -129,7 +164,14 @@ class DecisionEngine:
             semantic=semantic_memory if semantic_memory is not None
             else SemanticMemory(db_path=memory_db_path),
             core=core,
+            episodic_journal_path=episodic_journal_path,
         )
+
+        # Wire deterministic fallbacks into the executor and the memory
+        # worker watchdog (both are collaborator-created, so attach now).
+        self.fallbacks.attach(memory=self.memory,
+                              execution_layer=self.execution_layer)
+        self.memory.set_fallback_controller(self.fallbacks)
 
         self.autonomy = Autonomy(self)
         self._backend_cache: Dict[str, Any] = {}  # per-model backend adapters
@@ -204,8 +246,20 @@ class DecisionEngine:
 
         try:
             context = self.memory.retrieve_context(str(task.get("content", "")))
-            decision["memory_context"] = [sanitize_text(fact["content"], 300)
-                                          for fact in context["semantic"]]
+            # Context budgeting: inject as much retrieval as the
+            # memory_context section allows, most-relevant first.
+            facts = context["semantic"] + context.get("graph", [])
+            snippets = []
+            used = 0
+            budget = self.context_budget.limit("memory_context")
+            for fact in facts:
+                snippet = sanitize_text(fact["content"], 300)
+                tokens = estimate_tokens(snippet)
+                if used + tokens > budget:
+                    break
+                snippets.append(snippet)
+                used += tokens
+            decision["memory_context"] = snippets
         except Exception as exc:
             self.logger.warning(f"Memory context retrieval failed: {exc}")
             decision["memory_context"] = []
@@ -253,36 +307,44 @@ class DecisionEngine:
     # -- gated execution (the ONLY path to the execution layer) --------------
 
     def execute_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
-        """Executes a task through the full policy pipeline."""
+        """
+        Executes a task through the full policy pipeline, interlocked by the
+        execution governor: state-machine transitions, re-entrancy guard,
+        per-task step budget and wall-clock deadline.
+        """
         try:
-            allowed, reason = self._evaluate_policy(task)
-            if not allowed:
-                self.logger.warning(f"Task failed policy checks: {redact(task)}")
-                self._record_block("task", task, reason or "policy check failed")
-                return {"status": "refused", "reason": reason or "policy check failed"}
+            # Deterministic fallback check (stall, open breakers, backlog).
+            self.fallbacks.evaluate()
 
-            decision = self.make_decision(task)
+            try:
+                self.governor.begin_task(task.get("type", "unknown"))
+            except GovernorError as exc:
+                self.logger.warning(f"Governor refused task: {exc}")
+                return {"status": "refused", "reason": sanitize_text(str(exc), 160)}
 
-            if decision.get("action_type") == "multi_step_process":
-                return self._execute_multi_step(task, decision)
-
-            allowed, reason = self._gate_decision(decision)
-            if not allowed:
-                self._record_block("decision", decision, reason or "gated")
-                return {"status": "refused", "reason": reason or "gated"}
-
-            result = self._execute_gated(decision)
-            self.reinforcement_learning.update_model_performance(task, decision, result)
-            self.logging_manager.log_decision(task, redact(decision), redact(result))
-            self.memory.record_event(
-                "tool_execution",
-                {"task_type": sanitize_text(task.get("type", "unknown"), 64),
-                 "action_type": decision.get("action_type"),
-                 "status": str(result.get("status", "unknown")),
-                 "detail": sanitize_text(str(result), 200)},
-            )
-            self.memory.resolve_step()
-            return result
+            try:
+                with self.tracer.start_span("agent.task", {
+                        "task_type": sanitize_text(task.get("type", "unknown"), 64),
+                }) as span:
+                    return self._run_gated_task(task)
+            finally:
+                self.governor.end_task()
+        except FallbackHalt as exc:
+            # Terminal deterministic shutdown; nothing may run until restart.
+            self.logger.critical(f"Deterministic HALT: {exc}")
+            self.memory.record_event("fallback_halt",
+                                     {"detail": type(exc).__name__})
+            return {"status": "refused", "reason": sanitize_text(str(exc), 160),
+                    "terminal": True}
+        except GovernorError as exc:
+            # A budget / deadline / deadlock interlock fired: escalate to the
+            # deterministic fallback controller with the right trigger kind.
+            kind = _governor_trigger_kind(exc)
+            self.fallbacks.report_violation(kind, str(exc))
+            self.logger.error(f"Governor interlock triggered: {exc}")
+            self.memory.record_event("governor_block",
+                                     {"kind": kind, "detail": type(exc).__name__})
+            return {"status": "refused", "reason": sanitize_text(str(exc), 160)}
         except Exception as exc:
             self.memory.record_event(
                 "task_failure",
@@ -292,6 +354,58 @@ class DecisionEngine:
             self.memory.resolve_step()
             self.logging_manager.log_error("Error during task execution", exc)
             return {"status": "error", "message": type(exc).__name__}
+
+    def _run_gated_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        """The gated pipeline, executed one governor state at a time."""
+        self.governor.step(AgentState.GATING)
+        allowed, reason = self._evaluate_policy(task)
+        if not allowed:
+            self.logger.warning(f"Task failed policy checks: {redact(task)}")
+            self._record_block("task", task, reason or "policy check failed")
+            self.fallbacks.report_violation("invariant_violations", reason or "policy")
+            self.governor.step(AgentState.IDLE)
+            return {"status": "refused", "reason": reason or "policy check failed"}
+
+        self.governor.step(AgentState.DECIDING)
+        decision = self.make_decision(task)
+
+        if not decision.get("action_type"):
+            # No valid structured proposal (offline stub models, parse failure):
+            # honest error - never fabricate a success.
+            self.governor.step(AgentState.IDLE)
+            self.memory.resolve_step()
+            return {"status": "error",
+                    "message": "no viable action proposed by the model ensemble"}
+
+        if decision.get("action_type") == "multi_step_process":
+            self.governor.step(AgentState.EXECUTING)
+            result = self._execute_multi_step(task, decision)
+            self.governor.step(AgentState.EVALUATING)
+            self.memory.resolve_step()
+            return result
+
+        allowed, reason = self._gate_decision(decision)
+        if not allowed:
+            self._record_block("decision", decision, reason or "gated")
+            self.governor.step(AgentState.IDLE)
+            self.memory.resolve_step()
+            return {"status": "refused", "reason": reason or "gated"}
+
+        self.governor.step(AgentState.EXECUTING)
+        self.governor.consume_step(1)  # one tool dispatch
+        result = self._execute_gated(decision)
+        self.reinforcement_learning.update_model_performance(task, decision, result)
+        self.logging_manager.log_decision(task, redact(decision), redact(result))
+        self.governor.step(AgentState.EVALUATING)
+        self.memory.record_event(
+            "tool_execution",
+            {"task_type": sanitize_text(task.get("type", "unknown"), 64),
+             "action_type": decision.get("action_type"),
+             "status": str(result.get("status", "unknown")),
+             "detail": sanitize_text(str(result), 200)},
+        )
+        self.memory.resolve_step()
+        return result
 
     def _gate_decision(self, decision: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
         """
@@ -304,6 +418,12 @@ class DecisionEngine:
 
         action_type = decision.get("action_type")
         if action_type in SIDE_EFFECTING_ACTION_TYPES:
+            # SAFE_STATE (critical fallback): read-only mode blocks side effects.
+            # Use .mode (latched) not .state (transient): the governor has
+            # already advanced past SAFE_STATE into EXECUTING by this point.
+            if self.governor.mode is AgentState.SAFE_STATE:
+                return False, ("execution is in SAFE_STATE (read-only); "
+                               "side-effecting action blocked")
             if not self.consents.has_grant(str(action_type)):
                 return False, (f"no external consent grant for side-effecting "
                                f"action '{action_type}'")
@@ -352,6 +472,7 @@ class DecisionEngine:
                 self._record_block("step", sub_decision, reason or "gated")
                 results.append({"status": "refused", "reason": reason or "gated"})
                 continue
+            self.governor.consume_step(1)  # charge each tool dispatch
             results.append(self._execute_gated(sub_decision))
 
         statuses = [str(entry.get("status")) for entry in results]
@@ -475,12 +596,18 @@ class DecisionEngine:
         if task_type == "harmful":
             return False, "invariant: no_harm"
 
-        if task_type in SIDE_EFFECTING_ACTION_TYPES and \
-                not self.consents.has_grant(str(task_type)):
-            self.logger.warning(f"Task type '{task_type}' requires an external "
-                                f"consent grant (self-asserted flags are ignored).")
-            return False, (f"no external consent grant for side-effecting "
-                           f"action '{task_type}'")
+        if task_type in SIDE_EFFECTING_ACTION_TYPES:
+            # SAFE_STATE: read-only mode refuses side-effecting task types.
+            # Use .mode (latched) not .state (transient): begin_task() has
+            # already moved the governor off SAFE_STATE into OBSERVING.
+            if self.governor.mode is AgentState.SAFE_STATE:
+                return False, ("execution is in SAFE_STATE (read-only); "
+                               "side-effecting action blocked")
+            if not self.consents.has_grant(str(task_type)):
+                self.logger.warning(f"Task type '{task_type}' requires an external "
+                                    f"consent grant (self-asserted flags are ignored).")
+                return False, (f"no external consent grant for side-effecting "
+                               f"action '{task_type}'")
 
         if task.get("manipulative", False):
             return False, "invariant: no_manipulation"

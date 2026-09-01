@@ -138,15 +138,25 @@ def verify_audit_file(path: str) -> Tuple[bool, List[str], int]:
     return (not errors), errors, checked
 
 
-if __name__ == "__main__":
-    if len(sys.argv) != 3 or sys.argv[1] != "verify":
-        print("usage: python3 audit.py verify <audit_file>")
-        sys.exit(2)
-    ok, errs, count = verify_audit_file(sys.argv[2])
+def cli_main(argv: Optional[List[str]] = None) -> int:
+    """
+    CLI entry point: ``python3 audit.py verify <file>`` or the
+    ``shugocore-verify-audit`` console script.
+    """
+    import sys as _sys
+    args = list(argv) if argv is not None else _sys.argv[1:]
+    if len(args) != 2 or args[0] != "verify":
+        print("usage: shugocore-verify-audit verify <audit_file>")
+        return 2
+    ok, errs, count = verify_audit_file(args[1])
     if ok:
         print(f"AUDIT CHAIN OK - {count} entries verified")
-        sys.exit(0)
+        return 0
     print(f"AUDIT CHAIN BROKEN - {len(errs)} problem(s) across {count} entries:")
     for err in errs[:20]:
         print(f"  - {err}")
-    sys.exit(1)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(cli_main())

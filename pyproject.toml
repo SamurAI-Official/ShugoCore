@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shugocore"
+version = "1.0.0"
+description = "A continuous orchestration layer for synthetic functional agency: multi-model decisions, tool execution, four-tier memory, deterministic safety interlocks."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "SamurAI-Official" }]
+keywords = ["agent", "orchestration", "memory", "autonomy", "safety"]
+dependencies = ["requests>=2.32.0"]
+
+[project.optional-dependencies]
+torch = ["torch"]
+chromadb = ["chromadb"]
+telemetry = ["opentelemetry-api>=1.20"]
+
+[project.scripts]
+shugocore-verify-audit = "audit:cli_main"
+
+[tool.setuptools]
+py-modules = ["audit", "autonomy", "decision_engine", "execution_layer",
+              "fallbacks", "logging_manager", "memory_system", "model_backends",
+              "model_manager", "policy", "reinforcement_learning", "security",
+              "state_machine", "subconscious", "task_manager", "token_budget",
+              "vector_db", "version"]

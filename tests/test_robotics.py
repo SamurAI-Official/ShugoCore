@@ -297,6 +297,76 @@ class TestRoboticsExecutionHandler(unittest.TestCase):
         self.assertTrue(h.check_watchdog())
 
 
+class TestWatchdogAutoStop(unittest.TestCase):
+    """Test that the watchdog auto-triggers emergency stop on expiry."""
+
+    def test_watchdog_auto_stop(self):
+        h = RoboticsExecutionHandler(watchdog_timeout=0.2)
+        h.start_watchdog()
+        h.handle({"action_type": "robot_navigate", "params": {"linear_x": 0.1}})
+        self.assertFalse(h.is_emergency_stopped())
+        import time
+        time.sleep(0.6)  # wait for watchdog to expire and fire (0.5s check interval)
+        self.assertTrue(h.is_emergency_stopped())
+        h.shutdown()
+
+    def test_watchdog_stopped_by_command(self):
+        h = RoboticsExecutionHandler(watchdog_timeout=0.3)
+        h.start_watchdog()
+        h.handle({"action_type": "robot_navigate", "params": {"linear_x": 0.1}})
+        import time
+        time.sleep(0.1)
+        h.handle({"action_type": "robot_navigate", "params": {"linear_x": 0.2}})  # resets watchdog
+        time.sleep(0.1)
+        self.assertFalse(h.is_emergency_stopped())  # not expired yet
+        h.shutdown()
+
+    def test_stop_watchdog(self):
+        h = RoboticsExecutionHandler(watchdog_timeout=0.1)
+        h.start_watchdog()
+        self.assertTrue(h._watchdog_thread.is_alive())
+        h.stop_watchdog()
+        self.assertIsNone(h._watchdog_thread)
+
+
+class TestEmergencyStopDuringOperation(unittest.TestCase):
+    """Test emergency stop during active operation."""
+
+    def test_emergency_stop_during_navigation(self):
+        h = RoboticsExecutionHandler()
+        h.handle({"action_type": "robot_navigate", "params": {"linear_x": 1.0}})
+        result = h.handle({"action_type": "robot_stop", "params": {}})
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(h.is_emergency_stopped())
+        # Verify zero velocity was published
+        msgs = h._ros2.get_published_messages("/cmd_vel")
+        self.assertEqual(msgs[-1]["message"].linear.x, 0.0)
+
+    def test_emergency_stop_cancels_moveit_goals(self):
+        h = RoboticsExecutionHandler()
+        h.handle({"action_type": "robot_manipulate", "params": {"target": {"x": 0.5, "y": 0.3, "z": 0.2}}})
+        with self.assertLogs("moveit_planner", level="INFO") as cm:
+            h.handle({"action_type": "robot_stop", "params": {}})
+        self.assertTrue(any("cancelled all goals" in msg for msg in cm.output))
+
+    def test_safety_action_bypasses_gates(self):
+        """robot_stop should be in SAFETY_ACTION_TYPES, not ACTION_TYPES."""
+        from robotics_handler import ROBOTICS_SAFETY_ACTION_TYPES, ROBOTICS_ACTION_TYPES
+        self.assertIn("robot_stop", ROBOTICS_SAFETY_ACTION_TYPES)
+        self.assertNotIn("robot_stop", ROBOTICS_ACTION_TYPES)
+
+
+class TestTrajectoryExecution(unittest.TestCase):
+    """Test that trajectories are actually executed after planning."""
+
+    def test_manipulate_publishes_trajectory(self):
+        h = RoboticsExecutionHandler()
+        h.handle({"action_type": "robot_manipulate", "params": {"target": {"x": 0.5, "y": 0.3, "z": 0.2}}})
+        msgs = h._ros2.get_published_messages("/arm_controller/follow_joint_trajectory")
+        self.assertGreaterEqual(len(msgs), 1)
+        self.assertEqual(msgs[0]["message"].joint_names, ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"])
+
+
 class TestRoboticsSecurityIntegration(unittest.TestCase):
     """Test that robotics invariants and fallback triggers are registered."""
 

@@ -143,6 +143,10 @@ class BaseROS2Interface:
     def get_published_messages(self, topic: Optional[str] = None) -> List[Dict[str, Any]]:
         raise NotImplementedError
 
+    def check_connection(self) -> bool:
+        """Return True if the connection is healthy."""
+        raise NotImplementedError
+
 
 # ---------------------------------------------------------------------------
 # Stub implementation (no ROS 2 dependency)
@@ -188,8 +192,12 @@ class StubROS2Interface(BaseROS2Interface):
     def publish(self, topic: str, message: Any) -> None:
         now = time.monotonic()
         with self._lock:
+            # Emergency stop (zero-velocity Twist) bypasses rate limiting
+            is_emergency_stop = (isinstance(message, Twist)
+                                 and message.linear.x == 0.0 and message.linear.y == 0.0
+                                 and message.angular.z == 0.0)
             last = self._last_publish_time.get(topic)
-            if last is not None and (now - last) < self._min_interval:
+            if not is_emergency_stop and last is not None and (now - last) < self._min_interval:
                 logger.debug(f"[stub] Rate-limited publish on '{topic}'")
                 return
             self._last_publish_time[topic] = now
@@ -240,6 +248,10 @@ class StubROS2Interface(BaseROS2Interface):
 
     def get_canned_laser_scan(self) -> LaserScan:
         return self._canned_laser
+
+    def check_connection(self) -> bool:
+        """Stub: always reports healthy (no real connection to monitor)."""
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -299,8 +311,12 @@ class ROS2Interface(BaseROS2Interface):
     def publish(self, topic: str, message: Any) -> None:
         now = time.monotonic()
         with self._lock:
+            # Emergency stop (zero-velocity Twist) bypasses rate limiting
+            is_emergency_stop = (isinstance(message, Twist)
+                                 and message.linear.x == 0.0 and message.linear.y == 0.0
+                                 and message.angular.z == 0.0)
             last = self._last_publish_time.get(topic)
-            if last is not None and (now - last) < self._min_interval:
+            if not is_emergency_stop and last is not None and (now - last) < self._min_interval:
                 logger.debug(f"Rate-limited publish on '{topic}'")
                 return
             self._last_publish_time[topic] = now
@@ -326,6 +342,20 @@ class ROS2Interface(BaseROS2Interface):
 
     def get_published_messages(self, topic: Optional[str] = None) -> List[Dict[str, Any]]:
         return []
+
+    def check_connection(self) -> bool:
+        """Check if the ROS 2 node is still connected to the middleware."""
+        try:
+            if not self._rclpy.ok():
+                return False
+            # Check that at least one publisher has subscriptions
+            for publisher in self._publishers.values():
+                if self._rclpy.publisher_get_subscription_count(publisher) > 0:
+                    return True
+            # No publishers with subscribers yet — node may still be starting
+            return True
+        except Exception:
+            return False
 
 
 # ---------------------------------------------------------------------------

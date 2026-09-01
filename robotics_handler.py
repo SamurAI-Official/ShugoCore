@@ -25,7 +25,10 @@ from gazebo_simulation import create_gazebo_simulation
 logger = logging.getLogger(__name__)
 
 # Action types handled by this handler
-ROBOTICS_ACTION_TYPES = {"robot_navigate", "robot_manipulate", "robot_gripper", "robot_stop"}
+ROBOTICS_ACTION_TYPES = {"robot_navigate", "robot_manipulate", "robot_gripper"}
+# Safety-critical actions: bypass consent/approval gates. Must always be triggerable.
+ROBOTICS_SAFETY_ACTION_TYPES = {"robot_stop"}
+# Read-only actions: no consent required.
 ROBOTICS_READ_ACTION_TYPES = {"robot_query_state", "robot_scan"}
 
 
@@ -59,15 +62,43 @@ class RoboticsExecutionHandler:
         self._last_command_time = time.monotonic()
         self._lock = threading.Lock()
         self._emergency_stop_active = False
+        self._watchdog_stop_event = threading.Event()
+        self._watchdog_thread: Optional[threading.Thread] = None
 
         # Set up ROS 2 interfaces
         self._ros2.create_publisher("/cmd_vel", "Twist")
         self._ros2.create_publisher("/gripper_cmd", "JointTrajectory")
+        self._ros2.create_publisher("/arm_controller/follow_joint_trajectory", "JointTrajectory")
         logger.info("Robotics execution handler initialized")
 
+    def start_watchdog(self) -> None:
+        """Start the background watchdog thread. Auto-stops robot on expiry."""
+        if self._watchdog_thread and self._watchdog_thread.is_alive():
+            return
+        self._watchdog_stop_event.clear()
+        self._watchdog_thread = threading.Thread(
+            target=self._watchdog_loop, name="robotics-watchdog", daemon=True,
+        )
+        self._watchdog_thread.start()
+        logger.info("Robotics watchdog started")
+
+    def _watchdog_loop(self) -> None:
+        """Background loop: check watchdog and auto-stop on expiry."""
+        while not self._watchdog_stop_event.wait(timeout=0.5):
+            if self.check_watchdog() and not self.is_emergency_stopped():
+                logger.warning("Watchdog expired — auto-triggering emergency stop")
+                self._handle_stop({"action_type": "robot_stop", "params": {}})
+
     def handle(self, decision: Dict[str, Any]) -> Dict[str, Any]:
-        """Main dispatch for robotics actions."""
+        """Main dispatch for robotics actions.
+
+        Safety-critical actions (emergency stop) bypass all gates — they must
+        always be triggerable regardless of consent/approval state.
+        """
         action_type = decision.get("action_type", "")
+        # Safety-critical: process before any gate checks
+        if action_type in ROBOTICS_SAFETY_ACTION_TYPES:
+            return self._handle_stop(decision)
         if action_type in ROBOTICS_READ_ACTION_TYPES:
             return self._handle_read(decision)
         if action_type == "robot_navigate":
@@ -76,8 +107,6 @@ class RoboticsExecutionHandler:
             return self._handle_manipulate(decision)
         if action_type == "robot_gripper":
             return self._handle_gripper(decision)
-        if action_type == "robot_stop":
-            return self._handle_stop(decision)
         return {"status": "error", "message": f"unknown robotics action: {action_type}"}
 
     def _handle_navigate(self, decision: Dict[str, Any]) -> Dict[str, Any]:
@@ -98,7 +127,7 @@ class RoboticsExecutionHandler:
         return {"status": "success", "action": "navigate", "twist": twist.to_dict()}
 
     def _handle_manipulate(self, decision: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle arm manipulation via MoveIt 2."""
+        """Handle arm manipulation via MoveIt 2. Plans, validates, then executes."""
         params = decision.get("params", {})
         target = params.get("target", {})
         if not target:
@@ -119,6 +148,8 @@ class RoboticsExecutionHandler:
         # Check collision
         if self._moveit.check_collision(trajectory):
             return {"status": "refused", "reason": "collision detected"}
+        # Execute: publish trajectory to the arm controller
+        self._ros2.publish("/arm_controller/follow_joint_trajectory", trajectory)
         self._update_watchdog()
         return {"status": "success", "action": "manipulate", "joints": trajectory.joint_names}
 
@@ -138,8 +169,10 @@ class RoboticsExecutionHandler:
         """Emergency stop — immediate halt, cancel all goals."""
         with self._lock:
             self._emergency_stop_active = True
-        # Publish zero velocity
+        # Publish zero velocity to stop mobile base
         self._ros2.publish("/cmd_vel", Twist())
+        # Cancel any active MoveIt trajectory goals
+        self._moveit.cancel_all_goals()
         self._audit_log("emergency_stop", {})
         return {"status": "success", "action": "emergency_stop"}
 
@@ -176,6 +209,13 @@ class RoboticsExecutionHandler:
         """Check if watchdog has expired. Returns True if expired."""
         return (time.monotonic() - self._last_command_time) > self._watchdog_timeout
 
+    def stop_watchdog(self) -> None:
+        """Stop the background watchdog thread."""
+        self._watchdog_stop_event.set()
+        if self._watchdog_thread and self._watchdog_thread.is_alive():
+            self._watchdog_thread.join(timeout=2.0)
+        self._watchdog_thread = None
+
     def is_emergency_stopped(self) -> bool:
         """Check if emergency stop is active."""
         with self._lock:
@@ -198,6 +238,7 @@ class RoboticsExecutionHandler:
 
     def shutdown(self) -> None:
         """Shut down all robotics modules."""
+        self.stop_watchdog()
         self._ros2.shutdown()
         self._moveit.shutdown()
         self._gazebo.shutdown()

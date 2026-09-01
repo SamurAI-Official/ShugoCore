@@ -38,6 +38,9 @@ class BaseMoveItPlanner:
         raise NotImplementedError
     def validate_trajectory(self, trajectory: JointTrajectory) -> Tuple[bool, str]:
         raise NotImplementedError
+    def cancel_all_goals(self) -> None:
+        raise NotImplementedError
+
     def shutdown(self) -> None:
         raise NotImplementedError
 
@@ -168,6 +171,9 @@ class StubMoveItPlanner(BaseMoveItPlanner):
         point = JointTrajectoryPoint(positions=list(positions), time_from_start=1.0)
         return JointTrajectory(joint_names=list(self._joint_names), points=[point])
 
+    def cancel_all_goals(self) -> None:
+        logger.info("[stub] MoveIt: cancelled all goals")
+
     def shutdown(self) -> None:
         logger.info("[stub] MoveIt planner shut down")
 
@@ -263,6 +269,10 @@ class MoveItPlanner(BaseMoveItPlanner):
         if not trajectory.points:
             return False, "empty trajectory"
         return True, ""
+
+    def cancel_all_goals(self) -> None:
+        self._group.stop()
+        logger.info("MoveIt 2: cancelled all goals")
 
     def shutdown(self) -> None:
         logger.info("MoveIt 2 planner shut down")

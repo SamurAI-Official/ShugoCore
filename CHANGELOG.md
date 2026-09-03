@@ -4,7 +4,7 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
-## [1.4.0]
+## [1.4.0] - 2026-09-03
 
 ### Added — fleet-shared Tier 2 memory (PostgreSQL + pgvector)
 
@@ -44,7 +44,7 @@ frozen: no breaking changes across any 1.x release.
   (read-only identity), preserving the memory invariants (N0-N1) across the
   fleet.
 
-## [1.3.0]
+## [1.3.0] - 2026-09-03
 
 ### Added — hardening for Continuous Synthetic Functional Agency
 
@@ -82,7 +82,7 @@ frozen: no breaking changes across any 1.x release.
 - `pyproject.toml` version was left at 1.2.0 after the 1.2.1 bump; both now
   share the single source of truth in `version.py` values.
 
-## [1.2.1]
+## [1.2.1] - 2026-09-02
 
 ### Added — Shogunet multi-agent networking integration
 

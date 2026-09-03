@@ -51,6 +51,11 @@ DEFAULT_SEVERITIES = {
     "device_power_low": "pause",
     "device_thermal_high": "pause",
     "accelerator_failure": "pause",
+    # Network/Shogunet triggers
+    "network_transport_exhausted": "pause",
+    "network_peer_lost": "pause",
+    "memory_sync_conflict_storm": "safe_state",
+    "audit_chain_broken": "halt",
 }
 # Violations that escalate on first occurrence.
 _IMMEDIATE = {"step_budget_exhausted", "task_deadline_exceeded",

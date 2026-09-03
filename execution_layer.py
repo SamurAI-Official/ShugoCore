@@ -28,6 +28,8 @@ from policy import (
     CapabilityRegistry,
     MOBILE_ACTION_TYPES,
     MOBILE_READ_ACTION_TYPES,
+    NETWORK_ACTION_TYPES,
+    NETWORK_READ_ACTION_TYPES,
     ROBOTICS_ACTION_TYPES,
     ROBOTICS_READ_ACTION_TYPES,
     ROBOTICS_SAFETY_ACTION_TYPES,
@@ -74,7 +76,8 @@ class ExecutionLayer:
         allowed = (SIDE_EFFECTING_ACTION_TYPES
                    | ROBOTICS_ACTION_TYPES | ROBOTICS_SAFETY_ACTION_TYPES
                    | ROBOTICS_READ_ACTION_TYPES
-                   | MOBILE_ACTION_TYPES | MOBILE_READ_ACTION_TYPES)
+                   | MOBILE_ACTION_TYPES | MOBILE_READ_ACTION_TYPES
+                   | NETWORK_ACTION_TYPES | NETWORK_READ_ACTION_TYPES)
         if action_type not in allowed:
             raise ValueError(f"handlers are only allowed for allowed types "
                              f"{sorted(allowed)}")

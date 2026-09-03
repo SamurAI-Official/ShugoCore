@@ -3,8 +3,8 @@
 > A continuous orchestration layer for synthetic functional agency.
 
 [![PyPI](https://img.shields.io/pypi/v/shugocore)](https://pypi.org/project/shugocore/)
-![Release](https://img.shields.io/badge/release-v1.2.0-blue)
-![Tests](https://img.shields.io/badge/tests-335%20passing-brightgreen)
+![Release](https://img.shields.io/badge/release-v1.2.1-blue)
+![Tests](https://img.shields.io/badge/tests-350%20passing-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%E2%80%933.12-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android%20%28Termux%2FChaquopy%29-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -75,6 +75,7 @@ decoupled maintenance worker that never blocks the primary loop.
 | `android_runtime.py` | Android app lifecycle (`onCreate`/`onPause`/…), power + thermal monitor → fallback triggers, Keystore-backed secrets |
 | `android_node.py` | On-device node roles (sensor / compute / operator / full_agent) and local llama.cpp launcher detection |
 | `mobile_nodes.py` | Host-side mobile fleet: pairing with TTL, topic ACL, compute offload broker, clamped teleop relay |
+| `shugonet_bridge.py` | Multi-agent networking via Shogunet: send/query/sync actions, fleet memory mesh |
 | `acceleration.py` | Hardware acceleration ladder (NPU → DSP → GPU → CPU) with thermal demotion and failure degradation |
 | `robotics_handler.py` | Robotics execution handler: verified Twist/trajectory dispatch, emergency stop, watchdog |
 | `state_machine.py` | Strict interlocks for the observation-action loop |
@@ -197,6 +198,83 @@ llama.cpp (`/health`), Ollama (`/api/tags`) and LM Studio (`/v1/models`),
 and every backend URL must pass the loopback + port allowlist check before
 the first prompt leaves the process.
 
+## Multi-agent networking with Shogunet
+
+ShugoCore integrates with [Shogunet](https://github.com/SamurAI-Official/Shogunet)
+for networking between multiple Shugocore agents. This enables fleet-wide
+collaboration over 5G, 4G, WiFi, LoRa, and Bluetooth networks with a
+codependent memory mesh.
+
+### Network action types
+
+| Action | Type | Description |
+|---|---|---|
+| `network_send` | Side-effecting | Send a message/request to a peer agent |
+| `network_query` | Side-effecting | Query the fleet's memory mesh |
+| `network_sync` | Side-effecting | Sync facts / digest exchange |
+| `network_list_agents` | Read-only | List paired agents in the fleet |
+| `network_status` | Read-only | Get network health/status |
+
+Side-effecting network actions require operator consent and approval, following
+the same pattern as other side-effecting actions.
+
+### Quickstart
+
+```python
+from decision_engine import DecisionEngine
+from shugonet_bridge import (
+    ShugonetExecutionHandler,
+    register_network_handlers,
+    attach_network_fallbacks,
+)
+from agent_runtime import ShugonetAgentRuntime
+
+# Create and connect the Shogunet runtime
+runtime = ShugonetAgentRuntime(
+    agent_id="agent-001",
+    host_tcp_host="127.0.0.1",
+    host_tcp_port=9000,
+    host_relay_url="http://127.0.0.1:9001",
+)
+runtime.connect_to_host()
+
+# Create the execution handler
+shogonet_handler = ShugonetExecutionHandler(runtime)
+
+# Create the decision engine with the network handler
+engine = DecisionEngine(
+    models=models,
+    vector_db_config={'type': 'chroma'},
+    shogonet_handler=shogonet_handler,
+)
+
+# Or register handlers after engine creation
+register_network_handlers(engine.execution_layer, runtime)
+attach_network_fallbacks(engine.fallbacks)
+```
+
+### Network fallback triggers
+
+| Trigger | Severity | Description |
+|---|---|---|
+| `network_transport_exhausted` | pause | All transports failed |
+| `network_peer_lost` | pause | A paired agent disconnected |
+| `memory_sync_conflict_storm` | safe_state | Excessive sync conflicts |
+| `audit_chain_broken` | halt | Audit integrity failure |
+
+### Integration architecture
+
+The `shugonet_bridge.py` module follows the same pattern as `robotics_handler.py`
+and `mobile_nodes.py`:
+
+1. **Action types** are defined in `policy.py` and added to `KNOWN_ACTION_TYPES`
+2. **Execution handler** dispatches network actions to the Shogunet runtime
+3. **Fallback severities** are registered in the deterministic fallback controller
+4. **Handler registration** occurs during `DecisionEngine` initialization
+
+The bridge uses duck-typed contracts, so the Shogunet runtime can be swapped
+with any compatible implementation.
+
 ## Installation
 
 Requires Python 3.9+.
@@ -210,7 +288,7 @@ pip install shugocore
 **From the GitHub release (identical artifacts):**
 
 ```bash
-pip install https://github.com/SamurAI-Official/ShugoCore/releases/download/v1.2.0/shugocore-1.2.0-py3-none-any.whl
+pip install https://github.com/SamurAI-Official/ShugoCore/releases/download/v1.2.1/shugocore-1.2.1-py3-none-any.whl
 ```
 
 **From source:**
@@ -228,8 +306,8 @@ Optional extras:
 - `torch` - enables CUDA/accelerated device selection (CPU-only mode without it)
 - `chromadb` - enables persistent vector storage in `vector_db.py` (stub mode without it)
 
-> Published on [PyPI](https://pypi.org/project/shugocore/1.2.0/) - the wheel
-> and sdist there are byte-identical to the `v1.2.0` git tag and the GitHub
+> Published on [PyPI](https://pypi.org/project/shugocore/1.2.1/) - the wheel
+> and sdist there are byte-identical to the `v1.2.1` git tag and the GitHub
 > release assets (sha256 digests recorded on both).
 
 ## Quickstart
@@ -363,6 +441,7 @@ ShugoCore/
 ├── android_runtime.py        # Android lifecycle, power/thermal monitor
 ├── android_node.py           # on-device node roles + launcher detection
 ├── mobile_nodes.py           # host-side mobile fleet management
+├── shugonet_bridge.py        # multi-agent networking via Shogunet
 ├── telemetry.py              # telemetry hooks
 ├── token_budget.py           # context budgeting
 ├── version.py                # SemVer, frozen for the 1.x series

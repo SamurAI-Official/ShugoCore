@@ -82,6 +82,18 @@ except ImportError:
     MOBILE_ACTION_TYPES = frozenset()
     MOBILE_READ_ACTION_TYPES = frozenset()
 
+try:
+    from shugonet_bridge import (
+        ShugonetExecutionHandler,
+        NETWORK_ACTION_TYPES,
+        NETWORK_READ_ACTION_TYPES,
+    )
+    _HAS_SHUGONET = True
+except ImportError:
+    _HAS_SHUGONET = False
+    NETWORK_ACTION_TYPES = frozenset()
+    NETWORK_READ_ACTION_TYPES = frozenset()
+
 logger = logging.getLogger(__name__)
 
 _PROPOSAL_JSON_PATTERN = re.compile(r"\{.*\}", re.DOTALL)
@@ -96,11 +108,15 @@ if _HAS_ROBOTICS:
                             | ROBOTICS_READ_ACTION_TYPES)
 if _HAS_MOBILE:
     _KNOWN_ACTION_TYPES |= MOBILE_ACTION_TYPES | MOBILE_READ_ACTION_TYPES
+if _HAS_SHUGONET:
+    _KNOWN_ACTION_TYPES |= NETWORK_ACTION_TYPES | NETWORK_READ_ACTION_TYPES
 # Compute offload leaves the host and runs on a personal device: consent-
 # gated exactly like the other side-effecting actions.
+_NETWORK_CONSENT_GATED = NETWORK_ACTION_TYPES if _HAS_SHUGONET else frozenset()
 _CONSENT_GATED_ACTION_TYPES = (SIDE_EFFECTING_ACTION_TYPES
                                | (MOBILE_ACTION_TYPES if _HAS_MOBILE
-                                  else frozenset()))
+                                  else frozenset())
+                               | _NETWORK_CONSENT_GATED)
 
 
 def _governor_trigger_kind(exc: GovernorError) -> str:
@@ -137,7 +153,8 @@ class DecisionEngine:
                  token_budget: int = 8192,
                  episodic_journal_path: Optional[str] = None,
                  robotics_handler: Optional[Any] = None,
-                 mobile_handler: Optional[Any] = None):
+                 mobile_handler: Optional[Any] = None,
+                 shogonet_handler: Optional[Any] = None):
         self.models = models
         self.logger = logging.getLogger(__name__)
 
@@ -199,6 +216,12 @@ class DecisionEngine:
             for action_type in (MOBILE_ACTION_TYPES | MOBILE_READ_ACTION_TYPES):
                 self.execution_layer.register_handler(
                     action_type, self.mobile_handler.handle)
+        # Shogunet network handler: register for all network action types
+        self.shogonet_handler = shogonet_handler
+        if _HAS_SHUGONET and self.shogonet_handler is not None:
+            for action_type in (NETWORK_ACTION_TYPES | NETWORK_READ_ACTION_TYPES):
+                self.execution_layer.register_handler(
+                    action_type, self.shogonet_handler.handle)
         self.model_manager = ModelManager(models)
         self.reinforcement_learning = ReinforcementLearning(self.model_manager)
         self.task_manager = TaskManager()

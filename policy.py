@@ -38,10 +38,15 @@ ROBOTICS_READ_ACTION_TYPES = {"robot_query_state", "robot_scan"}
 MOBILE_ACTION_TYPES = {"mobile_request_compute"}
 # Mobile fleet read-only actions.
 MOBILE_READ_ACTION_TYPES = {"mobile_list_nodes", "mobile_node_status"}
+# Network/Shogunet actions: multi-agent collaboration over 5G/4G/WiFi/LoRa/BT
+NETWORK_ACTION_TYPES = {"network_send", "network_query", "network_sync"}
+# Network read-only actions: no consent required.
+NETWORK_READ_ACTION_TYPES = {"network_list_agents", "network_status"}
 KNOWN_ACTION_TYPES = (SIDE_EFFECTING_ACTION_TYPES | EXTERNAL_READ_ACTION_TYPES
                       | ROBOTICS_ACTION_TYPES | ROBOTICS_SAFETY_ACTION_TYPES
                       | ROBOTICS_READ_ACTION_TYPES | MOBILE_ACTION_TYPES
-                      | MOBILE_READ_ACTION_TYPES | {"multi_step_process"})
+                      | MOBILE_READ_ACTION_TYPES | NETWORK_ACTION_TYPES
+                      | NETWORK_READ_ACTION_TYPES | {"multi_step_process"})
 
 
 

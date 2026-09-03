@@ -4,6 +4,34 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.2.1]
+
+### Added — Shogunet multi-agent networking integration
+
+- `shugonet_bridge.py` — ShugoCore-side adapter for the Shogunet networking
+  layer, following the same pattern as `robotics_handler.py` and
+  `mobile_nodes.py`. Enables multi-agent collaboration over 5G, 4G, WiFi,
+  LoRa, and Bluetooth with a codependent memory mesh.
+  - `ShugonetExecutionHandler` dispatches network actions to the Shogunet
+    `ShugonetAgentRuntime`.
+  - `register_network_handlers()` registers network action types with the
+    `ExecutionLayer` and `policy.KNOWN_ACTION_TYPES`.
+  - `attach_network_fallbacks()` merges network trigger severities into the
+    deterministic `FallbackController`.
+  - Network action types: `network_send`, `network_query`, `network_sync`
+    (side-effecting) and `network_list_agents`, `network_status`
+    (read-only).
+  - Network fallback triggers: `network_transport_exhausted` (pause),
+    `network_peer_lost` (pause), `memory_sync_conflict_storm` (safe_state),
+    `audit_chain_broken` (halt).
+  - `network_topic()` helper for canonical `/shugunet/{agent_id}/{tail}`
+    topic construction.
+- `tests/test_shugonet.py` — 22 integration tests covering action type
+  registration, handler dispatch, fallback severity integration, and
+  execution-layer compatibility.
+- `DecisionEngine` now accepts an optional `shogonet_handler` parameter
+  for automatic handler registration at engine construction time.
+
 ## [1.2.0]
 
 ### Added — Multiphase stress-test suite (97 tests) and robustness fixes

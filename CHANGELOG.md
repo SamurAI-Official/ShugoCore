@@ -4,6 +4,46 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.4.0]
+
+### Added — fleet-shared Tier 2 memory (PostgreSQL + pgvector)
+
+- **`pg_memory.py`** — `PgSemanticMemory`, a drop-in PostgreSQL + pgvector
+  backend for Tier 2 semantic memory, enabling the persistence half of the
+  Shogunet memory mesh: several agents (or planning nodes) pointing at the
+  same DSN see one consistent knowledge base. API parity with the SQLite
+  `SemanticMemory` (store_fact / search / reinforce / decay / prune /
+  get_fact / extract_entities / facts_about / related_entities /
+  entity_names), so it plugs directly into
+  `DecisionEngine(semantic_memory=...)` and `MemoryManager(semantic=...)`.
+- **`open_semantic_memory()` factory** — single storage knob for operators:
+  a `postgres://` or `postgresql://` DSN selects `PgSemanticMemory`; any
+  other value preserves the historical local SQLite behavior.
+  `DecisionEngine` routes `memory_db_path` through it, so switching a fleet
+  to shared memory is a one-line config change.
+- **Embedding parity** — the pg backend embeds with the same deterministic
+  hashing embedding as the SQLite backend, so facts written by one agent on
+  one backend are retrievable with identical similarity scores by another
+  agent on the other backend.
+- **Search pushed down to pgvector** — cosine distance (`<=>`) is computed
+  server-side (`similarity = 1 - distance`), with an optional HNSW index
+  recipe for fleet scale documented in the module docstring.
+- **Fail-closed, no silent stub** — construction raises with actionable
+  instructions if psycopg2 is missing (`pip install 'shugocore[postgres]'`)
+  or the pgvector extension is unavailable (`CREATE EXTENSION vector;`).
+  A fleet-shared memory that quietly failed to persist would violate the
+  Tier 2 invariants, so none exists.
+- **`postgres` optional dependency** — `pip install 'shugocore[postgres]'`
+  installs psycopg2-binary; no new required dependencies for existing users.
+
+### Hardened — fleet memory boundary
+
+- Table identifiers (`table_prefix`) are strictly validated
+  (`^[a-z][a-z0-9_]{0,40}$`) before interpolation into DDL/DML.
+- Tier 2 only: the pg store never touches Tier 0/1 (per-agent) or Tier 3
+  (read-only identity), preserving the memory invariants (N0-N1) across the
+  fleet.
+
 ## [1.3.0]
 
 ### Added — hardening for Continuous Synthetic Functional Agency

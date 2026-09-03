@@ -35,6 +35,7 @@ from logging_manager import LoggingManager
 from memory_system import CoreIdentity, MemoryManager, SemanticMemory
 from model_backends import create_backend, validate_model_name
 from model_manager import ModelManager
+from pg_memory import open_semantic_memory
 from policy import (
     SIDE_EFFECTING_ACTION_TYPES,
     ApprovalBroker,
@@ -238,7 +239,7 @@ class DecisionEngine:
         self.memory = MemoryManager(
             agent_id="decision_engine",
             semantic=semantic_memory if semantic_memory is not None
-            else SemanticMemory(db_path=memory_db_path),
+            else open_semantic_memory(memory_db_path),
             core=core,
             episodic_journal_path=episodic_journal_path,
         )

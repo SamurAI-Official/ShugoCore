@@ -386,9 +386,11 @@ class EthicsHardeningTestCase(unittest.TestCase):
         result = self.engine.execute_task(task)
         self.assertEqual(result.get("status"), "refused")
         self.assertIn("explanation", result.get("reason", "").lower())
+
+
 class VersionTestCase(unittest.TestCase):
     def test_version_is_1_2(self):
-        self.assertEqual(__version__, "1.3.0")
+        self.assertEqual(__version__, "1.4.0")
 
 
 if __name__ == "__main__":

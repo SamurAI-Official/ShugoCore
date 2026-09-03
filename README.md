@@ -3,8 +3,8 @@
 > A continuous orchestration layer for synthetic functional agency.
 
 [![PyPI](https://img.shields.io/pypi/v/shugocore)](https://pypi.org/project/shugocore/)
-![Release](https://img.shields.io/badge/release-v1.3.0-blue)
-![Tests](https://img.shields.io/badge/tests-386%20passing-brightgreen)
+![Release](https://img.shields.io/badge/release-v1.4.0-blue)
+![Tests](https://img.shields.io/badge/tests-410%20passing-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%E2%80%933.12-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android%20%28Termux%2FChaquopy%29-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -328,6 +328,42 @@ for dashboards and the Shogunet network bridge.
   environment observations are now actually searchable in cosine space
  an injected `embedding_fn` lets callers plug in real embedding models.
 
+## Fleet-shared memory (PostgreSQL + pgvector)
+
+By default Tier 2 semantic memory is local SQLite (`semantic_memory.db`).
+For multi-agent deployments - the persistence half of the Shogunet memory
+mesh - several agents can share one PostgreSQL-backed knowledge base::
+
+    pip install 'shugocore[postgres]'
+
+Then point `memory_db_path` at a DSN (a one-line config change; the engine
+routes it through `pg_memory.open_semantic_memory()`)::
+
+    from pg_memory import open_semantic_memory
+    from decision_engine import DecisionEngine
+
+    engine = DecisionEngine(models=models,
+                            memory_db_path="postgresql://user:pw@db:5432/fleet")
+
+- **Drop-in parity** - `PgSemanticMemory` implements the full `SemanticMemory`
+  surface (facts, entity graph, salience reinforce/decay/prune), so it can
+  also be passed explicitly via `DecisionEngine(semantic_memory=...)` or
+  `MemoryManager(semantic=...)`.
+- **Embedding parity** - identical deterministic hashing embeddings to the
+  SQLite backend, so facts written by one agent on one backend are
+  retrievable with the same similarity scores by another agent on the other.
+- **Server-side vector search** - cosine distance is computed by pgvector
+  (`<=>`); for fleet scale add an HNSW index (recipe in the module
+  docstring).
+- **Fail-closed** - missing psycopg2 or an unavailable pgvector extension
+  raises with actionable instructions at construction; there is no silent
+  local-fallback that would pretend to persist fleet memory.
+- **Tier 2 only** - Tier 0/1 stay per-agent and Tier 3 stays read-only
+  local, preserving the memory invariants (N0-N1) across the fleet.
+
+One-time server prerequisite: `CREATE EXTENSION vector;`
+([pgvector](https://github.com/pgvector/pgvector)).
+
 ## Installation
 
 Requires Python 3.9+.
@@ -341,7 +377,7 @@ pip install shugocore
 **From the GitHub release (identical artifacts):**
 
 ```bash
-pip install https://github.com/SamurAI-Official/ShugoCore/releases/download/v1.3.0/shugocore-1.3.0-py3-none-any.whl
+pip install https://github.com/SamurAI-Official/ShugoCore/releases/download/v1.4.0/shugocore-1.4.0-py3-none-any.whl
 ```
 
 **From source:**
@@ -358,9 +394,11 @@ Optional extras:
 - `websocket-client` - rosbridge (WebSocket) transport for Termux-based Android nodes
 - `torch` - enables CUDA/accelerated device selection (CPU-only mode without it)
 - `chromadb` - enables persistent vector storage in `vector_db.py` (stub mode without it)
+- `shugonet` - Shogunet networking runtime for multi-agent fleets (`shugonet_bridge.py`)
+- `psycopg2-binary` - PostgreSQL + pgvector fleet-shared Tier 2 memory (`pg_memory.py`)
 
-> Published on [PyPI](https://pypi.org/project/shugocore/1.3.0/) - the wheel
-> and sdist there are byte-identical to the `v1.3.0` git tag and the GitHub
+> Published on [PyPI](https://pypi.org/project/shugocore/1.4.0/) - the wheel
+> and sdist there are byte-identical to the `v1.4.0` git tag and the GitHub
 > release assets (sha256 digests recorded on both).
 
 ## Quickstart

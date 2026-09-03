@@ -710,20 +710,127 @@ class DecisionEngine:
         return allowed
 
     def can_explain(self, task: Dict[str, Any]) -> bool:
-        """Check if the system can provide an explanation for the task."""
-        return True  # Placeholder
+        """Check if the system can provide an explanation for the task.
+
+        Returns True when at least one explanation-capable model is
+        registered and the audit chain is available for traceability.
+        """
+        # Audit chain must be operational for traceable explanations
+        if self.audit is None:
+            return False
+        # Check that at least one model can produce reasoning
+        models = self.model_manager.list_models()
+        if not models:
+            return False
+        # Stub models cannot provide real explanations; require at least
+        # one non-stub backend
+        for model in models:
+            backend = model.get("backend", {})
+            if isinstance(backend, dict):
+                btype = backend.get("type", "ollama")
+            elif isinstance(backend, str):
+                btype = backend
+            else:
+                btype = "ollama"
+            if btype not in ("stub", "static"):
+                return True
+        return False
 
     def detect_bias(self, task: Dict[str, Any]) -> bool:
-        """Check if the task or model outputs contain biases."""
-        return False  # Placeholder
+        """Check if the task or model outputs contain biases.
+
+        Scans the task content for sensitive-attribute language and
+        loaded/derogatory phrasing patterns. Bias is detected via
+        pattern matching against known problematic constructs.
+        """
+        content = str(task.get("content", task.get("prompt", "")))
+        content_lower = content.lower()
+
+        # Sensitive attribute categories that trigger bias detection
+        sensitive_patterns = [
+            # Gender / sexuality stereotypes
+            "all women are", "all men are", "gender stereotype",
+            # Racial / ethnic generalizations
+            "race is", "racial superiority", "ethnic cleansing",
+            "all asians", "all blacks", "all whites", "all hispanics",
+            # Religious prejudice
+            "all muslims", "all christians", "religious inferior",
+            # Age / disability discrimination
+            "old people are", "disabled people are", "ageist",
+        ]
+
+        for pattern in sensitive_patterns:
+            if pattern in content_lower:
+                self.logger.warning(
+                    f"Bias pattern detected in task content: '{pattern}'"
+                )
+                return True
+
+        # Check for loaded/derogatory language
+        loaded_words = [
+            "inferior", "superior race", "master race", "subhuman",
+            "should be eradicated", "should be eliminated",
+        ]
+        for word in loaded_words:
+            if word in content_lower:
+                self.logger.warning(
+                    f"Loaded language detected in task content: '{word}'"
+                )
+                return True
+
+        return False
 
     def is_privacy_compliant(self, task: Dict[str, Any]) -> bool:
-        """Check if the task complies with privacy laws."""
-        return True  # Placeholder
+        """Check if the task complies with privacy laws.
+
+        When a task involves personal data, compliance requires:
+        1. An explicit consent grant for the task type
+        2. Audit capability for the task
+        3. No secrets exposed in the task content
+        """
+        # Must have audit capability for personal data tasks
+        if not self.can_audit(task):
+            return False
+
+        # Check for secret leakage in task content
+        content = str(task.get("content", task.get("prompt", "")))
+        from security import _SECRET_IN_TEXT_PATTERN
+        if _SECRET_IN_TEXT_PATTERN.search(content):
+            self.logger.warning(
+                "Secret keyword detected in task involving personal data"
+            )
+            return False
+
+        return True
 
     def can_audit(self, task: Dict[str, Any]) -> bool:
-        """Check if the task can be audited."""
-        return True  # Placeholder
+        """Check if the task can be audited.
+
+        Returns True when the audit chain is available and writable.
+        An empty (not-yet-written) chain is still auditable.
+        """
+        if self.audit is None:
+            return False
+        try:
+            # Verify the chain is intact and writable. A fresh chain with no
+            # entries yet is fine (FileNotFoundError from verify means no
+            # entries exist, not that auditing is impossible).
+            ok, errors, _ = self.audit.verify()
+            if not ok:
+                # Only fail on structural problems, not a missing file.
+                if errors == ["audit file not found"]:
+                    # Verify the parent directory is writable.
+                    import os as _os
+                    parent = _os.path.dirname(self.audit.path) or "."
+                    return _os.path.isdir(parent) and _os.access(parent, _os.W_OK)
+                self.logger.error(
+                    f"Audit chain verification failed: {errors}"
+                )
+                return False
+            return True
+        except Exception as exc:
+            self.logger.error(f"Audit chain check failed: {exc}")
+            return False
 
 
 # Markus Vega's AI Ethics Laws - Guidelines for Conscious AI

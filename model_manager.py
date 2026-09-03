@@ -18,6 +18,14 @@ class ModelManager:
         """
         selected_models = [model for model in self.models if model['type'] == task['type']]
         return selected_models if selected_models else self.models  # Fallback to all models if none match
+
+    def list_models(self) -> List[Dict[str, Any]]:
+        """
+        Return the list of registered models with their metadata
+        (used for explanation-capability / policy checks).
+        """
+        with self._lock:
+            return [dict(m) for m in self.models]
     
     def aggregate_outputs(self, model_outputs: List[tuple]) -> Dict[str, Any]:
         """

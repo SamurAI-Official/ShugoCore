@@ -3,8 +3,8 @@
 > A continuous orchestration layer for synthetic functional agency.
 
 [![PyPI](https://img.shields.io/pypi/v/shugocore)](https://pypi.org/project/shugocore/)
-![Release](https://img.shields.io/badge/release-v1.2.1-blue)
-![Tests](https://img.shields.io/badge/tests-350%20passing-brightgreen)
+![Release](https://img.shields.io/badge/release-v1.3.0-blue)
+![Tests](https://img.shields.io/badge/tests-386%20passing-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%E2%80%933.12-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android%20%28Termux%2FChaquopy%29-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -48,7 +48,7 @@ decoupled maintenance worker that never blocks the primary loop.
 4. EXECUTE      the execution layer performs the tool / API interaction
 5. EVALUATE     reinforcement learning turns the outcome into a reward signal
 6. RECORD       the event lands in the Tier 1 episodic buffer
-7. CONSOLIDATE  a decoupled worker compresses episodes into Tier 2 facts,
+7. CONSOLIDATE a decoupled worker compresses episodes into Tier 2 facts,
                 decays stale salience and prunes forgotten knowledge
 ```
 
@@ -145,7 +145,7 @@ defeats nothing:
 | Policy verdict token | The engine binds an allow verdict to the canonical hash of the exact decision; the execution layer refuses missing, non-allow, or mismatched tokens |
 | `CapabilityRegistry` | https-only egress, host allowlists, HTTP-method allowlists, SQL statement-type allowlists, empty-by-default hardware command allowlists |
 | Egress controls | Mandatory timeouts, per-host rate limiting, circuit breakers, response size caps, redirects disabled |
-| Hash-chained audit log | Every block, approval and execution is appended to a tamper-evident JSONL chain - verify with `python3 audit.py verify audit_chain.jsonl` |
+| Hash-chained audit log | Every block, approval and execution is appended to a tamper-evident JSONL chain - verify with `python3 audit.py verify audit_chain.jsonl`; optionally HMAC-signed with an operator key for fleet-shared storage |
 | Secret hygiene | API keys resolved from environment variables at execution time, never carried in decision dicts; every log record passes a redaction filter |
 | Honest execution | Unimplemented side-effecting actions return `not_implemented` - never simulated success - so the reinforcement signal cannot reward no-ops |
 | Mobile fleet isolation | Android publishers are confined to `/shugocore/mobile/#`; `operator_node` teleop is clamped and relayed - phones never write actuation topics |
@@ -160,7 +160,7 @@ Key properties:
   privileged `promote_to_core()` path, which requires operator attribution
   (`authorized_by=`) and appends to the Tier 3 ledger.
 - **Fail-closed everywhere.** Missing verdict, missing consent, missing
-  approval channel, unknown host, unknown command - all refuse.
+ approval channel, unknown host, unknown command - all refuse.
 
 ## Android & mobile compute nodes
 
@@ -225,13 +225,13 @@ from decision_engine import DecisionEngine
 from shugonet_bridge import (
     ShugonetExecutionHandler,
     register_network_handlers,
-    attach_network_fallbacks,
+   attach_network_fallbacks,
 )
 from agent_runtime import ShugonetAgentRuntime
 
 # Create and connect the Shogunet runtime
 runtime = ShugonetAgentRuntime(
-    agent_id="agent-001",
+   agent_id="agent-001",
     host_tcp_host="127.0.0.1",
     host_tcp_port=9000,
     host_relay_url="http://127.0.0.1:9001",
@@ -275,6 +275,59 @@ and `mobile_nodes.py`:
 The bridge uses duck-typed contracts, so the Shogunet runtime can be swapped
 with any compatible implementation.
 
+## Continuous agent daemon
+
+The "press go" entry point for continuous synthetic functional agency::
+
+    python3 continuous_agent.py --interval 2.0 --max-iterations 1000
+
+This runs the README orchestration loop (OBSERVE → GATE → DECIDE →
+EXECUTE → EVALUATE → RECORD → CONSOLIDATE) as a bounded daemon:
+
+- **Iterations** - `--max-iterations` caps loop passes (unlimited by default).
+- **Deadline**  - `--max-seconds` caps wall-clock runtime.
+
+- **Budget**    - every task flows through the governor's per-task step budget
+ and deadline; a pathological task cannot stall the loop.
+
+- **Safety**    - the fallback controller can latch PAUSED / SAFE_STATE /
+  HALTED at any moment; when  PAUSED the loop sleeps instead of spamming
+  refusals.
+ Loop errors are reported to the fallback controller as
+  `continuous_loop_error` triggers, so a stuck loop latches a safe
+  state deterministically.
+
+
+From Python::
+
+    from continuous_agent import ContinuousAgent
+   agent = ContinuousAgent(models=[...], interval=2.0, max_iterations=100)
+   agent.start()
+   agent.await_stop()
+
+The daemon emits telemetry spans per loop pass (via `telemetry.py`) and
+exposes a `status()` snapshot (loops, tasks, successes, failures,
+governor state, fallback mode, Tier 1 backlog, Tier 2 fact count)
+for dashboards and the Shogunet network bridge.
+
+
+
+## Verifiable embeddings & privacy hardening
+
+- **Ethics checks are now real**: `can_explain` requires a non-stub model
+ and a writable audit chain; `detect_bias` scans task content for
+  sensitive-attribute stereotypes and loaded language;`is_privacy_compliant`
+  requires audit capability and rejects secret-key leakage in content;
+  `can_audit` requires an operational audit chain (an empty fresh chain is
+ auditable; a missing file is not). The policy gate enforces all four
+  before any model call or execution.
+
+- **Deterministic hashing embeddings**: `vector_db.hashed_embedding()`
+  replaces the all-zero placeholder vectors with a dependency-free hashing
+  bag-of-words embedding (matching `SemanticMemory._embed`，so
+  environment observations are now actually searchable in cosine space
+ an injected `embedding_fn` lets callers plug in real embedding models.
+
 ## Installation
 
 Requires Python 3.9+.
@@ -288,7 +341,7 @@ pip install shugocore
 **From the GitHub release (identical artifacts):**
 
 ```bash
-pip install https://github.com/SamurAI-Official/ShugoCore/releases/download/v1.2.1/shugocore-1.2.1-py3-none-any.whl
+pip install https://github.com/SamurAI-Official/ShugoCore/releases/download/v1.3.0/shugocore-1.3.0-py3-none-any.whl
 ```
 
 **From source:**
@@ -306,8 +359,8 @@ Optional extras:
 - `torch` - enables CUDA/accelerated device selection (CPU-only mode without it)
 - `chromadb` - enables persistent vector storage in `vector_db.py` (stub mode without it)
 
-> Published on [PyPI](https://pypi.org/project/shugocore/1.2.1/) - the wheel
-> and sdist there are byte-identical to the `v1.2.1` git tag and the GitHub
+> Published on [PyPI](https://pypi.org/project/shugocore/1.3.0/) - the wheel
+> and sdist there are byte-identical to the `v1.3.0` git tag and the GitHub
 > release assets (sha256 digests recorded on both).
 
 ## Quickstart
@@ -326,7 +379,7 @@ engine = DecisionEngine(
     vector_db_config={'type': 'chroma'},   # stub mode without chromadb
     news_api_key=None,                     # or set SHUGOCORE_NEWS_API_KEY
     memory_db_path='semantic_memory.db',   # Tier 2 storage
-    audit_path='audit_chain.jsonl',        # tamper-evident audit chain
+   audit_path='audit_chain.jsonl',        # tamper-evident audit chain
 )
 
 # Tier 3 invariants gate every task before execution
@@ -360,7 +413,7 @@ for fact in candidates:
     print(fact["content"], fact["salience"], fact["access_count"])
     # Promotion is an explicit, operator-attributed privileged step:
     # engine.memory.promote_to_core("rule_key", "operator-approved rule",
-    #                                authorized_by="operator")
+    #                               authorized_by="operator")
 ```
 
 ## Testing
@@ -376,7 +429,7 @@ hardware-facing stress suites:
   pause/resume races, monitor resilience against bridge exceptions and
   garbage sensor data, power edge cases (boundary thresholds, plugged-in
   overrides, non-numeric battery values), and 25 node start/stop cycles
-  asserted leak-free at the thread level.
+ asserted leak-free at the thread level.
 - **ROS 2 transports** - bridge death mid-run, post-shutdown publish,
   malformed and non-object JSON packets, concurrent publish bursts under the
   rate limiter, emergency-stop bypass, round-trip payload fidelity, and

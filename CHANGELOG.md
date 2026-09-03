@@ -4,6 +4,44 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.3.0]
+
+### Added — hardening for Continuous Synthetic Functional Agency
+
+- **Continuous agent daemon** (`continuous_agent.py`): a top-level orchestrator
+  that embodies the OBSERVE → GATE → DECIDE → EXECUTE → EVALUATE → RECORD →
+  CONSOLIDATE loop in a single entry point. Bounded iteration counts, bounded
+  interval pacing, and graceful shutdown. CLI:
+  `python3 continuous_agent.py --interval 2.0 --max-iterations 1000`.
+- **HMAC-signed audit chains** (`audit.py`): `AuditChain` now accepts an
+  optional `hmac_key` (operator-held, e.g. via `SecretResolver`). Entries carry
+  an HMAC-SHA256 tag over the chain hash + payload, making history
+  tamper-evident *and* authenticated when the audit file lives on shared
+  storage. Verification is backward-compatible with unsigned (1.2.x) chains.
+  Includes a `verify_audit_file()` helper and `python3 audit.py <file>` CLI.
+- **Real embeddings for Tier 2** (`vector_db.py`): environment observations
+  were previously stored with all-zero placeholder vectors; they now use
+  deterministic n-gram hashed embeddings (`hashed_embedding()`), making
+  similarity search meaningful without any third-party dependency.
+- **Pluggable embedding backends** (`vector_db.py`): `VectorDB` accepts an
+  injectable embedding function, so operators can swap in a learned encoder
+  (sentence-transformers, OpenAI, etc.) without touching storage logic.
+- **Shogunet optional dependency** (`pyproject.toml`): the networking runtime
+  is now installable via `pip install shugocore[shogunet]`.
+
+### Hardened — ethics surface
+
+- `EthicalGovernor` placeholder predicates (`can_explain`, `detect_bias`,
+  `is_privacy_compliant`, `can_audit`) no longer return hardcoded values.
+  They now evaluate real signals: decision provenance/audit-trail presence,
+  input attribute screening for protected-category bias, and data-subject
+  consent coverage for privacy compliance.
+
+### Fixed
+
+- `pyproject.toml` version was left at 1.2.0 after the 1.2.1 bump; both now
+  share the single source of truth in `version.py` values.
+
 ## [1.2.1]
 
 ### Added — Shogunet multi-agent networking integration

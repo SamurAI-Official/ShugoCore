@@ -373,6 +373,79 @@ class MemoryAndQueueTestCase(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_audit_chain_hmac_signed_and_verified(self):
+        """A key-protected chain should carry and verify HMACs."""
+        import hmac as _hmac
+        tmp = tempfile.mkdtemp(prefix="shugocore_audit_hmac_")
+        try:
+            path = os.path.join(tmp, "audit.jsonl")
+            chain = AuditChain(path, hmac_key="operator-secret")
+            chain.append("event", {"n": 1})
+            chain.append("event", {"n": 2})
+            with open(path, "r", encoding="utf-8") as handle:
+                lines = handle.readlines()
+            # Every entry should carry an hmac field.
+            for line in lines:
+                self.assertIn("hmac", json.loads(line))
+            # Verify with the correct key passes.
+            ok, errors, count = verify_audit_file(path, hmac_key="operator-secret")
+            self.assertTrue(ok, errors)
+            self.assertEqual(count, 2)
+            # Verifying with the wrong key must fail.
+            ok, errors, _ = verify_audit_file(path, hmac_key="wrong-key")
+            self.assertFalse(ok)
+            self.assertTrue(any("HMAC mismatch" in e for e in errors))
+            # Verifying without any key skips HMAC checks (backward compat)
+            # but still validates the hash chain.
+            ok, errors, _ = verify_audit_file(path)
+            self.assertTrue(ok, errors)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_audit_chain_hmac_detects_tampering(self):
+        """Editing a signed entry should break both hash and HMAC checks."""
+        tmp = tempfile.mkdtemp(prefix="shugocore_audit_hmac_tamper_")
+        try:
+            path = os.path.join(tmp, "audit.jsonl")
+            chain = AuditChain(path, hmac_key="operator-secret")
+            chain.append("event", {"n": 1})
+            chain.append("event", {"n": 2})
+            # Tamper with the second entry's payload.
+            with open(path, "r", encoding="utf-8") as handle:
+                lines = handle.readlines()
+            entry = json.loads(lines[1])
+            entry["payload"]["n"] = 999
+            lines[1] = json.dumps(entry, sort_keys=True) + "\n"
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.writelines(lines)
+            ok, errors, _ = verify_audit_file(path, hmac_key="operator-secret")
+            self.assertFalse(ok)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_audit_chain_mixed_unsigned_then_signed(self):
+        """An unsigned chain opened with a key should keep old entries valid."""
+        tmp = tempfile.mkdtemp(prefix="shugocore_audit_mixed_")
+        try:
+            path = os.path.join(tmp, "audit.jsonl")
+            # Unsigned write first (older tooling), then sign new entries.
+            chain = AuditChain(path)
+            chain.append("event", {"n": 1})
+            chain = AuditChain(path, hmac_key="operator-secret")
+            chain.append("event", {"n": 2})
+            with open(path, "r", encoding="utf-8") as handle:
+                lines = handle.readlines()
+            self.assertNotIn("hmac", json.loads(lines[0]))
+            self.assertIn("hmac", json.loads(lines[1]))
+            # Strict verification fails because the first entry is unsigned.
+            ok, errors, _ = verify_audit_file(path, hmac_key="operator-secret")
+            self.assertFalse(ok)
+            self.assertTrue(any("missing HMAC" in e for e in errors))
+            # Lenient verification (no key) still passes.
+            ok, errors, _ = verify_audit_file(path)
+            self.assertTrue(ok, errors)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
     def test_task_manager_refuses_without_executor_and_is_bounded(self):
         from task_manager import TaskManager
         manager = TaskManager(max_queue_size=1, poll_timeout=0.05)

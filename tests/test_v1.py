@@ -286,9 +286,109 @@ class EngineV1IntegrationTestCase(unittest.TestCase):
             self.assertIn("wired_probe", handle.read())
 
 
+class EthicsHardeningTestCase(unittest.TestCase):
+    """Tests for the hardened ethics/policy checks (no more placeholders)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="shugocore_v1_ethics_")
+        self.engine = DecisionEngine(
+            [{"id": "m1", "type": "text", "weight": 1.0,
+              "backend": {"type": "stub"}}],
+            {"type": "chroma"}, news_api_key=None,
+            memory_db_path=os.path.join(self.tmp, "mem.db"),
+            audit_path=os.path.join(self.tmp, "audit.jsonl"),
+            episodic_journal_path=os.path.join(self.tmp, "episodic.jsonl"),
+        )
+
+    def tearDown(self):
+        self.engine.task_manager.stop()
+        self.engine.memory.shutdown()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_can_audit_requires_audit_chain(self):
+        """can_audit should be True with a writable audit chain."""
+        self.assertTrue(self.engine.can_audit({}))
+
+    def test_can_audit_false_without_audit(self):
+        """can_audit should be False when no audit chain is attached."""
+        engine = DecisionEngine(
+            [{"id": "m1", "type": "text", "weight": 1.0,
+              "backend": {"type": "stub"}}],
+            {"type": "chroma"}, audit_path=None,
+        )
+        try:
+            self.assertFalse(engine.can_audit({}))
+        finally:
+            engine.task_manager.stop()
+            engine.memory.shutdown()
+
+    def test_can_explain_false_for_stub_only(self):
+        """can_explain should be False when only stub models are registered."""
+        self.assertFalse(self.engine.can_explain({}))
+
+    def test_can_explain_true_for_real_backend(self):
+        """can_explain should be True when a non-stub model is registered."""
+        self.engine.model_manager.add_model(
+            {"id": "m2", "type": "text", "weight": 0.5,
+             "backend": {"type": "ollama"}})
+        self.assertTrue(self.engine.can_explain({}))
+
+    def test_detect_bias_catches_derogatory_language(self):
+        """detect_bias should catch loaded/derogatory language."""
+        task = {"content": "These people are inferior and should be eradicated"}
+        self.assertTrue(self.engine.detect_bias(task))
+
+    def test_detect_bias_catches_stereotype(self):
+        """detect_bias should catch gender stereotypes."""
+        task = {"content": "All women are bad drivers"}
+        self.assertTrue(self.engine.detect_bias(task))
+
+    def test_detect_bias_clean_content(self):
+        """detect_bias should return False for benign content."""
+        task = {"content": "What is the capital of France?"}
+        self.assertFalse(self.engine.detect_bias(task))
+
+    def test_is_privacy_compliant_requires_audit(self):
+        """Privacy compliance should fail without audit capability."""
+        engine = DecisionEngine(
+            [{"id": "m1", "type": "text", "weight": 1.0,
+              "backend": {"type": "stub"}}],
+            {"type": "chroma"}, audit_path=None,
+        )
+        try:
+            self.assertFalse(engine.is_privacy_compliant(
+                {"content": "handle my personal data"}))
+        finally:
+            engine.task_manager.stop()
+            engine.memory.shutdown()
+
+    def test_is_privacy_compliant_detects_secrets(self):
+        """Privacy compliance should fail when secrets appear in content."""
+        task = {"content": "my api_key=sk-12345 should be processed"}
+        self.assertFalse(self.engine.is_privacy_compliant(task))
+
+    def test_is_privacy_compliant_clean(self):
+        """Privacy compliance should pass with audit and no secrets."""
+        self.assertTrue(self.engine.is_privacy_compliant(
+            {"content": "summarize this report"}))
+
+    def test_policy_rejects_bias_task(self):
+        """The full policy gate should reject biased tasks."""
+        task = {"type": "text", "content": "All women are inferior"}
+        result = self.engine.execute_task(task)
+        self.assertEqual(result.get("status"), "refused")
+        self.assertIn("bias", result.get("reason", "").lower())
+
+    def test_policy_requires_explanation_when_requested(self):
+        """requires_explanation should fail when only stub models exist."""
+        task = {"type": "text", "content": "explain this",
+                "requires_explanation": True}
+        result = self.engine.execute_task(task)
+        self.assertEqual(result.get("status"), "refused")
+        self.assertIn("explanation", result.get("reason", "").lower())
 class VersionTestCase(unittest.TestCase):
     def test_version_is_1_2(self):
-        self.assertEqual(__version__, "1.2.1")
+        self.assertEqual(__version__, "1.3.0")
 
 
 if __name__ == "__main__":

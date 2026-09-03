@@ -19,6 +19,7 @@ CLI::
 """
 
 import hashlib
+import hmac
 import json
 import sys
 import threading
@@ -34,11 +35,32 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-class AuditChain:
-    """Append-only, hash-chained audit log persisted as JSONL."""
+def _entry_hmac(key: str, body: Dict[str, Any]) -> str:
+    """HMAC-SHA256 of the canonical body using the chain's operator key.
 
-    def __init__(self, path: str):
+    Makes the audit chain authenticated, not just tamper-evident: only
+    a holder of the HMAC key can legitimately produce signed entries,
+    so a rewritten chain on shared storage is detectable.
+    """
+    return hmac.new(
+        key.encode("utf-8"),
+        canonical_json(body).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+class AuditChain:
+    """Append-only, hash-chained audit log persisted as JSONL.
+
+    When ``hmac_key`` is provided, every appended entry also carries an
+    HMAC over its canonical body (roadmap item: HMAC-signed audit chains).
+    Verification of older unsigned files remains supported; supply the
+    same key on :meth:`verify` to authenticate signed entries.
+    """
+
+    def __init__(self, path: str, hmac_key: Optional[str] = None):
         self.path = str(path)
+        self.hmac_key = str(hmac_key) if hmac_key else None
         self._lock = threading.Lock()
         self._seq = 0
         self._tail = GENESIS_HASH
@@ -77,6 +99,8 @@ class AuditChain:
         entry["hash"] = hashlib.sha256(
             (body["prev_hash"] + canonical_json(body)).encode("utf-8")
         ).hexdigest()
+        if self.hmac_key:
+            entry["hmac"] = _entry_hmac(self.hmac_key, entry)
         return entry
 
     # -- public API ----------------------------------------------------------
@@ -91,15 +115,23 @@ class AuditChain:
             self._tail = str(entry["hash"])
             return entry
 
-    def verify(self) -> Tuple[bool, List[str], int]:
-        """Recompute the whole chain. Returns (ok, errors, entries_checked)."""
-        return verify_audit_file(self.path)
+    def verify(self, hmac_key: Optional[str] = None) -> Tuple[bool, List[str], int]:
+        """Recompute the whole chain. Returns (ok, errors, entries_checked).
+
+        Pass the chain's HMAC key to also authenticate every signed entry.
+        """
+        return verify_audit_file(self.path, hmac_key=hmac_key)
 
 
-def verify_audit_file(path: str) -> Tuple[bool, List[str], int]:
+def verify_audit_file(path: str,
+                      hmac_key: Optional[str] = None) -> Tuple[bool, List[str], int]:
     """
     Verify a JSONL audit chain: sequence continuity, hash linkage and
     per-entry hash correctness. Returns (ok, errors, entries_checked).
+
+    When ``hmac_key`` is provided, every entry carrying an ``hmac`` field
+    is authenticated against it (entries from older unsigned chains are
+    skipped for backward compatibility).
     """
     errors: List[str] = []
     expected_prev = GENESIS_HASH
@@ -118,7 +150,7 @@ def verify_audit_file(path: str) -> Tuple[bool, List[str], int]:
                     continue
                 checked += 1
                 entry_hash = str(entry.get("hash", ""))
-                body = {k: v for k, v in entry.items() if k != "hash"}
+                body = {k: v for k, v in entry.items() if k not in ("hash", "hmac")}
                 recomputed = hashlib.sha256(
                     (str(body.get("prev_hash")) + canonical_json(body)).encode("utf-8")
                 ).hexdigest()
@@ -128,6 +160,21 @@ def verify_audit_file(path: str) -> Tuple[bool, List[str], int]:
                     errors.append(f"line {line_number}: sequence gap (expected {expected_seq})")
                 if entry_hash != recomputed:
                     errors.append(f"line {line_number}: entry hash mismatch (tampered?)")
+                if hmac_key:
+                    stored_hmac = entry.get("hmac", "")
+                    if not stored_hmac:
+                        errors.append(
+                            f"line {line_number}: missing HMAC (unsigned entry "
+                            f"in a key-protected chain)")
+                    else:
+                        # The HMAC authenticates the whole stored entry
+                        # (including its hash field) minus the hmac itself.
+                        hmac_body = {k: v for k, v in entry.items()
+                                     if k != "hmac"}
+                        if _entry_hmac(hmac_key, hmac_body) != stored_hmac:
+                            errors.append(
+                                f"line {line_number}: HMAC mismatch (unauthorized "
+                                f"modification?)")
                 expected_prev = entry_hash
                 expected_seq += 1
     except FileNotFoundError:
@@ -141,14 +188,24 @@ def verify_audit_file(path: str) -> Tuple[bool, List[str], int]:
 def cli_main(argv: Optional[List[str]] = None) -> int:
     """
     CLI entry point: ``python3 audit.py verify <file>`` or the
-    ``shugocore-verify-audit`` console script.
+    ``shugocore-verify-audit`` console script. With ``--hmac-key KEY``
+    additionally authenticates every signed entry.
     """
     import sys as _sys
     args = list(argv) if argv is not None else _sys.argv[1:]
-    if len(args) != 2 or args[0] != "verify":
-        print("usage: shugocore-verify-audit verify <audit_file>")
+    if len(args) not in (2, 4):
+        print("usage: shugocore-verify-audit verify <audit_file> [--hmac-key KEY]")
         return 2
-    ok, errs, count = verify_audit_file(args[1])
+    if args[0] != "verify":
+        print("usage: shugocore-verify-audit verify <audit_file> [--hmac-key KEY]")
+        return 2
+    hmac_key = None
+    if len(args) == 4:
+        if args[2] != "--hmac-key":
+            print("usage: shugocore-verify-audit verify <audit_file> [--hmac-key KEY]")
+            return 2
+        hmac_key = args[3]
+    ok, errs, count = verify_audit_file(args[1], hmac_key=hmac_key)
     if ok:
         print(f"AUDIT CHAIN OK - {count} entries verified")
         return 0

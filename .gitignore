@@ -27,3 +27,11 @@ build/
 dist/
 *.egg-info/
 .llama_build/
+
+# Android (machine-specific SDK path + generated build outputs)
+local.properties
+platforms/android/app/build/
+platforms/android/.gradle/
+platforms/android/build/
+*.apk
+*.aab

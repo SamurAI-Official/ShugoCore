@@ -82,6 +82,7 @@ decoupled maintenance worker that never blocks the primary loop.
 | `fallbacks.py` | Deterministic fallback controller (stall / budget / breaker triggers → safe state) |
 | `gazebo_simulation.py` | Gazebo/Ignition simulation layer |
 | `moveit_planner.py` | MoveIt 2 motion planning layer |
+| `simulation/` | Physics simulation framework: MuJoCo backend, robot models, test scenarios |
 | `telemetry.py` | Telemetry hooks |
 | `token_budget.py` | Context budgeting |
 
@@ -527,6 +528,16 @@ ShugoCore/
 ├── robotics_handler.py       # robotics execution handler (e-stop, watchdog)
 ├── gazebo_simulation.py      # Gazebo/Ignition simulation layer
 ├── moveit_planner.py         # MoveIt 2 motion planning layer
+├── simulation/               # physics simulation framework
+│   ├── base.py               # BaseSimulation interface
+│   ├── mujoco_sim.py         # MuJoCo physics backend
+│   ├── stub_sim.py           # Deterministic stub fallback
+│   ├── scenarios.py          # Standardized test scenarios
+│   └── robots/               # Robot model definitions
+│       ├── base.py           # RobotModel interface
+│       ├── berkeley_humanoid_lite.py
+│       ├── reachy2.py
+│       └── unitree_g1.py
 ├── acceleration.py           # NPU / DSP / GPU / CPU accelerator policy
 ├── android_bridge.py         # JavaBridge + rosbridge transports, payload codec
 ├── android_runtime.py        # Android lifecycle, power/thermal monitor

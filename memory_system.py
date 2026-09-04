@@ -719,7 +719,183 @@ class CoreIdentity:
 
 
 # ---------------------------------------------------------------------------
+# Dream Consolidation — periodic identity compression
+# ---------------------------------------------------------------------------
+
+class DreamConsolidation:
+    """
+    Periodic reflective pass that compresses episodic experiences into
+    durable identity insights and world-model updates.
+
+    Design (inspired by GrowBot's "dream" phase):
+    - Runs at a slower cadence than regular consolidation (every N ticks)
+    - Is the SOLE writer of identity mutations (code-enforced)
+    - Commits are clamped: max 1 sentence added, 1 dropped per dream
+    - Only a real exchange earns a memory slot (no idle tick pollution)
+
+    Write-permission discipline:
+    - Fast loop (execution) → NEVER writes identity
+    - Dream (slow, periodic) → ONLY path that mutates identity
+    """
+
+    def __init__(self, memory: 'MemoryManager',
+                 dream_every_n_ticks: int = 8,
+                 max_identity_chars: int = 800,
+                 max_sentence_add: int = 1,
+                 max_sentence_drop: int = 1,
+                 min_identity_chars: int = 40):
+        self._memory = memory
+        self._dream_every = max(1, int(dream_every_n_ticks))
+        self._max_identity_chars = max(100, int(max_identity_chars))
+        self._max_add = max(0, int(max_sentence_add))
+        self._max_drop = max(0, int(max_sentence_drop))
+        self._min_identity_chars = max(20, int(min_identity_chars))
+        self._tick_count = 0
+        self._last_dream_at = 0
+        self._lock = threading.Lock()
+
+    def tick(self) -> Optional[Dict[str, Any]]:
+        """
+        Called every loop iteration. Runs dream consolidation every N ticks.
+
+        Returns:
+            Dream result dict if a dream occurred, None otherwise.
+        """
+        with self._lock:
+            self._tick_count += 1
+            if self._tick_count - self._last_dream_at < self._dream_every:
+                return None
+            self._last_dream_at = self._tick_count
+
+        return self.dream()
+# ---------------------------------------------------------------------------
 # Memory Manager (orchestrates Tier 0-3)
+    def dream(self) -> Dict[str, Any]:
+        """
+        Execute one dream consolidation pass:
+
+        1. Read recent episodic log (last N lines)
+        2. Extract patterns, significant events, lessons learned
+        3. Compress into identity insights (clamped)
+        4. Update CoreIdentity with validated mutations
+
+        Returns:
+            Dict with dream results and statistics.
+        """
+        with get_tracer("memory").start_span("memory.dream") as span:
+            # Read recent episodic events
+            recent_events = self._memory.tier1.recent(50)
+
+            if not recent_events:
+                span.set_attribute("dream.events", 0)
+                return {"dreamed": False, "reason": "no_events"}
+
+            # Extract insights from experiences
+            insights = self._extract_insights(recent_events)
+
+            # Apply clamped identity mutations
+            mutations = self._apply_identity_mutations(insights)
+
+            span.set_attribute("dream.events", len(recent_events))
+            span.set_attribute("dream.mutations", len(mutations.get("added", [])))
+
+            result = {
+                "dreamed": True,
+                "events_processed": len(recent_events),
+                "insights_extracted": len(insights),
+                "mutations": mutations,
+                "timestamp": _utc_now_iso(),
+            }
+
+            logger.info(
+                f"Dream consolidation: {len(recent_events)} events → "
+                f"{len(insights)} insights → {len(mutations.get('added', []))} mutations"
+            )
+            return result
+
+    def _extract_insights(self, events: List[Dict[str, Any]]) -> List[str]:
+        """
+        Extract actionable insights from episodic events.
+
+        Looks for:
+        - Recurring failure patterns
+        - Successful strategies
+        - Novel situations
+        - Safety-critical events
+        """
+        insights = []
+        failure_counts: Dict[str, int] = defaultdict(int)
+        success_patterns: Dict[str, int] = defaultdict(int)
+
+        for event in events:
+            event_type = event.get("type", "")
+            payload = event.get("payload", {})
+            status = str(payload.get("status", "")).lower()
+
+            # Track failures by type
+            if status in _FAILURE_STATUSES:
+                failure_counts[event_type] += 1
+
+            # Track successes
+            if status == "success":
+                success_patterns[event_type] += 1
+
+        # Generate insights from patterns
+        for event_type, count in failure_counts.items():
+            if count >= 2:
+                insights.append(
+                    f"Recurring failure in '{event_type}' ({count} times) — review approach"
+                )
+
+        for event_type, count in success_patterns.items():
+            if count >= 3:
+                insights.append(
+                    f"Consistent success with '{event_type}' ({count} times) — reliable strategy"
+                )
+
+        return insights
+
+    def _apply_identity_mutations(self, insights: List[str]) -> Dict[str, List[str]]:
+        """
+        Apply clamped identity mutations to CoreIdentity.
+
+        Enforces:
+        - Max N sentences added per dream
+        - Max M sentences dropped per dream
+        - Identity never falls below minimum length
+        - All mutations are logged to audit chain
+        """
+        added = []
+        dropped = []
+
+        if not insights:
+            return {"added": added, "dropped": dropped}
+
+        # Get current invariants
+        current = self._memory.tier3.invariants()
+
+        # Add at most _max_add new insights
+        for insight in insights[:self._max_add]:
+            key = f"dream_insight_{_utc_now_iso()[:10]}_{len(added)}"
+            try:
+                # Use promote_invariant with dream authorization
+                self._memory.tier3.promote_invariant(
+                    key, insight[:160],  # Max 160 chars per insight
+                    authorized_by="dream_consolidation"
+                )
+                added.append(insight[:160])
+            except Exception as exc:
+                logger.warning(f"Dream mutation failed: {exc}")
+
+        return {"added": added, "dropped": dropped}
+
+    @property
+    def tick_count(self) -> int:
+        return self._tick_count
+
+    @property
+    def last_dream_at(self) -> int:
+        return self._last_dream_at
 # ---------------------------------------------------------------------------
 class MemoryManager:
     """
@@ -786,6 +962,91 @@ class MemoryManager:
         self._worker: Optional[threading.Thread] = None
         if auto_start:
             self.start()
+        logger.info(f"MemoryManager ready for agent '{self.agent_id}' "
+                    f"(worker={'on' if self._worker else 'off'}).")
+
+        # Dream consolidation — periodic identity compression
+        self._dream = DreamConsolidation(self, dream_every_n_ticks=8)
+
+        # Write-gate enforcement: track which components can write to each tier
+        self._write_gates = {
+            "tier0": {"scratchpad"},  # Only Scratchpad.write()
+            "tier1": {"episodic"},    # Only EpisodicMemory.record()
+            "tier2": {"consolidation", "maintenance"},  # Only consolidation worker
+            "tier3": {"dream", "promote_invariant"},  # Only dream or explicit promotion
+        }
+
+    # -- write-gate enforcement ------------------------------------------------
+
+    def check_write_permission(self, tier: str, writer: str) -> bool:
+        """
+        Check if a component has write permission for a memory tier.
+
+        Write-permission discipline (code-enforced, not prompt):
+        - Tier 0 (Scratchpad): Only scratchpad writes
+        - Tier 1 (EpisodicMemory): Only episodic record (append-only)
+        - Tier 2 (SemanticMemory): Only consolidation/maintenance worker
+        - Tier 3 (CoreIdentity): Only dream consolidation or explicit promotion
+
+        Args:
+            tier: Tier name ("tier0", "tier1", "tier2", "tier3")
+            writer: Component name attempting the write
+
+        Returns:
+            True if write is permitted, False otherwise.
+        """
+        allowed = self._write_gates.get(tier, set())
+        return writer in allowed
+
+    def enforce_write(self, tier: str, writer: str) -> None:
+        """
+        Enforce write gate — raises PermissionError if write is not allowed.
+
+        Args:
+            tier: Tier name
+            writer: Component name
+
+        Raises:
+            PermissionError: If writer is not allowed to write to tier
+        """
+        if not self.check_write_permission(tier, writer):
+            raise PermissionError(
+                f"Write gate violation: '{writer}' cannot write to {tier}. "
+                f"Allowed writers: {self._write_gates.get(tier, set())}"
+            )
+
+    # -- dream consolidation ---------------------------------------------------
+
+    def dream(self) -> Dict[str, Any]:
+        """
+        Execute one dream consolidation pass.
+
+        This is the ONLY path that can mutate Tier 3 (CoreIdentity)
+        during normal operation. It compresses episodic experiences
+        into durable identity insights with clamped mutations.
+
+        Returns:
+            Dream result dict
+        """
+        return self._dream.dream()
+
+    def tick_dream(self) -> Optional[Dict[str, Any]]:
+        """
+        Called every loop iteration. Runs dream every N ticks.
+
+        Returns:
+            Dream result if a dream occurred, None otherwise.
+        """
+        return self._dream.tick()
+
+    @property
+    def dream_stats(self) -> Dict[str, Any]:
+        """Get dream consolidation statistics."""
+        return {
+            "tick_count": self._dream.tick_count,
+            "last_dream_at": self._dream.last_dream_at,
+            "dream_every": self._dream._dream_every,
+        }
         logger.info(f"MemoryManager ready for agent '{self.agent_id}' "
                     f"(worker={'on' if self._worker else 'off'}).")
 

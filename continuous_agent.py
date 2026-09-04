@@ -142,6 +142,7 @@ class ContinuousAgent:
                               if self._started_at else 0.0,
             "tier1_backlog": len(self.engine.memory.tier1),
             "tier2_facts": self.engine.memory.tier2.count(),
+            "dream_stats": self.engine.memory.dream_stats,
         }
     # -- the loop ------------------------------------------------------------
 
@@ -213,6 +214,15 @@ class ContinuousAgent:
             self.engine.memory.consolidate_now()
         except Exception as exc:
             logger.warning("Consolidation pass failed: %s", exc)
+
+        # DREAM: periodic identity compression (every N ticks).
+        # This is the ONLY path that mutates Tier 3 during normal operation.
+        try:
+            dream_result = self.engine.memory.tick_dream()
+            if dream_result and dream_result.get("dreamed"):
+                logger.info(f"Dream consolidation: {dream_result}")
+        except Exception as exc:
+            logger.warning("Dream consolidation failed: %s", exc)
 
         logger.debug("Continuous loop processed %s -> %s",
                      task.get("type", "unknown"), status)

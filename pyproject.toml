@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "shugocore"
-version = "1.4.0"
+version = "1.6.0"
 description = "A continuous orchestration layer for synthetic functional agency: multi-model decisions, tool execution, four-tier memory, deterministic safety interlocks."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -20,6 +20,7 @@ telemetry = ["opentelemetry-api>=1.20"]
 termux = ["websocket-client>=1.6"]
 shogunet = ["shugonet>=0.1.0"]
 postgres = ["psycopg2-binary>=2.9"]
+simulation = ["mujoco>=3.0", "numpy>=1.24"]
 
 [project.scripts]
 shugocore-verify-audit = "audit:cli_main"

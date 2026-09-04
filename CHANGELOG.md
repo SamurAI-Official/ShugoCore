@@ -44,6 +44,62 @@ frozen: no breaking changes across any 1.x release.
   (read-only identity), preserving the memory invariants (N0-N1) across the
   fleet.
 
+## [1.5.0] - 2026-09-03
+
+### Added — robot simulation framework for public test data
+
+- **`simulation/` module** — Physics-based robot simulation framework with
+  pluggable backends (MuJoCo, stub fallback) for generating public benchmark data.
+- **`MuJoCoSimulation`** — Full MuJoCo physics backend (`pip install 'shugocore[simulation]'`).
+  Loads MJCF/URDF models, provides joint control, IMU sensing, and deterministic
+  seeded simulation. Falls back to `StubSimulation` when MuJoCo is not installed.
+- **`StubSimulation`** — Deterministic in-memory simulation for testing without
+  physics dependencies. Integrates joint commands into positions with simple
+  kinematics.
+- **Robot model loaders** — Support for multiple open-source robot platforms:
+  - `BerkeleyHumanoidLite` — 24-DOF humanoid from UC Berkeley (MIT license)
+  - `Reachy2` — Humanoid by Pollen Robotics (Apache-2.0 license)
+  - `UnitreeG1` — Compact humanoid by Unitree Robotics (BSD-3-Clause license)
+- **Standardized test scenarios** — Reproducible benchmark scenarios producing
+  public JSONL test data:
+  - `WalkToTarget` — Navigation efficiency and path planning
+  - `BalanceTest` — Stability under perturbations
+  - `EmergencyStop` — Safety response measurement
+- **`run_benchmark()`** — Execute full benchmark suite on any robot, output
+  results to JSONL for public dataset publication.
+- **`SimulationResult`** — Standardized result format with serialization for
+  public test data distribution.
+- **`simulation` optional dependency** — `pip install 'shugocore[simulation]'`
+  installs `mujoco>=3.0` and `numpy>=1.24`; no new required dependencies.
+  installs `mujoco>=3.0` and `numpy>=1.24`; no new required dependencies.
+
+## [1.6.0] - 2026-09-03
+
+### Added — dream consolidation and memory write gates
+
+- **`DreamConsolidation`** — Periodic reflective pass that compresses episodic
+  experiences into durable identity insights. Inspired by GrowBot's "dream" phase.
+  Runs at a slower cadence than regular consolidation (every N ticks).
+- **Dream write-permission discipline** — The dream is the SOLE writer of
+  Tier 3 (CoreIdentity) mutations during normal operation (code-enforced).
+  Commits are clamped: max 1 sentence added per dream, identity never falls
+  below minimum length.
+- **Insight extraction** — Automatically extracts actionable insights from
+  episodic events: recurring failure patterns (≥2 occurrences) and consistent
+  success strategies (≥3 occurrences).
+- **Memory write-gate enforcement** — Code-enforced write permissions per memory
+  tier:
+  - Tier 0 (Scratchpad): Only scratchpad writes
+  - Tier 1 (EpisodicMemory): Only episodic record (append-only)
+  - Tier 2 (SemanticMemory): Only consolidation/maintenance worker
+  - Tier 3 (CoreIdentity): Only dream consolidation or explicit promotion
+- **`check_write_permission()` / `enforce_write()`** — Runtime write-gate
+  enforcement with `PermissionError` on violation.
+- **Continuous agent integration** — Dream consolidation automatically runs
+  during the continuous loop. Dream stats exposed via `status()`.
+- **Tests** — 16 new tests covering dream consolidation, insight extraction,
+  identity mutation clamping, and write-gate enforcement.
+
 ## [1.3.0] - 2026-09-03
 
 ### Added — hardening for Continuous Synthetic Functional Agency

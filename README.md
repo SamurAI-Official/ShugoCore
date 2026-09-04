@@ -85,6 +85,8 @@ decoupled maintenance worker that never blocks the primary loop.
 | `simulation/` | Physics simulation framework: MuJoCo backend, robot models, test scenarios |
 | `telemetry.py` | Telemetry hooks |
 | `token_budget.py` | Context budgeting |
+| `android_inference.py` | Android local inference backend (OpenAI-compatible) |
+| `platforms/android/` | Android app shell with llama.cpp JNI, foreground service, local API server |
 
 ## Memory architecture
 

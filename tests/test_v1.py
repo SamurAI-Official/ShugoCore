@@ -389,8 +389,8 @@ class EthicsHardeningTestCase(unittest.TestCase):
 
 
 class VersionTestCase(unittest.TestCase):
-    def test_version_is_1_2(self):
-        self.assertEqual(__version__, "1.4.0")
+    def test_version_is_1_7(self):
+        self.assertEqual(__version__, "1.7.0")
 
 
 if __name__ == "__main__":

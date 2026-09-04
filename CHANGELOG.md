@@ -73,6 +73,29 @@ frozen: no breaking changes across any 1.x release.
   installs `mujoco>=3.0` and `numpy>=1.24`; no new required dependencies.
   installs `mujoco>=3.0` and `numpy>=1.24`; no new required dependencies.
 
+## [1.7.0] - 2026-09-03
+
+### Added — Android native layer
+
+- **`platforms/android/`** — Complete Android application shell with native
+  llama.cpp inference via JNI bindings.
+- **`LlamaCppBridge.kt`** — Kotlin JNI wrapper for llama.cpp with token
+  streaming, batching, and resource management.
+- **`LocalApiServer.kt`** — OpenAI-compatible HTTP API server running on
+  127.0.0.1:11434, enabling ShugoCore backends to work unmodified on Android.
+- **`CapabilityDetector.kt`** — Hardware capability detection (SoC, NPU, GPU,
+  RAM) for automatic model/quantization selection.
+- **`ThermalMonitor.kt`** — Battery and thermal state monitoring with
+  inference throttling and emergency shutdown.
+- **`ShugoCoreService.kt`** — Foreground service managing inference backend
+  lifecycle, thermal throttling, and periodic agent execution.
+- **`MainActivity.kt`** — Minimal UI for starting/stopping the agent service.
+- **`llama_jni.cpp`** — Native JNI bindings for llama.cpp with Vulkan GPU
+  offload support.
+- **`shugocore_agent.py`** — Python agent entrypoint for Chaquopy runtime.
+- **`android_inference.py`** — Android backend compatible with
+  `OllamaBackend` interface.
+
 ## [1.6.0] - 2026-09-03
 
 ### Added — dream consolidation and memory write gates

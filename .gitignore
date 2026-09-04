@@ -26,3 +26,4 @@ venv/
 build/
 dist/
 *.egg-info/
+.llama_build/

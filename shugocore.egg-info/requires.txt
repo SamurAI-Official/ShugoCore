@@ -3,6 +3,16 @@ requests>=2.32.0
 [chromadb]
 chromadb
 
+[postgres]
+psycopg2-binary>=2.9
+
+[shogunet]
+shugonet>=0.1.0
+
+[simulation]
+mujoco>=3.0
+numpy>=1.24
+
 [telemetry]
 opentelemetry-api>=1.20
 

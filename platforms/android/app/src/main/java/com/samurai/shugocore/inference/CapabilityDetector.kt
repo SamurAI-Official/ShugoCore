@@ -18,7 +18,7 @@ data class DeviceCapabilities(
     val recommendedQuant: String
 )
 
-class CapabilityDetector {
+class CapabilityDetector(private val context: android.content.Context) {
     private val TAG = "CapabilityDetector"
     
     fun detect(): DeviceCapabilities {
@@ -56,9 +56,7 @@ class CapabilityDetector {
     }
     
     private fun detectRam(): Int {
-        val activityManager = android.app.ActivityManager.from(
-            android.app.ApplicationProvider.getApplicationContext()
-        )
+        val activityManager = context.getSystemService(android.content.Context.ACTIVITY_SERVICE) as android.app.ActivityManager
         val memInfo = android.app.ActivityManager.MemoryInfo()
         activityManager.getMemoryInfo(memInfo)
         val ramBytes = memInfo.totalMem
@@ -66,10 +64,15 @@ class CapabilityDetector {
     }
     
     private fun detectNpu(): Boolean {
-        // Check for Qualcomm AI Engine or similar
+        // Qualcomm Hexagon NPU heuristic. Build.SOC requires API 31+;
+        // accessing it on older platforms throws NoSuchFieldError.
         return try {
-            val npuPath = File("/dev/vndspanu")
-            npuPath.exists() || Build.SOC.contains("snapdragon", ignoreCase = true)
+            val socMatch = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                Build.SOC.contains("snapdragon", ignoreCase = true)
+            } else {
+                detectSoc().contains("Snapdragon", ignoreCase = true)
+            }
+            File("/dev/vndspanu").exists() || socMatch
         } catch (e: Exception) {
             false
         }

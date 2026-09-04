@@ -16,6 +16,7 @@ import androidx.core.app.NotificationCompat
 import com.samurai.shugocore.inference.*
 import com.chaquo.python.Python
 import com.chaquo.python.PyObject
+import com.chaquo.python.android.AndroidPlatform
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
@@ -45,7 +46,7 @@ class ShugoCoreService : Service() {
         }
         python = Python.getInstance()
         thermalMonitor = ThermalMonitor(this)
-        capabilityDetector = CapabilityDetector()
+                capabilityDetector = CapabilityDetector(this)
         createNotificationChannel()
     }
     
@@ -85,7 +86,7 @@ class ShugoCoreService : Service() {
             }
             python?.let { py ->
                 pyAgent = py.getModule("shugocore_agent")
-                    .callAttr("create_agent", caps?.name)
+                    .callAttr("create_agent", caps?.soc ?: Build.MODEL)
             }
             updateNotification("ShugoCore running")
         } catch (e: Exception) {

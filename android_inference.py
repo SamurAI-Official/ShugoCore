@@ -10,15 +10,16 @@ to work unchanged on Android through the local API server.
 
 import requests
 from typing import Optional, Dict, Any, List
-from model_backends import ModelBackend
+from model_backends import BaseBackend, register_backend
 
 
-class AndroidBackend(ModelBackend):
+class AndroidBackend(BaseBackend):
     """Model backend for Android local inference server.
     
     Connects to LocalApiServer running llama.cpp via JNI.
     Compatible with OllamaBackend interface (same API format).
     """
+    name = "android"
     
     def __init__(
         self,
@@ -34,12 +35,11 @@ class AndroidBackend(ModelBackend):
     
     def generate(
         self,
+        model_id: str,
         prompt: str,
-        max_tokens: int = 128,
-        temperature: float = 0.7,
-        top_p: float = 0.9,
-        top_k: int = 40
-    ) -> Dict[str, Any]:
+        timeout: float = 30.0,
+        **kwargs
+    ) -> str:
         """Generate text using the local llama.cpp server.
         
         Uses Ollama-compatible API format.
@@ -47,45 +47,47 @@ class AndroidBackend(ModelBackend):
         response = requests.post(
             f"{self.base_url}/api/generate",
             json={
-                "model": self.model_name,
+                "model": model_id,
                 "prompt": prompt,
                 "stream": False,
                 "options": {
-                    "num_predict": max_tokens,
-                    "temperature": temperature,
-                    "top_p": top_p,
-                    "top_k": top_k
+                    "num_predict": kwargs.get("max_tokens", 128),
+                    "temperature": kwargs.get("temperature", 0.7),
+                    "top_p": kwargs.get("top_p", 0.9),
+                    "top_k": kwargs.get("top_k", 40)
                 }
             },
-            timeout=self.timeout
+            timeout=timeout or self.timeout
         )
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        return data.get("response", "")
     
     def chat(
         self,
+        model_id: str,
         messages: List[Dict[str, str]],
-        max_tokens: int = 128,
-        temperature: float = 0.7,
-        top_p: float = 0.9
-    ) -> Dict[str, Any]:
+        timeout: float = 30.0,
+        **kwargs
+    ) -> str:
         """Chat completion using the local llama.cpp server."""
         response = requests.post(
             f"{self.base_url}/api/chat",
             json={
-                "model": self.model_name,
+                "model": model_id,
                 "messages": messages,
                 "stream": False,
                 "options": {
-                    "num_predict": max_tokens,
-                    "temperature": temperature,
-                    "top_p": top_p
+                    "num_predict": kwargs.get("max_tokens", 128),
+                    "temperature": kwargs.get("temperature", 0.7),
+                    "top_p": kwargs.get("top_p", 0.9)
                 }
             },
-            timeout=self.timeout
+            timeout=timeout or self.timeout
         )
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        return data.get("message", {}).get("content", "")
     
     def list_models(self) -> List[str]:
         """List available models via the /api/tags endpoint."""
@@ -110,3 +112,7 @@ class AndroidBackend(ModelBackend):
             return response.status_code == 200
         except Exception:
             return False
+
+
+# Self-register so ``create_backend({"type": "android", ...})`` works.
+register_backend("android", AndroidBackend)

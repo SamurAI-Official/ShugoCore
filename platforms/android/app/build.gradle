@@ -8,16 +8,18 @@ android {
         applicationId "com.samurai.shugocore"
         minSdk 28
         targetSdk 34
-        versionCode 1
-        versionName "1.7.0"
+        versionCode 2
+        versionName "1.8.0"
 
         ndk {
-            abiFilters "arm64-v8a", "armeabi-v7a"
+            // arm64-v8a: 2020+ devices; x86_64: emulator testing
+            abiFilters "arm64-v8a", "x86_64"
         }
 
         externalNativeBuild {
             cmake {
                 cppFlags "-std=c++17"
+                arguments "-DANDROID_STL=c++_shared"
             }
         }
 
@@ -52,11 +54,13 @@ android {
 
 chaquopy {
     python {
-        buildPython "C:/Python311"
+        // Resolves python3 on PATH (macOS/Linux CI) — override per-machine via
+        // local.properties: chaquopy.buildPython=/path/to/python3
+        buildPython "python3"
         
         pip {
             dependencies += [
-                "shugocore==1.7.0",
+                "shugocore==1.8.0",
                 "requests",
                 "numpy"
             ]

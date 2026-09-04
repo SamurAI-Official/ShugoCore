@@ -4,6 +4,51 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.8.0] - 2026-09-03
+
+### Fixed — Android native inference is now real end-to-end
+
+The Android stack previously stopped at placeholder JNI calls and stubbed
+HTTP responses. The full chain now runs real tokens:
+
+`HTTP → LocalApiServer → LlamaCppBridge → JNI → llama.cpp → GGUF`.
+
+- **`platforms/android/app/src/main/cpp/llama_jni.cpp`** — rewritten against
+  the pinned llama.cpp (b10795) C API: `llama_model_load_from_file` /
+  `llama_init_from_model` session creation, vocab-based
+  `llama_tokenize` / `llama_token_to_piece`, `llama_decode` batching via
+  `llama_batch_get_one`, and a proper sampler chain
+  (`penalties → top_k → top_p → temp → dist`) sampled with
+  `llama_sampler_sample`. Per-session state (`ShugoSession`: model, context,
+  vocab, KV position, pending-UTF-8 buffer) replaces the previous mutable
+  globals; `nativeDrain` flushes partial multi-byte characters at
+  end-of-generation so streamed text is never corrupted mid-codepoint.
+- **`CMakeLists.txt`** — rewritten: valid CMake syntax, static llama/ggml
+  linked into `libllama_jni.so`, optional Vulkan GPU offload
+  (`-DSHUGOCORE_VULKAN=ON`), no `-march=native` (broke NDK + emulator
+  builds), and dual-target support — Android NDK builds and host CI
+  validation builds (`-DSHUGOCORE_JNI_INCLUDE=...`).
+- **`LocalApiServer.kt`** — replaced JDK-internal `com.sun.net.httpserver`
+  (absent on Android) with a minimal HTTP/1.1 implementation on
+  `ServerSocket`, loopback-only. `/api/generate` and `/api/chat` now parse
+  JSON bodies, apply sampling options (`temperature`, `top_k`, `top_p`,
+  `repeat_penalty`, `seed`, `num_predict`), stream NDJSON chunks when
+  `stream: true`, and return Ollama-shaped responses (`response` /
+  `message.content`, `done`, `eval_count`, `total_duration`) so ShugoCore's
+  `OllamaBackend`/`AndroidBackend` work unmodified.
+
+### Verified
+
+- Host build of `libllama_jni.dylib` (full llama.cpp + JNI bridge) compiles
+  and links with zero warnings against the pinned headers; all 8 JNI symbols
+  (`nativeInit`, `nativeFree`, `nativeTokenize`, `nativeDetokenize`,
+  `nativeDrain`, `nativeEvalPrompt`, `nativeGenerateToken`, `nativeReset`)
+  exported with names exactly matching the Kotlin `external fun`
+  declarations.
+- Version metadata aligned at 1.8.0 across `version.py`, `pyproject.toml`,
+  and `build.gradle`.
+
+## [1.4.0] - 2026-09-03
 ## [1.4.0] - 2026-09-03
 
 ### Added — fleet-shared Tier 2 memory (PostgreSQL + pgvector)

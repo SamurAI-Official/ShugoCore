@@ -29,6 +29,8 @@ from policy import CapabilityRegistry
 from ros2_interface import StubROS2Interface, Twist, Vector3
 from state_machine import ExecutionGovernor
 
+from android_inference import AndroidBackend
+
 
 class _FakeJBridge:
     """Pure-Python stand-in for the Kotlin jros2 bridge object."""
@@ -428,6 +430,27 @@ class TestLauncherDetection(unittest.TestCase):
     def test_none_when_all_down(self):
         found = detect_local_launcher(prober=lambda url: False)
         self.assertIsNone(found)
+
+
+class AndroidInferenceTestCase(unittest.TestCase):
+    """Tests for the on-device LocalApiServer-backed model backend."""
+
+    def test_android_backend_imports(self):
+        self.assertIsNotNone(AndroidBackend)
+
+    def test_android_backend_has_required_methods(self):
+        self.assertTrue(hasattr(AndroidBackend, "generate"))
+        self.assertTrue(hasattr(AndroidBackend, "chat"))
+        self.assertTrue(hasattr(AndroidBackend, "list_models"))
+        self.assertTrue(hasattr(AndroidBackend, "get_health"))
+
+    def test_android_backend_initialization(self):
+        backend = AndroidBackend(
+            api_url="http://127.0.0.1:11434",
+            model_name="test-model",
+            device_caps={"soc": "Snapdragon", "ram": 8},
+        )
+        self.assertEqual(backend.model_name, "test-model")
 
 
 if __name__ == "__main__":

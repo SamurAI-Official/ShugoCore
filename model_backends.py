@@ -142,6 +142,15 @@ _BACKEND_TYPES = {
 }
 
 
+def register_backend(type_name: str, backend_cls: type) -> None:
+    """Register a backend class under a config ``type`` name.
+
+    Optional backends (e.g. the Android local-inference client) self-register
+    on import instead of creating a hard import dependency here.
+    """
+    _BACKEND_TYPES[str(type_name).lower()] = backend_cls
+
+
 def create_backend(config: Optional[Dict[str, Any]] = None) -> BaseBackend:
     """Build a backend from a config dict (default: Ollama on loopback)."""
     config = dict(config or {})

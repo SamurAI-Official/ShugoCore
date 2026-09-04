@@ -4,6 +4,7 @@ android_node
 android_runtime
 audit
 autonomy
+continuous_agent
 decision_engine
 execution_layer
 fallbacks
@@ -14,11 +15,13 @@ mobile_nodes
 model_backends
 model_manager
 moveit_planner
+pg_memory
 policy
 reinforcement_learning
 robotics_handler
 ros2_interface
 security
+shugonet_bridge
 state_machine
 subconscious
 task_manager

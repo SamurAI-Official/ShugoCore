@@ -82,6 +82,19 @@ class HardwareCapabilities:
                 "total_ram_mb": self.total_ram_bytes // (1024 * 1024),
                 "available_ram_mb": self.available_ram_bytes // (1024 * 1024),
                 "model_budget_mb": self.model_ram_budget_bytes // (1024 * 1024),
+            },
+            "thermal": {
+                "status": self.thermal_status,
+                "battery_level": self.battery_level,
+                "is_charging": self.is_charging,
+            },
+            "inference": {
+                "recommended_quantization": self.recommended_quantization,
+                "recommended_gpu_layers": self.recommended_gpu_layers,
+                "supports_gpu_offload": self.supports_gpu_offload,
+            },
+        }
+
 
 class CapabilityDetector:
     """Detects Android device hardware capabilities."""
@@ -127,6 +140,22 @@ class CapabilityDetector:
                 caps.available_ram_bytes = hw_info.get("availableRam", 0)
                 caps.has_gpu = hw_info.get("hasGpu", False)
                 caps.gpu_name = hw_info.get("gpuName", "unknown")
+            caps.gpu_api = hw_info.get("gpuApi", "unknown")
+        except AttributeError:
+            pass
+        try:
+            power = self._bridge.getPowerStatus()
+            if power:
+                caps.battery_level = power.get("battery_level", 100)
+                caps.is_charging = power.get("plugged", False)
+        except AttributeError:
+            pass
+        try:
+            thermal = self._bridge.getThermalStatus()
+            if thermal is not None:
+                caps.thermal_status = int(thermal)
+        except (AttributeError, ValueError):
+            pass
 
     def _detect_via_proc(self, caps: HardwareCapabilities) -> None:
         """Detect via /proc filesystem (fallback)."""
@@ -252,32 +281,3 @@ def recommend_model(capabilities: HardwareCapabilities) -> Dict[str, Any]:
         "supports_gpu_offload": capabilities.supports_gpu_offload,
         "max_batch_size": 1 if capabilities.thermal_status >= 2 else 5,
     }
-                caps.gpu_api = hw_info.get("gpuApi", "unknown")
-        except AttributeError:
-            pass
-        try:
-            power = self._bridge.getPowerStatus()
-            if power:
-                caps.battery_level = power.get("battery_level", 100)
-                caps.is_charging = power.get("plugged", False)
-        except AttributeError:
-            pass
-        try:
-            thermal = self._bridge.getThermalStatus()
-            if thermal is not None:
-                caps.thermal_status = int(thermal)
-        except (AttributeError, ValueError):
-            pass
-                "recommended_context_size": self.recommended_context_size,
-            },
-            "thermal": {
-                "status": self.thermal_status,
-                "battery_level": self.battery_level,
-                "is_charging": self.is_charging,
-            },
-            "inference": {
-                "recommended_quantization": self.recommended_quantization,
-                "recommended_gpu_layers": self.recommended_gpu_layers,
-                "supports_gpu_offload": self.supports_gpu_offload,
-            },
-        }

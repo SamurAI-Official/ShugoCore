@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.ShugoCore" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="colorPrimary">@color/shugocore_primary</item>
+        <item name="colorAccent">@color/shugocore_accent</item>
+        <item name="android:windowBackground">@color/shugocore_background</item>
+        <item name="android:textColor">@color/shugocore_text</item>
+    </style>
+</resources>

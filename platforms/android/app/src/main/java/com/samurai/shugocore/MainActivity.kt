@@ -8,6 +8,7 @@ import android.content.ServiceConnection
 import android.os.Bundle
 import android.os.IBinder
 import android.widget.Button
+import android.widget.EditText
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 
@@ -16,6 +17,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var stopButton: Button
     private lateinit var statusText: TextView
     private lateinit var memoryText: TextView
+    private lateinit var serverUrlText: EditText
     
     private var service: ShugoCoreService? = null
     private var bound = false
@@ -63,6 +65,14 @@ class MainActivity : AppCompatActivity() {
             text = "Memory: --"
             textSize = 14f
         }
+
+        val prefs = getSharedPreferences("shugocore_prefs", Context.MODE_PRIVATE)
+        serverUrlText = EditText(this).apply {
+            id = R.id.server_url_input
+            hint = "Desktop server URL (blank = on-device)"
+            setText(prefs.getString("desktop_api_url", ""))
+            textSize = 14f
+        }
         
         startButton.setOnClickListener { startService() }
         stopButton.setOnClickListener { stopService() }
@@ -78,11 +88,21 @@ class MainActivity : AppCompatActivity() {
             topMargin = margin
         }
         
+        serverUrlText.layoutParams = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams(
+            0,
+            androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            topToBottom = R.id.status_text
+            topMargin = margin
+            startToStart = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID
+            endToEnd = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID
+        }
+        
         startButton.layoutParams = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams(
             androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.WRAP_CONTENT,
             androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.WRAP_CONTENT
         ).apply {
-            topToBottom = R.id.status_text
+            topToBottom = R.id.server_url_input
             topMargin = margin
         }
         
@@ -103,6 +123,7 @@ class MainActivity : AppCompatActivity() {
         }
         
         layout.addView(statusText)
+        layout.addView(serverUrlText)
         layout.addView(startButton)
         layout.addView(stopButton)
         layout.addView(memoryText)
@@ -126,6 +147,9 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun startService() {
+        val prefs = getSharedPreferences("shugocore_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("desktop_api_url", serverUrlText.text.toString().trim())
+            .apply()
         Intent(this, ShugoCoreService::class.java).also {
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                 startForegroundService(it)

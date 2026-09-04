@@ -4,6 +4,35 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [Unreleased]
+
+### Added — Desktop server mode (macOS / Linux / Windows)
+
+Users without a high-end 2020+ Android phone can now run the full agent on a
+desktop and pair the phone as a lightweight node:
+
+- **`shugocore_server.py`** — new stdlib-only HTTP server (`shugocore-server`
+  console script). Speaks the Ollama wire contract (`/api/generate`,
+  `/api/chat`, `/api/tags`, `/health`) on one port, so the phone's existing
+  `AndroidBackend` connects with zero client changes, plus the engine API
+  (`/api/v1/status`, `POST /api/v1/task`) that routes through the same
+  policy-gated `execute_task` pipeline as a local call.
+- **Backends** — `--backend ollama|llamacpp|openai|stub` with `--backend-url`;
+  the same backend config is shared between the HTTP server and the engine's
+  model registry so `/api/v1/task` decisions use the identical backend.
+- **Android desktop mode** — `create_agent(soc, api_url)` accepts a desktop
+  server URL; `MainActivity` gains a "Desktop server URL" field persisted to
+  `SharedPreferences` and `ShugoCoreService` passes it to the agent. On-device
+  llama.cpp remains the default when the field is blank.
+- **Fixes** — the Android agent's engine model config now includes the
+  required `id`/`type` keys (previously a silent `KeyError` on device); agent
+  tick cadence reduced from 100 ms to 1 s (avoid hammering the LLM + battery).
+- **Tests** — `tests/test_shugocore_server.py` exercises every endpoint with
+  real HTTP (health, tags, generate, streaming, chat, task success/policy
+  block, status, 404, CORS preflight).
+- **Docs** — `docs/desktop_server.md` with per-OS setup (macOS brew, Linux
+  systemd + ufw, Windows firewall rule) and README section.
+
 ## [1.8.0] - 2026-09-03
 
 ### Fixed — Android native inference is now real end-to-end

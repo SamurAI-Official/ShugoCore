@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#1B2B1B</color>
-    <string name="app_name">ShugoCore</string>
+    <color name="shugocore_primary">#FF1A1A2E</color>
+    <color name="shugocore_accent">#FFE94560</color>
+    <color name="shugocore_background">#FF16213E</color>
+    <color name="shugocore_text">#FFFFFFFF</color>
+    <color name="shugocore_text_secondary">#FFB0B0B0</color>
 </resources>

@@ -1,7 +1,10 @@
-apply plugin: 'com.android.application'
-apply plugin: 'com.chaquo.python'
+plugins {
+    id 'com.android.application'
+    id 'com.chaquo.python'
+}
 
 android {
+    namespace "com.samurai.shugocore"
     compileSdk 34
 
     defaultConfig {
@@ -34,14 +37,14 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
     }
 
     externalNativeBuild {
         cmake {
             path "src/main/cpp/CMakeLists.txt"
-            version "3.18.0"
+            version "3.22.1"
         }
     }
 
@@ -53,17 +56,12 @@ android {
 }
 
 chaquopy {
-    python {
-        // Resolves python3 on PATH (macOS/Linux CI) — override per-machine via
-        // local.properties: chaquopy.buildPython=/path/to/python3
-        buildPython "python3"
-        
+    defaultConfig {
+        version "3.13"
         pip {
-            dependencies += [
-                "shugocore==1.8.0",
-                "requests",
-                "numpy"
-            ]
+            install "shugocore==1.8.0"
+            install "requests"
+            install "numpy"
         }
     }
 }
@@ -71,5 +69,6 @@ chaquopy {
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.7.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
-    implementation 'com.chaquo.python:python:12.4.0'
+    implementation 'androidx.core:core-ktx:1.13.1'
+    implementation 'org.jetbrains.kotlin:kotlin-stdlib:2.0.21'
 }

@@ -24,6 +24,7 @@ simulation = ["mujoco>=3.0", "numpy>=1.24"]
 
 [project.scripts]
 shugocore-verify-audit = "audit:cli_main"
+shugocore-server = "shugocore_server:main"
 
 [tool.setuptools]
 py-modules = ["acceleration", "android_bridge", "android_node",
@@ -34,6 +35,6 @@ py-modules = ["acceleration", "android_bridge", "android_node",
               "moveit_planner", "pg_memory", "policy",
               "reinforcement_learning",
               "robotics_handler", "ros2_interface", "security",
-              "shugonet_bridge", "state_machine", "subconscious",
+              "shugonet_bridge", "shugocore_server", "state_machine", "subconscious",
               "task_manager", "telemetry", "token_budget", "vector_db",
               "version"]

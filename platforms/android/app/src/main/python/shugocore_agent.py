@@ -1,13 +1,16 @@
 # Python agent entrypoint for Android (Chaquopy).
 #
 # Called from Kotlin ShugoCoreService:
-#   create_agent(soc) -> AndroidAgent   # build agent (memory + engine)
+#   create_agent(soc, api_url) -> AndroidAgent  # build agent (memory + engine)
 #   agent.tick()                        # one OBSERVE -> DECIDE -> ACT cycle
 #   agent.get_status()                  # UI status dict
 #   agent.cleanup()                     # flush + consolidate on shutdown
 #
-# The decision engine talks to the on-device llama.cpp stack through the
-# "android" backend (LocalApiServer on 127.0.0.1:11434, Ollama-compatible).
+# The decision engine talks to a backend over the Ollama wire contract:
+#   * default: on-device llama.cpp stack (LocalApiServer on 127.0.0.1:11434)
+#   * api_url set: a ShugoCore desktop server (or any Ollama-compatible host)
+#     at http://<desktop-ip>:<port> -- used on devices too weak for on-device
+#     inference (older than the 2020 mid/high-tier recommendation).
 
 import logging
 import time
@@ -19,10 +22,12 @@ logger = logging.getLogger("shugocore_android")
 
 
 class AndroidAgent:
-    """Android-specific agent wrapper with local inference backend."""
+    """Android-specific agent wrapper with pluggable inference backend."""
 
-    def __init__(self, device_caps: Optional[str] = None):
+    def __init__(self, device_caps: Optional[str] = None,
+                 api_url: Optional[str] = None):
         self.device_caps = device_caps or "Unknown"
+        self.api_url = api_url or "http://127.0.0.1:11434"
         self.tick_count = 0
 
         # Import order matters: android_inference self-registers the
@@ -42,17 +47,23 @@ class AndroidAgent:
 
         self.engine: Optional[Any] = self._initialize_engine(DecisionEngine)
 
-        logger.info("AndroidAgent initialized (device: %s)", self.device_caps)
+        logger.info("AndroidAgent initialized (device: %s, api: %s)",
+                    self.device_caps, self.api_url)
 
     def _initialize_engine(self, engine_cls) -> Optional[Any]:
-        """Initialize the decision engine with the local API backend."""
+        """Initialize the decision engine with the configured backend."""
         try:
             return engine_cls(
                 models=[{
-                    "type": "android",
-                    "api_url": "http://127.0.0.1:11434",
-                    "model_name": "shugocore-local",
-                    "device_caps": {"soc": self.device_caps},
+                    "id": "shugocore-local",
+                    "type": "text",
+                    "weight": 1.0,
+                    "backend": {
+                        "type": "android",
+                        "api_url": self.api_url,
+                        "model_name": "shugocore-local",
+                        "device_caps": {"soc": self.device_caps},
+                    },
                 }],
                 vector_db_config={"type": "chroma"},
                 memory_db_path=str(Path("semantic_memory.db")),
@@ -137,6 +148,14 @@ class AndroidAgent:
         logger.info("Agent cleaned up")
 
 
-def create_agent(device_caps: Optional[str] = None) -> AndroidAgent:
-    """Factory function called from Kotlin ShugoCoreService."""
-    return AndroidAgent(device_caps=device_caps)
+def create_agent(device_caps: Optional[str] = None,
+                 api_url: Optional[str] = None) -> AndroidAgent:
+    """Factory function called from Kotlin ShugoCoreService.
+
+    Args:
+        device_caps: SoC / device label for memory agent naming.
+        api_url: optional backend URL. When set (e.g. a user-entered
+            ShugoCore desktop server at http://<desktop-ip>:<port>),
+            inference runs on that host instead of on-device llama.cpp.
+    """
+    return AndroidAgent(device_caps=device_caps, api_url=api_url)

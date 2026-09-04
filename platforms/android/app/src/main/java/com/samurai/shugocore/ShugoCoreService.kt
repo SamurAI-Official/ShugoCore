@@ -66,7 +66,7 @@ class ShugoCoreService : Service() {
             } catch (e: Exception) {
                 Log.e(TAG, "Error in agent tick", e)
             }
-        }, 0, 100, TimeUnit.MILLISECONDS)
+        }, 0, 1000, TimeUnit.MILLISECONDS)
         return START_STICKY_REDELIVER_INTENT
     }
     
@@ -82,11 +82,18 @@ class ShugoCoreService : Service() {
                 }
                 apiServer = LocalApiServer(llamaBridge!!).apply { start() }
             } else {
-                Log.w(TAG, "No model found, using Python-only mode")
+                Log.w(TAG, "No model found, using external/desktop backend")
             }
+            val prefs = getSharedPreferences("shugocore_prefs", MODE_PRIVATE)
+            val desktopApiUrl = prefs.getString("desktop_api_url", null)
             python?.let { py ->
+                val callArgs = if (desktopApiUrl != null) {
+                    arrayOf<Any>(caps?.soc ?: Build.MODEL, desktopApiUrl)
+                } else {
+                    arrayOf<Any>(caps?.soc ?: Build.MODEL)
+                }
                 pyAgent = py.getModule("shugocore_agent")
-                    .callAttr("create_agent", caps?.soc ?: Build.MODEL)
+                    .callAttr("create_agent", callArgs)
             }
             updateNotification("ShugoCore running")
         } catch (e: Exception) {

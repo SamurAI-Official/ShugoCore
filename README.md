@@ -86,6 +86,7 @@ decoupled maintenance worker that never blocks the primary loop.
 | `telemetry.py` | Telemetry hooks |
 | `token_budget.py` | Context budgeting |
 | `android_inference.py` | Android local inference backend (OpenAI-compatible) |
+| `shugocore_server.py` | Desktop server: Ollama wire contract + engine API (`shugocore-server`) |
 | `platforms/android/` | Android app shell with llama.cpp JNI, foreground service, local API server |
 
 ## Memory architecture
@@ -200,6 +201,31 @@ On-device model execution uses standard local launchers: ShugoCore probes
 llama.cpp (`/health`), Ollama (`/api/tags`) and LM Studio (`/v1/models`),
 and every backend URL must pass the loopback + port allowlist check before
 the first prompt leaves the process.
+
+### Desktop server mode (no high-end phone needed)
+
+Users with a device older than the 2020 mid/high-tier recommendation can run
+the full agent on a desktop (macOS / Linux / Windows) and pair the phone as a
+lightweight node. The phone's `AndroidBackend` points at the desktop via the
+"Desktop server URL" field in the app - zero client protocol changes, because
+the desktop speaks the same Ollama wire contract plus the engine API.
+
+```bash
+pip install shugocore
+shugocore-server --backend ollama --model qwen3.5:latest --host 0.0.0.0
+```
+
+Endpoints on the server:
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/generate`, `/api/chat` | Ollama wire contract (what `AndroidBackend` calls) |
+| `GET /api/tags`, `/health` | Model listing + readiness |
+| `GET /api/v1/status` | Engine / governor / fallback / memory state |
+| `POST /api/v1/task` | Policy-gated `execute_task` over the network |
+
+Backends: `ollama` (default), `llamacpp`, `openai`, `stub` (offline tests).
+Full setup for each OS: [`docs/desktop_server.md`](docs/desktop_server.md).
 
 ## Multi-agent networking with Shogunet
 

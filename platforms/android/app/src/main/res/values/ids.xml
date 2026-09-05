@@ -5,5 +5,8 @@
     <item name="start_button" type="id" />
     <item name="stop_button" type="id" />
     <item name="memory_text" type="id" />
-<item name="server_url_input" type="id" />
+    <item name="server_url_input" type="id" />
+    <item name="models_button" type="id" />
+    <item name="model_text" type="id" />
+    <item name="model_progress" type="id" />
 </resources>

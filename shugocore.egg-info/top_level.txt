@@ -1,5 +1,6 @@
 acceleration
 android_bridge
+android_inference
 android_node
 android_runtime
 audit
@@ -21,6 +22,8 @@ reinforcement_learning
 robotics_handler
 ros2_interface
 security
+shugocore_agent
+shugocore_server
 shugonet_bridge
 state_machine
 subconscious

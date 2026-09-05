@@ -33,5 +33,7 @@ local.properties
 platforms/android/app/build/
 platforms/android/.gradle/
 platforms/android/build/
+.gradle/
+.cxx/
 *.apk
 *.aab

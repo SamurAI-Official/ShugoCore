@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * The native side owns a ShugoSession (model + context + vocab + KV state);
  * every native call here passes [sessionPtr] as its first argument.
  */
-class LlamaCppBridge(private val modelPath: String) : AutoCloseable {
+class LlamaCppBridge(val modelPath: String) : AutoCloseable {
     private val TAG = "LlamaCppBridge"
     private val isInitialized = AtomicBoolean(false)
     private var sessionPtr: Long = 0

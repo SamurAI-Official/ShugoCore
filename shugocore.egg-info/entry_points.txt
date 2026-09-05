@@ -1,2 +1,3 @@
 [console_scripts]
+shugocore-server = shugocore_server:main
 shugocore-verify-audit = audit:cli_main

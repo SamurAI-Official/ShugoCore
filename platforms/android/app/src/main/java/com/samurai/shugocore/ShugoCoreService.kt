@@ -17,6 +17,7 @@ import com.samurai.shugocore.inference.*
 import com.chaquo.python.Python
 import com.chaquo.python.PyObject
 import com.chaquo.python.android.AndroidPlatform
+import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
@@ -46,14 +47,14 @@ class ShugoCoreService : Service() {
         }
         python = Python.getInstance()
         thermalMonitor = ThermalMonitor(this)
-                capabilityDetector = CapabilityDetector(this)
+        capabilityDetector = CapabilityDetector(this)
         createNotificationChannel()
     }
     
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "Service started")
         startForeground(1, buildNotification("Initializing ShugoCore..."))
-        initializeInference()
+        executor.execute { initializeInference() }
         executor.scheduleAtFixedRate({
             try {
                 val config = thermalMonitor?.getInferenceConfig()
@@ -61,27 +62,24 @@ class ShugoCoreService : Service() {
                     Log.w(TAG, "Thermal emergency shutdown")
                     stopSelf()
                 } else if (config?.shouldPause != true) {
+                    thermalMonitor?.let { tm ->
+                        try { pyAgent?.callAttr("update_telemetry", tm.getTelemetryMap()) }
+                        catch (e: Exception) { Log.w(TAG, "telemetry push failed: ${e.message}") }
+                    }
                     pyAgent?.callAttr("tick")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error in agent tick", e)
             }
         }, 0, 1000, TimeUnit.MILLISECONDS)
-        return START_STICKY_REDELIVER_INTENT
+        return Service.START_STICKY
     }
     
     private fun initializeInference() {
         try {
             val caps = capabilityDetector?.detect()
-            val modelPath = findModelFile()
-            if (modelPath != null) {
-                llamaBridge = LlamaCppBridge(modelPath).apply {
-                    nGpuLayers = CapabilityDetector.getGpuLayers(caps?.soc ?: "")
-                    nThreads = Runtime.getRuntime().availableProcessors() / 2
-                    initialize()
-                }
-                apiServer = LocalApiServer(llamaBridge!!).apply { start() }
-            } else {
+            startLlamaIfModelAvailable(caps?.soc ?: "")
+            if (apiServer == null) {
                 Log.w(TAG, "No model found, using external/desktop backend")
             }
             val prefs = getSharedPreferences("shugocore_prefs", MODE_PRIVATE)
@@ -93,7 +91,7 @@ class ShugoCoreService : Service() {
                     arrayOf<Any>(caps?.soc ?: Build.MODEL)
                 }
                 pyAgent = py.getModule("shugocore_agent")
-                    .callAttr("create_agent", callArgs)
+                    .callAttr("create_agent", *callArgs)
             }
             updateNotification("ShugoCore running")
         } catch (e: Exception) {
@@ -102,12 +100,44 @@ class ShugoCoreService : Service() {
         }
     }
     
+    /**
+     * Starts the on-device llama.cpp stack (bridge + loopback API server) when a
+     * model file is available. Safe to call repeatedly — no-ops while running.
+     * Returns the active model path, or null when nothing is loaded. Must be
+     * called off the main thread (model loading blocks for seconds).
+     */
+    private fun startLlamaIfModelAvailable(soc: String): String? {
+        if (apiServer != null) return llamaBridge?.modelPath
+        val modelPath = findModelFile() ?: return null
+        llamaBridge?.close()
+        val bridge = LlamaCppBridge(modelPath).apply {
+            nGpuLayers = CapabilityDetector.getGpuLayers(soc)
+            nThreads = Runtime.getRuntime().availableProcessors() / 2
+        }
+        if (!bridge.initialize()) {
+            Log.e(TAG, "Failed to load on-device model: $modelPath")
+            bridge.close()
+            return null
+        }
+        llamaBridge = bridge
+        apiServer = LocalApiServer(bridge, modelName = File(modelPath).nameWithoutExtension)
+        apiServer?.start()
+        Log.i(TAG, "On-device model active: $modelPath")
+        return modelPath
+    }
+
     private fun findModelFile(): String? {
+        // The user-selected model (from the Models dialog) always wins.
+        val prefs = getSharedPreferences("shugocore_prefs", MODE_PRIVATE)
+        prefs.getString("selected_model", null)?.let { p ->
+            val f = File(p)
+            if (f.exists() && f.name.endsWith(".gguf")) return p
+        }
         val modelDirs = listOf(
             filesDir.resolve("models"),
             externalCacheDir?.resolve("models")
         )
-        modelDirs.forEach { dir ->
+        modelDirs.filterNotNull().forEach { dir ->
             if (dir.exists()) {
                 dir.listFiles()?.forEach { file ->
                     if (file.name.endsWith(".gguf")) return file.absolutePath
@@ -141,6 +171,52 @@ class ShugoCoreService : Service() {
         manager?.notify(1, buildNotification(text))
     }
     
+    fun getAgentStatus(): Map<String, Any> {
+        return try {
+            pyAgent?.callAttr("get_status")?.toJava(Map::class.java) as? Map<String, Any> ?: emptyMap()
+        } catch (e: Exception) { emptyMap() }
+    }
+
+    fun runSensorTestCycle(steps: Int = 5): Map<String, Any> {
+        return try {
+            pyAgent?.callAttr("sensor_test_cycle", steps)?.toJava(Map::class.java) as? Map<String, Any> ?: emptyMap()
+        } catch (e: Exception) { emptyMap() }
+    }
+
+    fun getDeviceRecommendation(): String {
+        return try {
+            capabilityDetector?.detect()?.let { c ->
+                "Recommend ${c.modelBudget} @ ${c.recommendedQuant}, ${c.ramGb}GB RAM, GPU=${CapabilityDetector.getGpuLayers(c.soc)} layers"
+            } ?: "Capability detection unavailable"
+        } catch (e: Exception) { "Capability detection failed: ${e.message}" }
+    }
+
+    /**
+     * Hot-loads the selected/downloaded .gguf and starts the loopback API
+     * server. The Python agent's default backend is http://127.0.0.1:11434 —
+     * exactly where LocalApiServer binds — so the agent picks the model up on
+     * its next generate call with no restart. [onLoaded] receives the active
+     * model path, or null when nothing could be loaded.
+     */
+    fun loadOnDeviceModel(onLoaded: ((String?) -> Unit)? = null) {
+        executor.execute {
+            val path = try {
+                startLlamaIfModelAvailable(capabilityDetector?.detect()?.soc ?: "")
+            } catch (e: Exception) {
+                Log.e(TAG, "loadOnDeviceModel failed", e)
+                null
+            }
+            updateNotification(
+                if (path != null) "On-device model: ${File(path).name}"
+                else "ShugoCore running (external backend)"
+            )
+            onLoaded?.let { cb -> handler.post { cb(path) } }
+        }
+    }
+
+    /** File name of the currently loaded on-device model, if any. */
+    fun activeModelName(): String? = llamaBridge?.modelPath?.let { File(it).name }
+
     override fun onBind(intent: Intent?): IBinder = binder
     
     override fun onDestroy() {

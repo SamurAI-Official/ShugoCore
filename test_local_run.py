@@ -102,13 +102,14 @@ def test_ollama_generation():
     try:
         from model_backends import OllamaBackend
         
-        backend = OllamaBackend(base_url="http://127.0.0.1:11434", timeout=120.0)
-        
+                # 300s tolerates the first-load cold-start of the 6.5GB qwen3.5 model (can exceed 120s).
+        backend = OllamaBackend(base_url="http://127.0.0.1:11434", timeout=300.0)
+
         start = time.time()
         response = backend.generate(
             "qwen3.5:latest",
-            "Say 'hello' in one word.",
-            timeout=120.0
+                        "Say 'hello' in one word.",
+            timeout=300.0
         )
         elapsed = time.time() - start
         
@@ -128,7 +129,7 @@ def test_decision_engine():
         from decision_engine import DecisionEngine
         from model_backends import OllamaBackend
         
-        backend = OllamaBackend(base_url="http://127.0.0.1:11434", timeout=120.0)
+        backend = OllamaBackend(base_url="http://127.0.0.1:11434", timeout=300.0)
         
         # Create engine with Ollama backend
         # Use chroma for vector DB (will fall back to stub if not installed)

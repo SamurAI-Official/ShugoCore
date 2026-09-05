@@ -64,14 +64,11 @@ class CapabilityDetector(private val context: android.content.Context) {
     }
     
     private fun detectNpu(): Boolean {
-        // Qualcomm Hexagon NPU heuristic. Build.SOC requires API 31+;
-        // accessing it on older platforms throws NoSuchFieldError.
+        // Qualcomm Hexagon / Snapdragon NPU heuristic. detectSoc() parses
+        // /proc/cpuinfo and works on all API levels (avoids Build.SOC, which
+        // is API-34-only and throws NoSuchFieldError below minSdk 28).
         return try {
-            val socMatch = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                Build.SOC.contains("snapdragon", ignoreCase = true)
-            } else {
-                detectSoc().contains("Snapdragon", ignoreCase = true)
-            }
+            val socMatch = detectSoc().contains("Snapdragon", ignoreCase = true)
             File("/dev/vndspanu").exists() || socMatch
         } catch (e: Exception) {
             false

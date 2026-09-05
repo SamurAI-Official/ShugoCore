@@ -2,6 +2,7 @@ LICENSE
 README.md
 acceleration.py
 android_bridge.py
+android_inference.py
 android_node.py
 android_runtime.py
 audit.py
@@ -24,6 +25,8 @@ reinforcement_learning.py
 robotics_handler.py
 ros2_interface.py
 security.py
+shugocore_agent.py
+shugocore_server.py
 shugonet_bridge.py
 state_machine.py
 subconscious.py
@@ -50,6 +53,8 @@ tests/test_platform_isolation.py
 tests/test_robotics.py
 tests/test_ros2_transport_stress.py
 tests/test_security.py
+tests/test_sensor_engagement.py
+tests/test_shugocore_server.py
 tests/test_shugonet.py
 tests/test_simulation.py
 tests/test_thermal_stress.py

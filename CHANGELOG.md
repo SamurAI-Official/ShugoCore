@@ -4,7 +4,62 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
-## [Unreleased]
+## [1.8.1] - 2026-09-04
+
+### Added — On-device model download & selection UI
+
+- **`inference/ModelDownloader.kt`** — curated catalog of 5 ungated Hugging
+  Face GGUF quantizations (Qwen2.5-0.5B/1.5B/3B-Instruct, Llama-3.2-1B-Instruct,
+  SmolLM2-1.7B-Instruct, all Q4_K_M) with exact LFS byte sizes used for
+  progress and integrity checks; every `resolve/main` URL verified reachable
+  without auth (HTTP 200).
+- **Resumable downloads** — `HttpURLConnection` with HTTP-Range resume,
+  `.part` → atomic rename, byte-size verification, cancellation, and up to 5
+  automatic retries on dropped streams; files land in `filesDir/models`, the
+  directory `findModelFile()` already scans.
+- **`MainActivity` "Models…" dialog** — per-model `recommended` (chosen by RAM
+  tier via `CapabilityDetector`) / `downloaded` / `ACTIVE` tags, listing of
+  sideloaded `.gguf` files, select & load / delete flows, a live %/MB progress
+  bar, and download cancellation.
+- **`ShugoCoreService.loadOnDeviceModel()`** binder API hot-loads the selected
+  model and starts `LocalApiServer` on `127.0.0.1:11434` **without restarting
+  the agent** — the agent's default `OllamaBackend` URL is the same loopback
+  endpoint, so on-device inference activates on the next generate call.
+  `findModelFile()` now prefers the persisted `selected_model`.
+
+### Added — Sensor engagement test cycle
+
+- `AndroidAgent.update_telemetry()` / `sensor_test_cycle(steps)` / enriched
+  `get_status()` in `shugocore_agent.py`; Kotlin pushes
+  `ThermalMonitor.getTelemetryMap()` (battery, charging, CPU temp, RAM,
+  accelerometer XYZ, thermal state) every tick before `tick()`.
+- Binder APIs `getAgentStatus()` / `runSensorTestCycle()` /
+  `getDeviceRecommendation()`; `MainActivity` polls agent status at 1 Hz
+  (fixes the frozen memory display) and surfaces the device recommendation.
+- `tests/test_sensor_engagement.py` — 6 tests covering backend registration,
+  agent factory, telemetry→observation mapping, stub fallback, the sensor
+  cycle, and determinism; all passing.
+
+### Fixed — "Start Agent does nothing" on Android
+
+- Root cause: `android_inference` (and the engine closure) was never bundled
+  into the Chaquopy source set, so `create_backend({"type": "android"})`
+  raised `ValueError`, was silently caught, and left `pyAgent = null`.
+  `py-modules` now includes `android_inference` + `shugocore_agent`, and all
+  21 engine modules are bundled into `app/src/main/python/`.
+- `DecisionEngine` is imported lazily inside a guarded `_initialize_engine` —
+  missing engine dependencies now degrade to the stub observation loop instead
+  of crashing agent construction.
+- Kotlin compile fixes: `Service.START_STICKY` (previous constant is
+  API-34-only), `PyObject.toJava(Map::class.java)` (replaced the non-existent
+  `toJavaMap()`), vararg spread for `create_agent(soc, api_url)` (the array
+  was being passed as a single argument, silently dropping `api_url`),
+  null-safe model-dir scan, and inference init moved off the main thread.
+
+### Fixed — Backend resilience
+
+- `OllamaBackend` default timeout raised 30 → 120 s: cold model loads on a
+  desktop host exceeded 30 s and made every decision fall back.
 
 ### Added — Desktop server mode (macOS / Linux / Windows)
 
@@ -32,6 +87,24 @@ desktop and pair the phone as a lightweight node:
   block, status, 404, CORS preflight).
 - **Docs** — `docs/desktop_server.md` with per-OS setup (macOS brew, Linux
   systemd + ufw, Windows firewall rule) and README section.
+
+### Fixed — Android build toolchain
+
+- **Gradle wrapper** pinned from 9.3.0 back to **8.11.1**. Gradle 9 removed the
+  `Project.exec(Action)` overload that AGP 8.7.3's `NativeModelBuilder` / CMake
+  file-API invocation depends on, which crashed every Studio sync with
+  `java.lang.NoSuchMethodError: Project.exec(Action)`. 8.11.1 is the Gradle
+  version AGP 8.7.3 is tested against (and KGP 2.0.21's matched max, so no
+  version warnings).
+- **Daemon JDK** pinned to **JDK 21** via `~/.gradle/gradle.properties`
+  (`org.gradle.java.home`). The only JDK on the machine was Temurin 25, on which
+  Gradle 8.x cannot run; JDK 21 comes from `brew install openjdk@21`.
+- **app module** now applies `org.jetbrains.kotlin.android`. The `.kt` sources
+  (`MainActivity.kt`, `LlamaCppBridge.kt`, `LocalApiServer.kt`,
+  `ThermalMonitor.kt`, `CapabilityDetector.kt`) were never compiled because the
+  Kotlin Gradle plugin was missing from `plugins {}`.
+- Pinned `ndkVersion "27.0.12077973"` (matches the installed NDK r27) and added
+  `buildPython "python3"` for deterministic, macOS-friendly builds.
 
 ## [1.8.0] - 2026-09-03
 

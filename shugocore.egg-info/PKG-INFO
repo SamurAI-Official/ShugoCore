@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: shugocore
-Version: 1.11.0
+Version: 1.12.0
 Summary: A continuous orchestration layer for synthetic functional agency: multi-model decisions, tool execution, four-tier memory, deterministic safety interlocks.
 Author: SamurAI-Official
 License: MIT
@@ -31,8 +31,8 @@ Dynamic: license-file
 > A continuous orchestration layer for synthetic functional agency.
 
 [![PyPI](https://img.shields.io/pypi/v/shugocore)](https://pypi.org/project/shugocore/)
-![Release](https://img.shields.io/badge/release-v1.11.0-blue)
-![Tests](https://img.shields.io/badge/tests-504%20passing-brightgreen)
+![Release](https://img.shields.io/badge/release-v1.12.0-blue)
+![Tests](https://img.shields.io/badge/tests-529%20passing-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%E2%80%933.12-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android%20%28Termux%2FChaquopy%29-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -96,6 +96,7 @@ decoupled maintenance worker that never blocks the primary loop.
 | `memory_system.py` | Four-tier memory architecture (below) |
 | `security.py` | Secrets, redaction, URL validation, rate limiting, circuit breaker |
 | `policy.py` | Capability registry, approval broker, consent registry |
+| `human_interaction.py` | Human Interaction contract: observation/response schema, bounded interaction bus, presence state machine |
 | `audit.py` | Tamper-evident hash-chained audit log |
 | `model_backends.py` | Pluggable model adapters (Ollama HTTP, OpenAI-compatible, stub) |
 | `ros2_interface.py` | ROS 2 abstraction: abstract message types, Twist sanitization, stub and rclpy implementations |
@@ -235,7 +236,7 @@ allowlist check before the first prompt leaves the process.
 
 The Android app is the management console for an embodied AI node: an
 always-visible **NODE STATUS** header (agent online, model, inference mode,
-memory, sensors n-of-n, policy, network, temperature, battery) above
+memory, sensors n-of-n, human, policy, network, temperature, battery) above
 **SERVER / AGENT / SENSORS / SECURITY / LOG** tabs. Every row renders real
 runtime state via a `getNodeSnapshot()` service binder call — no decorative
 indicators.
@@ -621,6 +622,7 @@ SHUGOCORE_LIVE_LLAMA_URL=http://127.0.0.1:8080 python -m unittest tests.test_liv
 ```
 ShugoCore/
 ├── decision_engine.py        # orchestration entry point; single gated path
+├── human_interaction.py      # human-interaction contract: observation bus + presence
 ├── autonomy.py               # autonomous task generation and learning cycles
 ├── model_manager.py          # model registry and performance tracking
 ├── subconscious.py           # structured-decision prompts via backends

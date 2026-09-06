@@ -10,6 +10,7 @@ decision_engine
 execution_layer
 fallbacks
 gazebo_simulation
+human_interaction
 logging_manager
 memory_system
 mobile_nodes

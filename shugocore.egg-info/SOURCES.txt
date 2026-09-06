@@ -12,6 +12,7 @@ decision_engine.py
 execution_layer.py
 fallbacks.py
 gazebo_simulation.py
+human_interaction.py
 logging_manager.py
 memory_system.py
 mobile_nodes.py
@@ -48,6 +49,7 @@ tests/test_android_lifecycle_stress.py
 tests/test_android_tree_sync.py
 tests/test_continuous_agent.py
 tests/test_dream.py
+tests/test_human_interaction.py
 tests/test_mobile.py
 tests/test_model_execution_stress.py
 tests/test_pg_memory.py

@@ -4,6 +4,46 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.17.0] - 2026-09-06 — closed-loop validation: the loop is proven, not assumed
+
+### Conversation events — the Record stage of the conversational loop
+
+- **Round-trip records** — when a spoken answer pairs with a pending
+  question (1.16 pairing), the bus now records
+  `{question, answer, round_trip_s, ts}` in a bounded deque (8); the agent
+  shell drains completed exchanges each tick via
+  `drain_conversation_events()`.
+- **Journal metadata only** — the shell journals `conversation_event` to
+  Tier 1 as latency + word counts (`round_trip_s`, `question_chars`,
+  `answer_chars`, `privacy_scope: local`). Raw words never enter memory —
+  the 1.12 transcripts-never-enter-memory rule preserved and now enforced
+  by an asserted word-absence test.
+- **`stats()`** gained `conversation_events` and `last_conversation_event`.
+
+### `pipeline_health()` — the SHUGOCORE LIVE monitor
+
+- **One honest liveness view over the closed loop**: `sensors` / `vision` /
+  `hearing` judged from the bus's own buffer freshness (60 s / 60 s / 120 s),
+  `speech` / `model` / `memory` from agent-side truths passed in by the
+  shell. States: `ok` (fresh evidence), `stale` (evidence expired), `down`
+  (provider absent), `unknown` (no evidence yet — never fabricated).
+- **Honest overall**: agent-truth-ok alone is not loop evidence (a healthy
+  model with no human sensor data reads `unknown`, not `ok`); any `down`
+  stage makes the whole pipeline `down`.
+- **`get_status()`** exposes it as `pipeline` (JSON-boundary safe); the
+  AGENT tab gained the **Validation** section rendering all six stages with
+  evidence-based colors.
+
+### Tests — 15 new (`tests/test_closed_loop.py`), 579 total
+
+- Round-trip record/drain semantics (drain consumes — journal, not
+  archive), TTL expiry never pairs, bounded deque, ask-response arming.
+- Pipeline-health state matrix: unknown → ok → stale over time; down on
+  absent provider; model-truth-alone is not loop evidence.
+- Agent integration: ask → answer → journal metadata-only (privacy
+  invariant), quiet ticks journal nothing, status pipeline truthful,
+  `get_status_json` boundary.
+
 ## [1.16.0] - 2026-09-06 — multimodal: the agent asks, listens, and remembers the conversation
 
 ### User-state fusion (`human_interaction.py`)
@@ -98,7 +138,6 @@ frozen: no breaking changes across any 1.x release.
   `SPEECH_OUTPUT_ACTION_TYPES` — before this, the model's genuine speech
   proposals would have been hard-rejected as unknown even if scanned.
 
-## [1.14.0] - 2026-09-06 — hearing: VAD-gated on-device speech
 ## [1.14.0] - 2026-09-06 — hearing: VAD-gated on-device speech
 
 ### The first AudioInput provider

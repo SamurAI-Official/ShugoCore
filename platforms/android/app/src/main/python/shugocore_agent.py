@@ -627,6 +627,27 @@ class AndroidAgent:
                 self.memory.record_event("android_observation",
                     payload={"tick": self.tick_count, "observation": observation},
                     metadata={"source": "android_shell"})
+            # v1.17 closed-loop Record: completed question/answer round trips
+            # land in Tier 1 as METADATA ONLY (latency + lengths — the words
+            # stay in the bounded bus, per the transcripts-never-enter-memory
+            # rule established with the 1.12 journal contract).
+            if self.interaction is not None:
+                for event in self.interaction.drain_conversation_events():
+                    if self.memory is None:
+                        break
+                    try:
+                        self.memory.record_event("conversation_event",
+                            payload={
+                                "round_trip_s": event.get("round_trip_s"),
+                                "question_chars":
+                                    len(str(event.get("question") or "")),
+                                "answer_chars":
+                                    len(str(event.get("answer") or "")),
+                            },
+                            metadata={"source": "interaction_bus",
+                                      "privacy_scope": "local"})
+                    except Exception:
+                        pass
             if self.engine is not None:
                 allowed, scope = self._backend_target_allowed()
                 if not allowed:
@@ -854,6 +875,14 @@ class AndroidAgent:
             "capabilities": self.get_capabilities(),
             "interaction": (self.interaction.stats()
                             if self.interaction is not None else None),
+            # v1.17 closed-loop validation: one liveness view over the whole
+            # pipeline (sensors/vision/hearing/speech/model/memory), rendered
+            # as the AGENT tab Validation section.
+            "pipeline": (self.interaction.pipeline_health(
+                model_ready=self.engine is not None,
+                tts_attached=self._speak_listener is not None,
+                memory_ok=self.memory is not None)
+                if self.interaction is not None else None),
             "recent_logs": self._log_buffer_snapshot(),
             "last_log_seq": self._log_seq,
             "policy": {"fail_closed": True, "audit": audit_active,

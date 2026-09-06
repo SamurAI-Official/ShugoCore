@@ -37,6 +37,7 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
     private val speechRow: TextView
     private val lastExchange: TextView
     private val humanObservations: TextView
+    private val healthRows = mutableMapOf<String, TextView>()
     private val statusLine: TextView
     private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US)
 
@@ -112,6 +113,17 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
         speechRow = col.addKv("Speech")
         lastExchange = col.addKv("Last exchange")
         humanObservations = col.addKv("Observations")
+
+        // -- Validation (closed loop) --------------------------------------------------
+        // v1.17: the SHUGOCORE LIVE monitor — every stage of the loop
+        // reports ok / STALE / DOWN / — from the agent's pipeline_health().
+        // Honest liveness only: "unknown" renders as "—", never as success.
+        col.addView(Ui.section(context, "Validation"))
+        for (stage in listOf("sensors", "vision", "hearing",
+                             "speech", "model", "memory")) {
+            healthRows[stage] = col.addKv(
+                stage.replaceFirstChar { it.uppercase() })
+        }
 
         // -- Controls -------------------------------------------------------------------
         col.addView(Ui.section(context, "Controls"))
@@ -266,6 +278,25 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
                 else -> "—"
             }
             lastExchange.setTextColor(if (q.isEmpty() && a.isEmpty()) Ui.DIM else Ui.TEXT)
+        }
+
+        // v1.17 closed-loop validation: stage liveness from the agent's
+        // pipeline_health() — ok (fresh evidence), STALE (expired), DOWN
+        // (provider absent), "—" (no evidence yet; never fabricated).
+        val pipeline = Ui.sub(agent, "pipeline")
+        val healthStages = Ui.sub(pipeline, "stages")
+        for ((stage, view) in healthRows) {
+            val state = Ui.str(healthStages, stage, "unknown")
+            view.text = when {
+                pipeline == null -> "—"
+                state == "unknown" -> "—"
+                else -> state.uppercase()
+            }
+            view.setTextColor(when (state) {
+                "ok" -> Ui.OK
+                "stale", "down" -> Ui.WARN
+                else -> Ui.DIM
+            })
         }
     }
 

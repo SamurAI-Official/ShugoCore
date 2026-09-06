@@ -46,6 +46,9 @@ _MAX_RESPONSE_CONTENT_LEN = 300
 _MAX_CONVERSATION_TURNS = 12
 _MAX_CONTEXT_TURNS = 6
 _ANSWER_TTL_S = 120.0
+# v1.17 closed-loop validation: bounded record of completed question/answer
+# round trips (the Record stage of the conversational loop).
+_MAX_CONVERSATION_EVENTS = 8
 
 
 def _clean_float(value: Any) -> Optional[float]:
@@ -230,6 +233,11 @@ class InteractionBus:
         self._last_question: Optional[str] = None
         self._last_answer: Optional[str] = None
         self._pending_question: Optional[Dict[str, Any]] = None
+        # v1.17: completed question/answer round trips (bounded) + when the
+        # agent last emitted any response (pipeline-health evidence).
+        self._conversation_events: deque = deque(
+            maxlen=_MAX_CONVERSATION_EVENTS)
+        self._last_response_ts: Optional[float] = None
 
     # -- ingestion ------------------------------------------------------------
 
@@ -268,6 +276,15 @@ class InteractionBus:
                         and now - question["ts"] <= _ANSWER_TTL_S):
                     entry["payload"]["answer_to"] = question["text"]
                     self._last_answer = transcript
+                    # v1.17: the loop closed — record the round trip with
+                    # its latency (bounded; drained to the journal by the
+                    # agent shell as metadata only, never raw words).
+                    self._conversation_events.append({
+                        "question": question["text"],
+                        "answer": transcript,
+                        "round_trip_s": round(now - question["ts"], 2),
+                        "ts": entry["timestamp"],
+                    })
                 self._pending_question = None
                 self._conversation.append({"role": "human",
                                            "text": transcript,
@@ -324,6 +341,7 @@ class InteractionBus:
         with self._lock:
             self._last_response = response.to_dict()
             self._response_count += 1
+            self._last_response_ts = self._clock()
             if response.type == "speech" and response.content:
                 self._conversation.append({"role": "agent",
                                            "text": response.content,
@@ -347,6 +365,65 @@ class InteractionBus:
             self._last_question = text
             self._pending_question = {"text": text, "ts": self._clock()}
         return True
+
+    def drain_conversation_events(self) -> List[Dict[str, Any]]:
+        """Pop all completed question/answer round trips (oldest first) for
+        the agent shell to journal (v1.17 Record stage). The bus keeps the
+        words; the journal gets only what the shell chooses to record.
+        Bounded by construction; never raises."""
+        with self._lock:
+            events = list(self._conversation_events)
+            self._conversation_events.clear()
+        return events
+
+    def pipeline_health(self, model_ready: Optional[bool] = None,
+                        tts_attached: Optional[bool] = None,
+                        memory_ok: Optional[bool] = None) -> Dict[str, Any]:
+        """One liveness view over the closed loop (v1.17 validation — the
+        'SHUGOCORE LIVE' monitor). Each stage reports ``ok`` (fresh
+        evidence), ``stale`` (evidence expired), ``down`` (agent-side truth
+        says the provider is absent) or ``unknown`` (no evidence yet — never
+        fabricated). Sensor stages are judged from the bus's own buffer;
+        model/tts/memory truths are passed in by the shell, keeping this a
+        provider-side module (the core never imports it)."""
+        with self._lock:
+            now = self._clock()
+
+            def _stage(max_age_s: float, last_ts: Optional[float]) -> str:
+                if last_ts is None:
+                    return "unknown"
+                return "ok" if now - last_ts <= max_age_s else "stale"
+
+            last_visual_ts = next(
+                (e.get("timestamp") for e in reversed(self._buffer)
+                 if e.get("type") == "visual"), None)
+            last_speech_ts = next(
+                (e.get("timestamp") for e in reversed(self._buffer)
+                 if e.get("type") == "speech"), None)
+            stages = {
+                "sensors": _stage(60.0, self._last_timestamp or None),
+                "vision": _stage(60.0, last_visual_ts),
+                "hearing": _stage(120.0, last_speech_ts),
+                "speech": ("unknown" if tts_attached is None
+                           else ("ok" if tts_attached else "down")),
+                "model": ("unknown" if model_ready is None
+                          else ("ok" if model_ready else "down")),
+                "memory": ("unknown" if memory_ok is None
+                           else ("ok" if memory_ok else "down")),
+            }
+            ok_count = sum(1 for v in stages.values() if v == "ok")
+            bus_evidence = any(
+                stages[s] != "unknown" for s in ("sensors", "vision", "hearing"))
+            if any(v == "down" for v in stages.values()):
+                overall = "down"
+            elif not bus_evidence:
+                overall = "unknown"
+            elif ok_count >= 3:
+                overall = "ok"
+            else:
+                overall = "stale"
+            return {"stages": stages, "overall": overall,
+                    "round_trips": len(self._conversation_events)}
 
     def add_listener(self, listener: Callable[[Dict[str, Any]], None]) -> None:
         with self._lock:
@@ -465,4 +542,10 @@ class InteractionBus:
                 "last_question": self._last_question,
                 "last_answer": self._last_answer,
                 "conversation_turns": len(self._conversation),
+                # v1.17 closed-loop truth: completed round trips and the
+                # last one (question/answer/latency), for UI + tests.
+                "conversation_events": len(self._conversation_events),
+                "last_conversation_event": (
+                    dict(self._conversation_events[-1])
+                    if self._conversation_events else None),
             }

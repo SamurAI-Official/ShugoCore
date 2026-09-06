@@ -4,6 +4,38 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.14.0] - 2026-09-06 — hearing: VAD-gated on-device speech
+
+### The first AudioInput provider
+
+- **New `runtime/AudioProvider.kt`** — the roadmap's flow, verbatim:
+  microphone → VAD → STT → transcript → `HumanObservation(type=speech)`.
+- **VAD before STT (non-negotiable)**: an energy RMS gate over 20 ms frames
+  (16 kHz mono) with an adaptive noise floor holds the mic; only speech
+  onset (3 consecutive loud frames) wakes the recognizer — ambient noise
+  never invokes the STT engine. A barge-in hook (`onSpeechOnset`) fires at
+  onset, ready for the 1.15 TTS provider to cancel playback.
+- **On-device STT only**: `SpeechRecognizer.createOnDeviceSpeechRecognizer()`
+  — transcripts never leave the device. If the platform cannot supply an
+  on-device recognizer, hearing degrades HONESTLY to VAD-only
+  `speech_detected` observations and logs why.
+- **Utterance-triggered**: one observation per recognized utterance
+  (`payload={transcript, stt:"on_device"}`) or per detected-but-untranscribed
+  speech (`payload={speech_detected:true}`); errors back off exponentially
+  (1 s → 30 s) so a failing recognizer can't spin.
+- **Honest liveness**: every mic read/recognizer audio event stamps
+  `PerceptionState.lastMicActivityMs` — the SENSORS tab MICROPHONE row reads
+  ACTIVE only while audio truly flows.
+- **`stats()` gained `last_transcript`** (the most recent recognized words;
+  None until STT produces any) — the AGENT tab's Interaction section gains a
+  **Hearing** row. Mic lifecycle follows RECORD_AUDIO permission reality,
+  synced every housekeeping tick like vision.
+
+### Tests
+
+- Transcript-stats test (VAD-only events don't set it; STT does) — suite:
+  **533 passing**.
+
 ## [1.13.0] - 2026-09-06 — vision: person presence
 
 ### Camera perception (the first Vision provider)

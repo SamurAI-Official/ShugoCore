@@ -10,4 +10,10 @@ object PerceptionState {
 
     /** Face count from the most recent analysis (-1 = not analyzed yet). */
     @Volatile var lastFaceCount: Int = -1
+
+    /** Last mic activity (VAD read or recognizer audio) — 0 = none yet. */
+    @Volatile var lastMicActivityMs: Long = 0L
+
+    /** Transcript of the most recent recognized utterance (null = none). */
+    @Volatile var lastTranscript: String? = null
 }

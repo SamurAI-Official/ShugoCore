@@ -333,6 +333,8 @@ class InteractionBus:
         with self._lock:
             now = self._clock()
             age = (now - self._last_timestamp) if self._last_timestamp else None
+            last_speech = next((e for e in reversed(self._buffer)
+                                if e.get("type") == "speech"), None)
             return {
                 "presence": self._presence,
                 "observations": sum(self._counts.values()),
@@ -343,4 +345,9 @@ class InteractionBus:
                 "last_observation_age_s":
                     round(age, 1) if age is not None else None,
                 "person_present": self._last_person_present(now),
+                "last_transcript": (
+                    str(last_speech.get("payload", {}).get("transcript"))
+                    if last_speech is not None
+                    and last_speech.get("payload", {}).get("transcript")
+                    else None),
             }

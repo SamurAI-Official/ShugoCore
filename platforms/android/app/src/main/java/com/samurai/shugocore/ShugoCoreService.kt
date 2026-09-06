@@ -14,6 +14,7 @@ import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.samurai.shugocore.inference.*
+import com.samurai.shugocore.runtime.AudioProvider
 import com.samurai.shugocore.runtime.HumanInteractionBus
 import com.samurai.shugocore.runtime.LogBus
 import com.samurai.shugocore.runtime.ServerStats
@@ -40,6 +41,7 @@ class ShugoCoreService : Service() {
     private var capabilityDetector: CapabilityDetector? = null
     private var capabilityManager: SensorCapabilityManager? = null
     private var visionProvider: VisionProvider? = null
+    private var audioProvider: AudioProvider? = null
     @Volatile private var agentRunning = false
     private val lastLogSeq = java.util.concurrent.atomic.AtomicInteger()
     private val lastLogSeqSeedDone = java.util.concurrent.atomic.AtomicBoolean()
@@ -73,6 +75,7 @@ class ShugoCoreService : Service() {
         capabilityDetector = CapabilityDetector(this)
         capabilityManager = SensorCapabilityManager(this)
         visionProvider = VisionProvider(this)
+        audioProvider = AudioProvider(this)
         createNotificationChannel()
     }
 
@@ -88,6 +91,7 @@ class ShugoCoreService : Service() {
                 pollAgentLogsIntoBus()
                 pushCapabilitiesIfChanged()
                 visionProvider?.sync()   // camera follows permission reality
+                audioProvider?.sync()    // microphone follows permission reality
                 if (agentRunning) {
                     val config = thermalMonitor?.getInferenceConfig()
                     if (config?.shouldShutdown == true) {
@@ -637,6 +641,7 @@ class ShugoCoreService : Service() {
         super.onDestroy()
         HumanInteractionBus.setPublisher(null)
         visionProvider?.stop()
+        audioProvider?.stop()
         Log.i(TAG, "Service destroyed")
         LogBus.log(LogBus.Category.AGENT, "node service destroyed")
         agentRunning = false

@@ -138,9 +138,12 @@ class SensorCapabilityManager(private val context: Context) {
                 StreamState.ACTIVE else StreamState.IDLE
             "wifi" -> if (isWifiConnected()) StreamState.ACTIVE else StreamState.IDLE
             // camera: ACTIVE only while the vision provider truly analyzed a
-            // frame within the freshness window; mic/gps/bluetooth: idle until
-            // their providers open one.
+            // frame within the freshness window; microphone: ACTIVE while the
+            // hearing provider reads/recognizes audio; gps/bluetooth: idle
+            // until their providers open one.
             "camera" -> if (fresh(PerceptionState.lastCameraFrameMs))
+                StreamState.ACTIVE else StreamState.IDLE
+            "microphone" -> if (fresh(PerceptionState.lastMicActivityMs))
                 StreamState.ACTIVE else StreamState.IDLE
             else -> StreamState.IDLE
         }

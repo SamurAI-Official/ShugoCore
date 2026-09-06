@@ -33,6 +33,7 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
     private val tier3: TextView
     private val humanPresence: TextView
     private val visionRow: TextView
+    private val hearingRow: TextView
     private val humanObservations: TextView
     private val statusLine: TextView
     private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US)
@@ -105,6 +106,7 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
         col.addView(Ui.section(context, "Interaction"))
         humanPresence = col.addKv("Human")
         visionRow = col.addKv("Vision")
+        hearingRow = col.addKv("Hearing")
         humanObservations = col.addKv("Observations")
 
         // -- Controls -------------------------------------------------------------------
@@ -211,6 +213,7 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
         if (interaction == null) {
             humanPresence.text = "—"
             visionRow.text = "—"
+            hearingRow.text = "—"
             humanObservations.text = "—"
         } else {
             val presence = Ui.str(interaction, "presence", "user_absent")
@@ -233,6 +236,10 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
                 }
             }
             humanObservations.text = "${Ui.num(interaction, "observations")} recorded"
+            // Last transcript from the hearing provider (null until STT
+            // produced words — VAD-only speech events don't set it).
+            val transcript = Ui.str(interaction, "last_transcript", "")
+            hearingRow.text = transcript.ifEmpty { "—" }
         }
     }
 

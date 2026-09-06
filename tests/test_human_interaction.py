@@ -215,6 +215,20 @@ class TestInteractionBus(unittest.TestCase):
         self.assertEqual(ctx["person_present"], True)
         self.assertEqual(bus.stats()["person_present"], True)
 
+    def test_last_transcript_in_stats(self):
+        clock = _FakeClock()
+        bus = InteractionBus(clock=clock)
+        self.assertIsNone(bus.stats()["last_transcript"])
+        bus.publish(_obs(type_="speech", source="vad",
+                         payload={"speech_detected": True},
+                         timestamp=clock()))
+        self.assertIsNone(bus.stats()["last_transcript"])  # no words yet
+        bus.publish(_obs(type_="speech", source="on_device_stt",
+                         payload={"transcript": "hello shugo",
+                                  "stt": "on_device"},
+                         timestamp=clock()))
+        self.assertEqual(bus.stats()["last_transcript"], "hello shugo")
+
     def test_listener_notified_and_isolated(self):
         bus = InteractionBus()
         seen, broken = [], []

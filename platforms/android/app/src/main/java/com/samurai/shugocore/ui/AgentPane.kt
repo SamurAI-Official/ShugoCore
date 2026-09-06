@@ -31,6 +31,8 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
     private val tier1: TextView
     private val tier2: TextView
     private val tier3: TextView
+    private val humanPresence: TextView
+    private val humanObservations: TextView
     private val statusLine: TextView
     private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US)
 
@@ -97,6 +99,11 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
         tier1 = col.addKv("Tier 1 (episodic)")
         tier2 = col.addKv("Tier 2 (semantic)")
         tier3 = col.addKv("Tier 3 (identity)")
+
+        // -- Interaction ---------------------------------------------------------------
+        col.addView(Ui.section(context, "Interaction"))
+        humanPresence = col.addKv("Human")
+        humanObservations = col.addKv("Observations")
 
         // -- Controls -------------------------------------------------------------------
         col.addView(Ui.section(context, "Controls"))
@@ -194,6 +201,20 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
         tier1.text = "${Ui.num(agent, "tier1_entries")} items"
         tier2.text = "${Ui.num(agent, "tier2_facts")} facts"
         tier3.text = Ui.str(agent, "tier3", "READ ONLY")
+
+        // Agent-side interaction stats (the Python bus: presence state
+        // machine + recorded observations). Device-side HUMAN truth lives
+        // in the NODE STATUS header.
+        val interaction = Ui.sub(agent, "interaction")
+        if (interaction == null) {
+            humanPresence.text = "—"
+            humanObservations.text = "—"
+        } else {
+            val presence = Ui.str(interaction, "presence", "user_absent")
+            humanPresence.text = if (presence == "user_present") "PRESENT" else "ABSENT"
+            humanPresence.setTextColor(if (presence == "user_present") Ui.OK else Ui.DIM)
+            humanObservations.text = "${Ui.num(interaction, "observations")} recorded"
+        }
     }
 
     private fun setStatus(label: String, value: String, ok: Boolean) {

@@ -46,7 +46,8 @@ class TestAndroidTreeSync(unittest.TestCase):
     def test_canonical_modules_present(self):
         for name in ("shugocore_agent.py", "decision_engine.py",
                      "subconscious.py", "android_inference.py",
-                     "telemetry.py", "policy.py"):
+                     "telemetry.py", "policy.py", "human_interaction.py",
+                     "security.py"):
             self.assertTrue(
                 os.path.isfile(os.path.join(BUNDLED, name)),
                 f"{name} missing from the bundled tree")

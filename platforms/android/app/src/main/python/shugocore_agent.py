@@ -9,6 +9,15 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+# Human Interaction contract (v1.12). Defensive import: a construction
+# failure here must degrade to a reporting agent, never kill the bootstrap.
+try:
+    from human_interaction import InteractionBus, HumanObservation
+    _HAS_INTERACTION = True
+except Exception:  # pragma: no cover
+    _HAS_INTERACTION = False
+
+
 logger = logging.getLogger("shugocore_android")
 
 # The orchestration loop stages surfaced on the AGENT tab. Stage tracking is
@@ -78,6 +87,10 @@ class AndroidAgent:
         self._log_seq = 0
         self._log_buffer: deque = deque(maxlen=_LOG_BUFFER_MAX)
         self._log_lock = threading.Lock()
+        # Human-interaction bus (v1.12 Interaction Foundation). Provider-side
+        # contract: observations flow in here; the engine only ever sees
+        # them as task `context` data (import-guard enforced in tests).
+        self.interaction = InteractionBus() if _HAS_INTERACTION else None
         # Last-tick pipeline / outcome state for the AGENT tab.
         self._last_stages: List[str] = []
         self._last_decision = "—"
@@ -339,6 +352,51 @@ class AndroidAgent:
                 self.telemetry = _json.loads(data_json)
             except Exception:
                 pass
+
+    def publish_human_observation(
+            self, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Ingest one HumanObservation from a provider (Kotlin edge, tests,
+        or any future wearable). Sanitize → validate → bus → Tier 1. The
+        event is memory-internal by construction (like record_observation):
+        no consent, no approval, no egress — the payload never leaves the
+        device and only type/source/confidence reach the journal."""
+        if self.interaction is None:
+            return {"accepted": False, "reason": "interaction bus unavailable"}
+        obs, reason = HumanObservation.from_dict(
+            data if isinstance(data, dict) else {})
+        if obs is None:
+            self.interaction.record_rejected()
+            return {"accepted": False, "reason": reason}
+        accepted, detail = self.interaction.publish(obs)
+        if not accepted:
+            return {"accepted": False, "reason": detail}
+        if self.memory is not None:
+            try:
+                self.memory.record_event(
+                    "human_observation",
+                    payload={"type": obs.type, "source": obs.source,
+                             "confidence": obs.confidence},
+                    metadata={"source": obs.source,
+                              "privacy_scope": obs.privacy_scope})
+            except Exception as exc:
+                logger.warning("human_observation record failed: %s", exc)
+        self.log("INTERACTION", f"{obs.type} from {obs.source}: {detail}")
+        return {"accepted": True, "type": obs.type, "detail": detail,
+                "presence_event":
+                    detail if detail.startswith("USER_") else ""}
+
+    def publish_human_observation_json(
+            self, data_json: Optional[str] = None) -> str:
+        """JSON twin of publish_human_observation for the Chaquopy boundary
+        (same rationale as update_telemetry_json / get_status_json)."""
+        import json as _json
+        data: Optional[Dict[str, Any]] = None
+        if data_json:
+            try:
+                data = _json.loads(data_json)
+            except Exception:
+                data = None
+        return _json.dumps(self.publish_human_observation(data))
 
     def set_backend_url(self, url: str) -> None:
         """Re-point the model backend (STOP SERVER fallback semantics).
@@ -611,13 +669,14 @@ class AndroidAgent:
         return decision, action
 
     def _get_observation(self) -> Dict[str, Any]:
-        """Observations from phone telemetry; safe stubs when none arrived."""
+        """Observations from phone telemetry + the human-interaction bus;
+        safe stubs when none arrived."""
         t = self.telemetry or {}
         battery = t.get("battery_level", self._get_battery())
         mem_total = t.get("mem_total_mb", 0) or 0
         mem_avail = t.get("mem_avail_mb", 0) or 0
         memory_usage = (mem_total - mem_avail) if mem_total else self._get_memory_usage()
-        return {
+        observation = {
             "timestamp": t.get("timestamp_ms", time.time()), "battery": battery,
             "battery_plugged": t.get("is_charging", False), "memory_usage_mb": memory_usage,
             "memory_avail_mb": mem_avail, "cpu_temp_c": t.get("cpu_temp_c"),
@@ -625,6 +684,11 @@ class AndroidAgent:
                       t.get("accel_z", 0.0) or 0.0],
             "thermal_state": t.get("thermal_state"),
         }
+        if self.interaction is not None:
+            # Human context rides into DECIDE as task context data — the
+            # provider rule: the core never imports the interaction module.
+            observation["human"] = self.interaction.human_context()
+        return observation
 
     def _get_battery(self) -> int:
         return 100
@@ -689,6 +753,8 @@ class AndroidAgent:
             "last_tick_ts": self._last_tick_ts,
             "backend_url": self.api_url,
             "capabilities": self.get_capabilities(),
+            "interaction": (self.interaction.stats()
+                            if self.interaction is not None else None),
             "recent_logs": self._log_buffer_snapshot(),
             "last_log_seq": self._log_seq,
             "policy": {"fail_closed": True, "audit": audit_active,

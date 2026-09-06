@@ -23,6 +23,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import com.samurai.shugocore.inference.ModelDownloader
 import com.samurai.shugocore.runtime.ControlPlaneHost
+import com.samurai.shugocore.runtime.HumanInteractionBus
 import com.samurai.shugocore.runtime.LogBus
 import com.samurai.shugocore.runtime.PermState
 import com.samurai.shugocore.runtime.SecurityState
@@ -234,6 +235,21 @@ class MainActivity : AppCompatActivity(), ControlPlaneHost {
     override fun onModelProbeClicked() {
         LogBus.log(LogBus.Category.MODEL, "MODEL TEST: request sent")
         service()?.runModelProbe { msg -> serverPane.status(msg) }
+    }
+
+    private var lastHumanPingMs = 0L
+
+    /**
+     * The honest human-presence source for v1.12 (pre-camera): Android calls
+     * this on every user interaction with the activity. Rate-limited to one
+     * observation per 5s so scrolling cannot flood the interaction bus.
+     */
+    override fun onUserInteraction() {
+        val now = System.currentTimeMillis()
+        if (now - lastHumanPingMs < 5_000L) return
+        lastHumanPingMs = now
+        val payload = org.json.JSONObject().put("tab", currentTab)
+        HumanInteractionBus.post("interaction", "ui_touch", payload)
     }
 
     private fun startNodeService() {

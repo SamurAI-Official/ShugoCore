@@ -4,6 +4,57 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.12.0] - 2026-09-06 — human interaction foundation
+
+### The Human Interaction contract (provider-side)
+
+- **New `human_interaction.py`**: `HumanObservation` (type ∈ visual / speech /
+  presence / gesture / interaction, timestamp, source, confidence, sanitized
+  payload, `privacy_scope="local"` by construction) and `AgentResponse`
+  (speech / visual / action / acknowledgement — schema reserved for the
+  v1.15/1.16 speech and action capabilities). Camera, microphone, gaze or UI —
+  the agent receives *observations*, not devices.
+- **`InteractionBus`**: bounded (256-entry) thread-safe ring mirroring the
+  LogBus pattern, plus a debounced presence state machine emitting
+  USER_PRESENT / USER_LEFT / USER_RETURNED (a flapping provider cannot flood
+  the journal).
+- **The provider rule, enforced**: the decision core (`decision_engine`,
+  `subconscious`, `execution_layer`, `policy`) must never import the
+  interaction module — the engine receives human context only as task
+  `context` data. `tests/test_human_interaction.py` AST-parses the core
+  modules and fails the suite if the rule is ever violated.
+
+### Agent + Android integration
+
+- **`AndroidAgent.publish_human_observation[_json]`** — the Chaquopy ingestion
+  twin of `update_telemetry_json`: sanitize → validate → bus → Tier 1
+  `human_observation` event (memory-internal by construction, like
+  `record_observation`: no consent, no approval, no egress; only
+  type/source/confidence reach the journal).
+- **`_get_observation()`** now enriches every tick with `human_context`
+  (presence, recency, speech-recent), so DECIDE sees the human as data.
+- **Android `runtime/HumanInteractionBus.kt`** — the device-side edge: posts
+  observations to the agent, keeps a bounded local record, parses presence
+  events back. Wired in `ShugoCoreService` (publisher set on agent init,
+  cleared in onDestroy).
+- **First honest human source**: `MainActivity.onUserInteraction()` posts
+  `interaction` observations (source `ui_touch`, rate-limited to 1 per 5s) —
+  pre-camera, the only non-decorative signal available.
+- **UI truth rows**: the NODE STATUS header gains **HUMAN** ("seen Ns ago" /
+  "idle Ns"), fed only by real accepted events; the AGENT tab gains an
+  **Interaction** section (presence state machine + recorded-observation
+  count from the Python bus).
+
+### Tests
+
+- `tests/test_human_interaction.py` — 25 tests: schema validation, payload
+  sanitization (control-char injection, length caps, key caps, junk
+  flattening), bus boundedness + 8-thread safety, presence state machine with
+  a deterministic clock, agent ingestion (the JSON boundary never raises),
+  status/observation surfaces, and the provider-rule import guard.
+- `human_interaction.py` + `security.py` added to the tree-sync canonical
+  module list; suite: **529 passing**.
+
 ## [1.11.0] - 2026-09-05 — model protocol unification + structural fixes
 
 ### Model protocol (decision prompt ↔ real executor set)

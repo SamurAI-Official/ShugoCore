@@ -18,6 +18,7 @@ class NodeStatusHeader(context: Context) : LinearLayout(context) {
     private val inference: TextView
     private val memory: TextView
     private val sensors: TextView
+    private val human: TextView
     private val policy: TextView
     private val network: TextView
     private val temperature: TextView
@@ -63,6 +64,7 @@ class NodeStatusHeader(context: Context) : LinearLayout(context) {
         inference = addRow("Inference")
         memory = addRow("Memory")
         sensors = addRow("Sensors")
+        human = addRow("Human")
         policy = addRow("Policy")
         network = addRow("Network")
         temperature = addRow("Temperature")
@@ -112,6 +114,18 @@ class NodeStatusHeader(context: Context) : LinearLayout(context) {
         val acked = caps.values.count { (it as? Map<*, *>)?.get("agent_ack") == true }
         sensors.text = if (agentRunning) "$acked / ${caps.size}" else "—"
         sensors.setTextColor(if (agentRunning && caps.isNotEmpty()) Ui.OK else Ui.DIM)
+
+        // HUMAN row: real device-side interaction events only. "seen Ns ago"
+        // within the presence window; never a decorative green dot.
+        val interaction = Ui.sub(snap, "interaction")
+        val humanFresh = Ui.bool(interaction, "fresh")
+        val humanAgeS = Ui.num(interaction, "last_age_s")
+        human.text = when {
+            humanFresh -> "seen ${humanAgeS}s ago"
+            humanAgeS >= 0 -> "idle ${humanAgeS}s"
+            else -> "—"
+        }
+        human.setTextColor(if (humanFresh) Ui.OK else Ui.DIM)
 
         policy.text = if (agentRunning) "ACTIVE" else "—"
         policy.setTextColor(if (agentRunning) Ui.OK else Ui.DIM)

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "shugocore"
-version = "1.11.0"
+version = "1.12.0"
 description = "A continuous orchestration layer for synthetic functional agency: multi-model decisions, tool execution, four-tier memory, deterministic safety interlocks."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -30,7 +30,7 @@ shugocore-server = "shugocore_server:main"
 py-modules = ["acceleration", "android_bridge", "android_inference", "android_node",
               "android_runtime", "audit", "autonomy", "continuous_agent",
               "decision_engine", "execution_layer", "fallbacks",
-              "gazebo_simulation", "logging_manager", "memory_system",
+              "gazebo_simulation", "human_interaction", "logging_manager", "memory_system",
               "mobile_nodes", "model_backends", "model_manager",
               "moveit_planner", "pg_memory", "policy",
               "reinforcement_learning",

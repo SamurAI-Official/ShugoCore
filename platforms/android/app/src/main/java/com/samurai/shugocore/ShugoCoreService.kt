@@ -14,6 +14,7 @@ import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.samurai.shugocore.inference.*
+import com.samurai.shugocore.runtime.HumanInteractionBus
 import com.samurai.shugocore.runtime.LogBus
 import com.samurai.shugocore.runtime.ServerStats
 import com.samurai.shugocore.runtime.SensorCapabilityManager
@@ -136,6 +137,15 @@ class ShugoCoreService : Service() {
                 lastCapsSignature = ""   // force a capability declaration push
                 pushPolicyToAgent()
                 pushCapabilitiesIfChanged()
+                HumanInteractionBus.setPublisher { json ->
+                    try {
+                        pyAgent?.callAttr("publish_human_observation_json", json)
+                            ?.toString()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "publish_human_observation failed: ${e.message}")
+                        null
+                    }
+                }
                 LogBus.log(LogBus.Category.AGENT,
                     "agent initialized (${caps?.soc ?: Build.MODEL})")
             }
@@ -486,6 +496,12 @@ class ShugoCoreService : Service() {
                 "state" to (thermal?.state?.name ?: "UNKNOWN")),
             "capabilities" to capabilitySnapshotMaps(),
             "model_probe" to modelProbe,
+            "interaction" to HumanInteractionBus.presenceSnapshot().let {
+                    (fresh, ageMs) ->
+                mapOf("fresh" to fresh,
+                      "last_age_s" to (if (ageMs >= 0) ageMs / 1000 else -1L),
+                      "observations" to HumanInteractionBus.acceptedCount())
+            },
         )
     }
 
@@ -615,6 +631,7 @@ class ShugoCoreService : Service() {
     
     override fun onDestroy() {
         super.onDestroy()
+        HumanInteractionBus.setPublisher(null)
         Log.i(TAG, "Service destroyed")
         LogBus.log(LogBus.Category.AGENT, "node service destroyed")
         agentRunning = false

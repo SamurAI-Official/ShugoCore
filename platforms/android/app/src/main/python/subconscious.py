@@ -58,6 +58,10 @@ class SubconsciousModel:
         self.model_success_history: Dict[str, Dict[str, int]] = defaultdict(
             lambda: {"successes": 0, "failures": 0}
         )
+        # Failure class of the last call per model (cycle diagnostics: the
+        # engine surfaces these in no_viable_action results so the shell can
+        # distinguish BACKEND_FAILURE from NO_ACTION).
+        self.last_call_errors: Dict[str, str] = {}
         self._models_cache: Optional[List[str]] = None
         self._models_cache_at = 0.0
         self._models_lock = threading.Lock()
@@ -83,6 +87,15 @@ class SubconsciousModel:
             self._models_cache_at = time.monotonic()
         return list(models)
 
+    def note_call_error(self, model_name: str, error_class: str) -> None:
+        """Record the failure class of a model call (best-effort, bounded)."""
+        try:
+            if len(self.last_call_errors) > 64:
+                self.last_call_errors.clear()
+            self.last_call_errors[str(model_name)[:64]] = str(error_class)[:80]
+        except Exception:
+            pass
+
     def call_ollama_model(self, model_name: str, input_data: str) -> str:
         """Backwards-compatible direct model call (HTTP, validated, timeout)."""
         if not validate_model_name(model_name):
@@ -104,12 +117,14 @@ class SubconsciousModel:
         """
         if not validate_model_name(model_name):
             logger.error(f"Rejected invalid model name: {model_name!r}")
+            self.note_call_error(model_name, "invalid_model")
             return ""
         backend = backend or self.backend
         available = self.get_available_models()
         if (backend is self.backend and available
                 and model_name not in available):
             logger.error(f"Model {model_name} is not available.")
+            self.note_call_error(model_name, "model_unavailable")
             return ""
         task_payload = (input_data if isinstance(input_data, dict)
                         else {"content": str(input_data)})
@@ -125,10 +140,13 @@ class SubconsciousModel:
                 output = str(backend.generate(model_name, prompt,
                                               timeout=self.request_timeout))
                 span.set_attribute("chars", len(output))
+                self.last_call_errors.pop(str(model_name)[:64], None)
                 return output
             except Exception as exc:
                 span.set_attribute("error", type(exc).__name__)
                 logger.error(f"Model {model_name} call failed: {type(exc).__name__}")
+                self.note_call_error(model_name,
+                                     f"transport_error: {type(exc).__name__}")
                 return ""
 
 

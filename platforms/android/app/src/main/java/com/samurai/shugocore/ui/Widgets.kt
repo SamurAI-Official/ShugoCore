@@ -93,9 +93,11 @@ object Ui {
     fun colorFor(state: String): Int = when (state.lowercase()) {
         "running", "online", "granted", "active", "ready", "enabled", "ok",
         "success", "allowed", "enforced", "on" -> OK
-        "idle", "mild", "unknown", "degraded", "required", "read only", "warn" -> WARN
+        "idle", "mild", "unknown", "degraded", "required", "read only", "warn",
+        "no_action", "policy_block", "governor_block", "in_flight", "waiting" -> WARN
         "stopped", "offline", "denied", "disabled", "error", "refused",
-        "failed", "unavailable", "blocked" -> BAD
+        "failed", "unavailable", "blocked",
+        "task_failure", "backend_failure", "engine_failure" -> BAD
         else -> DIM
     }
 

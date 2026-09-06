@@ -17,6 +17,34 @@ logger = logging.getLogger("shugocore_android")
 PIPELINE_STAGES = ("OBSERVE", "GATE", "DECIDE",
                    "EXECUTE", "EVALUATE", "RECORD", "CONSOLIDATE")
 
+# -- cycle outcome contract (v1.10) -------------------------------------------
+# Canonical cycle outcomes. NO_ACTION is NOT an error: "nothing to do" is a
+# healthy, recorded cycle. BACKEND_FAILURE means the model ensemble could not
+# be reached at all (transport class); NO_ACTION means the model answered but
+# proposed nothing executable. The trail defaults below are the minimum
+# honest stages; when the engine reports its own stage list (the governor
+# steps that actually ran) that list prefixed with OBSERVE is shown instead.
+# Every outcome ends in RECORD except IN_FLIGHT — the in-flight cycle
+# journals its own outcome when it finishes.
+CYCLE_OUTCOMES = ("SUCCESS", "NO_ACTION", "POLICY_BLOCK", "GOVERNOR_BLOCK",
+                  "TASK_FAILURE", "IN_FLIGHT", "BACKEND_FAILURE",
+                  "ENGINE_FAILURE")
+
+_OUTCOME_TRAILS = {
+    "SUCCESS": ("OBSERVE", "GATE", "DECIDE", "EXECUTE", "EVALUATE", "RECORD"),
+    "NO_ACTION": ("OBSERVE", "GATE", "DECIDE", "RECORD"),
+    "POLICY_BLOCK": ("OBSERVE", "GATE", "DECIDE", "RECORD"),
+    "GOVERNOR_BLOCK": ("OBSERVE", "GATE", "RECORD"),
+    "TASK_FAILURE": ("OBSERVE", "GATE", "DECIDE", "RECORD"),
+    "IN_FLIGHT": ("OBSERVE",),
+    "BACKEND_FAILURE": ("OBSERVE", "GATE", "DECIDE", "RECORD"),
+    "ENGINE_FAILURE": ("OBSERVE",),
+}
+
+# Subconscious call-error classes indicating the model ensemble was
+# unreachable (vs. reached-but-unhelpful, which is NO_ACTION).
+_BACKEND_ERROR_CLASSES = ("transport_error", "model_unavailable", "invalid_model")
+
 _LOG_BUFFER_MAX = 300
 
 
@@ -56,6 +84,7 @@ class AndroidAgent:
         self._last_action = "—"
         self._last_evaluation = "—"
         self._last_tick_ts = 0.0
+        self._last_cycle_result: Optional[Dict[str, Any]] = None
         # Any construction failures, captured so the UI can surface the real
         # reason instead of a silent zombie agent (cycle=0 forever).
         self.engine_error: Optional[str] = None
@@ -364,8 +393,11 @@ class AndroidAgent:
 
     def tick(self) -> None:
         self.tick_count += 1
-        stages: List[str] = ["OBSERVE"]
-        decision, action, evaluation = "—", "—", "—"
+        decision, action = "—", "—"
+        outcome = "ENGINE_FAILURE"
+        trail: Tuple[str, ...] = ("OBSERVE",)
+        detail = "cycle did not complete"
+        executed = False
         try:
             observation = self._get_observation()
             self.last_observation = observation
@@ -384,60 +416,114 @@ class AndroidAgent:
                                      "reason": f"{scope} egress disabled"})
                     except Exception:
                         pass
-                    stages.append("GATE")
+                    outcome = "POLICY_BLOCK"
+                    trail = ("OBSERVE", "GATE", "RECORD")
+                    detail = f"network: {scope} egress disabled"
                     decision = "blocked by network policy"
-                    evaluation = "refused"
                 else:
                     context = (self.memory.retrieve_context("maintain_agent_loop", top_k=3)
                                if self.memory is not None else {})
-                    result = self._execute_engine_task(
+                    engine_result = self._execute_engine_task(
                         {"id": f"android-tick-{self.tick_count}",
                          "type": "maintain_agent_loop", "context": context})
-                    if str(result.get("status")) == "in_flight":
+                    if str(engine_result.get("status")) == "in_flight":
                         # A previous tick's task is still running; skip this
                         # cycle (OBSERVE-only) instead of piling a refused
                         # re-entrant attempt into the journal. The in-flight
                         # cycle journals its own outcome when it finishes.
-                        evaluation = "waiting"
+                        outcome = "IN_FLIGHT"
+                        trail = ("OBSERVE",)
+                        detail = "previous cycle still in flight"
                         decision = "task in progress (previous tick)"
                         self.log("AGENT", f"tick {self.tick_count}: " +
                                  decision, level="DEBUG")
                     else:
-                        stages += ["GATE", "DECIDE"]
-                        status = str(result.get("status", "unknown"))
-                        evaluation = status
-                        if status == "success":
-                            stages += ["EXECUTE", "EVALUATE", "RECORD"]
+                        (outcome, trail, detail, executed,
+                         decision) = self._classify_engine_result(engine_result)
+                        if outcome == "SUCCESS":
                             action = "executed"
-                        elif status == "refused":
-                            decision = str(result.get("reason", "refused"))[:90]
-                            # The engine journals every refusal (policy_block /
-                            # governor_block / fallback_halt): the cycle recorded.
-                            stages.append("RECORD")
-                        else:
-                            decision = str(result.get("message", "error"))[:90]
-                            # The engine journals the outcome (no_viable_action or
-                            # task_failure) even when nothing executed.
-                            stages.append("RECORD")
                         decision, action = self._enrich_from_memory(decision, action)
             else:
+                outcome = "ENGINE_FAILURE"
+                detail = "no engine constructed"
                 decision = "no engine (backend unavailable)"
                 if self.tick_count % 10 == 0:
                     self.log("AGENT", f"tick {self.tick_count}: no engine",
                              level="WARN")
             if self.tick_count % 10 == 0:
-                stages.append("CONSOLIDATE")
                 self._run_consolidation()
+                trail = trail + ("CONSOLIDATE",)
         except Exception as exc:
             logger.error("Tick %s error: %s", self.tick_count, exc)
-            evaluation = f"error: {type(exc).__name__}"
-        self._last_stages = stages
+            outcome = "ENGINE_FAILURE"
+            trail = ("OBSERVE",)
+            detail = f"{type(exc).__name__}: {exc}"[:120]
+        self._last_stages = list(trail)
+        self._last_cycle_result = {"outcome": outcome, "stages": list(trail),
+                                   "detail": detail, "executed": executed}
         self._last_decision = decision
         self._last_action = action
-        self._last_evaluation = evaluation
+        self._last_evaluation = outcome.lower()
         self._last_tick_ts = time.time()
-        self.log("AGENT", f"cycle={self.tick_count} "
-                          f"stages={'+'.join(stages)} eval={evaluation}")
+        self.log("AGENT", f"cycle={self.tick_count} outcome={outcome} "
+                          f"stages={'+'.join(trail)}")
+
+    def _classify_engine_result(self, engine_result: Dict[str, Any]
+                                ) -> Tuple[str, Tuple[str, ...], str, bool, str]:
+        """Map an execute_task result onto the cycle outcome contract.
+
+        Returns (outcome, trail, detail, executed, decision_summary). The
+        trail is the engine's own stage list (the governor steps that
+        actually ran) when provided; otherwise the canonical minimum trail
+        for the outcome. EXECUTE/EVALUATE are only ever claimed because the
+        engine reported them or the result is a real success.
+        """
+        status = str(engine_result.get("status", "unknown"))
+        outcome_raw = str(engine_result.get("outcome") or "")
+        if not outcome_raw:
+            # Legacy / mocked results without an explicit outcome: derive
+            # from status + message (same semantics as v1.9.0).
+            message = str(engine_result.get("message",
+                                            engine_result.get("reason", "")))
+            if status == "success":
+                outcome_raw = "success"
+            elif status == "refused":
+                outcome_raw = "policy_block"
+            elif "no viable action" in message:
+                outcome_raw = "no_viable_action"
+            else:
+                outcome_raw = "task_failure"
+
+        if outcome_raw == "success":
+            outcome = "SUCCESS"
+            decision = "executed"
+        elif outcome_raw == "no_viable_action":
+            call_errors = engine_result.get("call_errors") or {}
+            backend_down = any(
+                str(cls).split(":")[0] in _BACKEND_ERROR_CLASSES
+                for cls in call_errors.values())
+            outcome = "BACKEND_FAILURE" if backend_down else "NO_ACTION"
+            decision = str(engine_result.get("message", "no viable action"))[:90]
+        elif outcome_raw == "policy_block":
+            outcome = "POLICY_BLOCK"
+            decision = f"blocked: {engine_result.get('reason', 'gated')}"[:90]
+        elif outcome_raw == "governor_block":
+            outcome = "GOVERNOR_BLOCK"
+            decision = f"blocked: {engine_result.get('reason', 'governor')}"[:90]
+        else:  # task_failure and anything unrecognized
+            outcome = "TASK_FAILURE"
+            decision = str(engine_result.get("message", status))[:90]
+
+        engine_stages = engine_result.get("stages")
+        if isinstance(engine_stages, (list, tuple)) and engine_stages:
+            trail = tuple(["OBSERVE"] + [str(stage) for stage in engine_stages])
+        else:
+            trail = _OUTCOME_TRAILS.get(outcome, ("OBSERVE",))
+        detail = str(engine_result.get("result_status")
+                     or engine_result.get("reason")
+                     or engine_result.get("message") or "")[:120]
+        executed = status == "success" or bool(engine_result.get("executed"))
+        return outcome, trail, detail, executed, decision
 
     def _enrich_from_memory(self, decision: str, action: str) -> Tuple[str, str]:
         """Surface the real last decision/action from the Tier 1 head."""
@@ -534,6 +620,7 @@ class AndroidAgent:
             "last_decision": self._last_decision,
             "last_action": self._last_action,
             "last_evaluation": self._last_evaluation,
+            "last_cycle_result": self._last_cycle_result,
             "last_tick_ts": self._last_tick_ts,
             "backend_url": self.api_url,
             "capabilities": self.get_capabilities(),

@@ -3,8 +3,8 @@
 > A continuous orchestration layer for synthetic functional agency.
 
 [![PyPI](https://img.shields.io/pypi/v/shugocore)](https://pypi.org/project/shugocore/)
-![Release](https://img.shields.io/badge/release-v1.9.0-blue)
-![Tests](https://img.shields.io/badge/tests-489%20passing-brightgreen)
+![Release](https://img.shields.io/badge/release-v1.10.0-blue)
+![Tests](https://img.shields.io/badge/tests-498%20passing-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%E2%80%933.12-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android%20%28Termux%2FChaquopy%29-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -235,12 +235,15 @@ indicators.
   MEMORY / ERROR) backed by a ring-buffer log bus that both the Kotlin
   runtime and the Python agent write to.
 
-Every DECIDE cycle terminates in a record — `tool_execution` on the action
-path, `no_viable_action` / `policy_block` / `governor_block` otherwise — so
-the stage trail shown on the device is an honest transcript of what ran.
-The Kotlin↔Python boundary speaks JSON (`get_status_json`,
-`recent_logs_json`, `update_capabilities_json`, …) so no state is lost to
-crossing the runtime edge.
+Every DECIDE cycle terminates in a record, formalized as an **outcome
+contract** — `SUCCESS`, `NO_ACTION` (a model that answers but proposes
+nothing executable is a healthy, recorded cycle, not an error),
+`POLICY_BLOCK`, `GOVERNOR_BLOCK`, `TASK_FAILURE`, `BACKEND_FAILURE` (the
+model ensemble was unreachable), `IN_FLIGHT`, `ENGINE_FAILURE` — and the
+stage trail shows only the stages that actually ran. The Kotlin↔Python
+boundary speaks JSON (`get_status_json`, `recent_logs_json`,
+`update_capabilities_json`, …) so no state is lost to crossing the runtime
+edge.
 
 ### Desktop server mode (no high-end phone needed)
 
@@ -446,7 +449,7 @@ pip install shugocore
 **From the GitHub release (identical artifacts):**
 
 ```bash
-pip install https://github.com/SamurAI-Official/ShugoCore/releases/download/v1.9.0/shugocore-1.9.0-py3-none-any.whl
+pip install https://github.com/SamurAI-Official/ShugoCore/releases/download/v1.10.0/shugocore-1.10.0-py3-none-any.whl
 ```
 
 **From source:**
@@ -466,9 +469,9 @@ Optional extras:
 - `shugonet` - Shogunet networking runtime for multi-agent fleets (`shugonet_bridge.py`)
 - `psycopg2-binary` - PostgreSQL + pgvector fleet-shared Tier 2 memory (`pg_memory.py`)
 
-> Published on [PyPI](https://pypi.org/project/shugocore/) - the `v1.9.0`
+> Published on [PyPI](https://pypi.org/project/shugocore/) - the `v1.10.0`
 > wheel built from this tree is also attached to the
-> [GitHub release](https://github.com/SamurAI-Official/ShugoCore/releases/tag/v1.9.0).
+> [GitHub release](https://github.com/SamurAI-Official/ShugoCore/releases/tag/v1.10.0).
 
 ## Quickstart
 
@@ -526,7 +529,7 @@ for fact in candidates:
 ## Testing
 
 ```bash
-python -m unittest discover -s tests -v     # 489 tests, no native deps
+python -m unittest discover -s tests -v     # 498 tests, no native deps
 ```
 
 Beyond security and integration regression tests (v1.2.0), the suite includes

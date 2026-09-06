@@ -121,8 +121,8 @@ class TestAndroidControlPlane(unittest.TestCase):
         agent.engine = mock.MagicMock()
         agent.tick()
         status = agent.get_status()
-        self.assertEqual(status["pipeline_stages"], ["OBSERVE", "GATE"])
-        self.assertEqual(status["last_evaluation"], "refused")
+        self.assertEqual(status["pipeline_stages"], ["OBSERVE", "GATE", "RECORD"])
+        self.assertEqual(status["last_evaluation"], "policy_block")
         self.assertIn("network policy", status["last_decision"])
         agent.engine.execute_task.assert_not_called()
         event_types = [e["type"] for e in agent.memory.tier1.recent(5)]
@@ -191,6 +191,120 @@ class TestAndroidControlPlane(unittest.TestCase):
         stages = agent.get_status()["pipeline_stages"]
         for stage in ("OBSERVE", "GATE", "DECIDE", "EXECUTE", "EVALUATE", "RECORD"):
             self.assertIn(stage, stages)
+
+    # -- cycle outcome contract (Phase 1) --------------------------------------
+
+    def test_outcome_no_action_is_not_an_error(self):
+        """A model that answers but proposes nothing executable records a
+        healthy NO_ACTION cycle: no exception, no execution, next cycle."""
+        agent = self._make()
+        agent.engine = mock.MagicMock()
+        agent.engine.execute_task.return_value = {
+            "status": "error", "outcome": "no_viable_action",
+            "message": "no viable action proposed by the model ensemble",
+            "call_errors": {}, "stages": ["GATE", "DECIDE", "RECORD"]}
+        agent.tick()
+        status = agent.get_status()
+        result = status["last_cycle_result"]
+        self.assertEqual(result["outcome"], "NO_ACTION")
+        self.assertEqual(status["last_evaluation"], "no_action")
+        self.assertNotIn("EXECUTE", result["stages"])
+        self.assertNotIn("EVALUATE", result["stages"])
+        self.assertIn("RECORD", result["stages"])
+        self.assertFalse(result["executed"])
+
+    def test_outcome_backend_failure_distinguished_from_no_action(self):
+        """Transport-class call errors map to BACKEND_FAILURE, not NO_ACTION."""
+        agent = self._make()
+        agent.engine = mock.MagicMock()
+        agent.engine.execute_task.return_value = {
+            "status": "error", "outcome": "no_viable_action",
+            "message": "no viable action proposed by the model ensemble",
+            "call_errors": {"qwen": "transport_error: URLError"},
+            "stages": ["GATE", "DECIDE", "RECORD"]}
+        agent.tick()
+        result = agent.get_status()["last_cycle_result"]
+        self.assertEqual(result["outcome"], "BACKEND_FAILURE")
+        self.assertEqual(agent.get_status()["last_evaluation"], "backend_failure")
+
+    def test_outcome_policy_block_from_decision_gate(self):
+        agent = self._make()
+        agent.engine = mock.MagicMock()
+        agent.engine.execute_task.return_value = {
+            "status": "refused", "outcome": "policy_block",
+            "reason": "no external consent grant",
+            "stages": ["GATE", "DECIDE", "RECORD"]}
+        agent.tick()
+        result = agent.get_status()["last_cycle_result"]
+        self.assertEqual(result["outcome"], "POLICY_BLOCK")
+        self.assertNotIn("EXECUTE", result["stages"])
+        self.assertNotIn("EVALUATE", result["stages"])
+        self.assertIn("DECIDE", result["stages"])
+        self.assertIn("RECORD", result["stages"])
+
+    def test_outcome_governor_block(self):
+        agent = self._make()
+        agent.engine = mock.MagicMock()
+        agent.engine.execute_task.return_value = {
+            "status": "refused", "outcome": "governor_block",
+            "reason": "governor paused", "stages": ["GATE", "RECORD"]}
+        agent.tick()
+        result = agent.get_status()["last_cycle_result"]
+        self.assertEqual(result["outcome"], "GOVERNOR_BLOCK")
+        self.assertNotIn("DECIDE", result["stages"])
+        self.assertIn("RECORD", result["stages"])
+
+    def test_outcome_task_failure_includes_executed_stage(self):
+        agent = self._make()
+        agent.engine = mock.MagicMock()
+        agent.engine.execute_task.return_value = {
+            "status": "error", "outcome": "task_failure",
+            "message": "ToolError",
+            "stages": ["GATE", "DECIDE", "EXECUTE", "RECORD"]}
+        agent.tick()
+        result = agent.get_status()["last_cycle_result"]
+        self.assertEqual(result["outcome"], "TASK_FAILURE")
+        self.assertIn("EXECUTE", result["stages"])
+        self.assertNotIn("EVALUATE", result["stages"])
+
+    def test_outcome_in_flight_observes_only(self):
+        """The in-flight cycle skips journaling; the running cycle records."""
+        agent = self._make()
+        agent.engine = mock.MagicMock()
+        agent.engine.execute_task.return_value = {"status": "in_flight"}
+        before = len(agent.memory.tier1.recent(50))
+        agent.tick()
+        result = agent.get_status()["last_cycle_result"]
+        self.assertEqual(result["outcome"], "IN_FLIGHT")
+        self.assertEqual(result["stages"], ["OBSERVE"])
+        after = len(agent.memory.tier1.recent(50))
+        self.assertLessEqual(after - before, 1)  # only android_observation
+
+    def test_outcome_engine_failure_on_exception(self):
+        agent = self._make()
+        agent.engine = mock.MagicMock()
+        agent.engine.execute_task.side_effect = RuntimeError("boom")
+        agent.tick()
+        status = agent.get_status()
+        self.assertEqual(status["last_cycle_result"]["outcome"], "ENGINE_FAILURE")
+        self.assertEqual(status["last_evaluation"], "engine_failure")
+
+    def test_outcome_legacy_mock_mapping(self):
+        """v1.9.0-style results without an outcome field still classify."""
+        agent = self._make()
+        agent.engine = mock.MagicMock()
+        agent.engine.execute_task.return_value = {"status": "success"}
+        agent.tick()
+        self.assertEqual(
+            agent.get_status()["last_cycle_result"]["outcome"], "SUCCESS")
+
+    def test_real_engine_unreachable_backend_is_backend_failure(self):
+        """No local server: the ensemble is unreachable -> BACKEND_FAILURE
+        (transport class), not NO_ACTION and not a generic error."""
+        agent = self._make()
+        agent.tick()
+        result = agent.get_status()["last_cycle_result"]
+        self.assertEqual(result["outcome"], "BACKEND_FAILURE")
 
     # -- log buffer --------------------------------------------------------------
 

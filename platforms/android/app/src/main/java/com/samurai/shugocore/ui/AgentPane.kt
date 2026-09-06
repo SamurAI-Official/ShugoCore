@@ -42,7 +42,8 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
 
         // -- Status -------------------------------------------------------------
         col.addView(Ui.section(context, "Status"))
-        for (label in listOf("Agent", "Decision Engine", "Memory", "Policy", "Tools", "Execution")) {
+        for (label in listOf("Agent", "Decision Engine", "Engine", "Backend",
+                             "Memory", "Policy", "Tools", "Execution")) {
             val (row, dot, value) = Ui.statusRow(context, label)
             statusDots[label] = dot
             statusValues[label] = value
@@ -129,6 +130,13 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
 
         setStatus("Agent", if (running) "RUNNING" else "STOPPED", running)
         setStatus("Decision Engine", if (engineReady) "READY" else "ABSENT", engineReady)
+        // Phase 0 truth rows: the real engine class + the backend it serves.
+        val engineName = Ui.str(agent, "engine", "")
+        setStatus("Engine",
+            if (engineName.isEmpty() || engineName == "None") "—" else engineName,
+            engineReady)
+        val backend = Ui.str(agent, "backend_url", "")
+        setStatus("Backend", backend.substringAfter("://").ifEmpty { "—" }, engineReady)
         setStatus("Memory", if (running && agent != null) "READY" else "—",
             running && agent != null)
         val policy = Ui.sub(agent, "policy")
@@ -166,8 +174,10 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
         }
 
         // Surface the real engine/init error instead of a silent ABSENT.
-        val engErr = Ui.str(agent, "engine_error")
-        val initErr = Ui.str(agent, "init_error")
+        // Empty defaults: an absent-or-empty error must NOT render as "—"
+        // (the Ui.str fallback) and trip the error branch.
+        val engErr = Ui.str(agent, "engine_error", "")
+        val initErr = Ui.str(agent, "init_error", "")
         engineError.text = when {
             engErr.isNotEmpty() -> "engine: $engErr"
             initErr.isNotEmpty() -> "init: $initErr"

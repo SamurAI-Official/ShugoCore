@@ -4,6 +4,44 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.10.0] - 2026-09-05 — validation-ladder phases 0–1
+
+### Phase 0 — Agent pane truth
+
+- **Fixed the phantom engine error**: `Ui.str()`'s `"—"` fallback also applied
+  to *empty* values, so an empty `engine_error` rendered as a permanent red
+  `engine: —` line in the AGENT tab. Empty/absent errors now render nothing.
+- **New truth rows** in the AGENT tab Status section: `Engine` (the real
+  engine class name, e.g. `DecisionEngine`) and `Backend` (the serving
+  endpoint, e.g. `127.0.0.1:11434`) — matching the designed
+  Decision Engine / Engine / Backend presentation.
+- Verified on S9 FE: `Decision Engine: READY`, `Engine: DecisionEngine`,
+  `Backend: 127.0.0.1:11434`, no error line.
+
+### Phase 1 — Cycle outcome contract
+
+- **`CYCLE_OUTCOMES`** formalized in the agent shell: `SUCCESS`, `NO_ACTION`,
+  `POLICY_BLOCK`, `GOVERNOR_BLOCK`, `TASK_FAILURE`, `IN_FLIGHT`,
+  `BACKEND_FAILURE`, `ENGINE_FAILURE`. The critical invariant: **NO_ACTION is
+  not an error** — a model that answers but proposes nothing executable is a
+  healthy, recorded cycle.
+- **`BACKEND_FAILURE` vs `NO_ACTION`** distinguished by transport-class call
+  errors (`transport_error` / `model_unavailable` / `invalid_model`) recorded
+  per-model by `SubconsciousModel.note_call_error()` and surfaced through
+  `no_viable_action` results — the three failure classes (no response /
+  invalid protocol / engine rejection) no longer collapse.
+- **Engine results now carry `outcome`, `stages`, `executed`, and
+  `result_status`** (governor-trail backed): the agent renders the stages
+  that actually ran instead of inferring them, and `TASK_FAILURE` trails can
+  honestly include `EXECUTE`.
+- `tick()` produces a **`last_cycle_result`** snapshot in `get_status()`;
+  `last_evaluation` now carries the outcome name (`no_action`, `policy_block`,
+  `backend_failure`, …) with honest coloring (blocks amber, failures red,
+  `no_action` neutral). The network-policy block trail now includes its
+  `RECORD` stage (it always journaled the block; the trail now says so).
+- **9 new tests** — one per outcome class plus real-engine
+  unreachable-backend classification and legacy-result mapping (498 total).
+
 ## [1.9.0] - 2026-09-04
 
 ### Added — Android node control plane (5 tabs + node status header)

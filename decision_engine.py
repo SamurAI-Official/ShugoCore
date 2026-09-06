@@ -521,8 +521,15 @@ class DecisionEngine:
                     {"kind": "begin_task", "detail": type(exc).__name__},
                 )
                 self.logger.warning(f"Governor refused task: {exc}")
-                return {"status": "refused", "reason": sanitize_text(str(exc), 160)}
+                return {"status": "refused", "outcome": "governor_block",
+                        "reason": sanitize_text(str(exc), 160),
+                        "stages": ["GATE", "RECORD"]}
 
+            # Per-task stage trail (engine tasks are serialized by the
+            # governor's re-entrancy guard, so instance state is safe here).
+            # Surfaced on every return so the agent shell renders the steps
+            # that ACTUALLY ran instead of inferring them.
+            self._task_trail: List[str] = []
             try:
                 with self.tracer.start_span("agent.task", {
                         "task_type": sanitize_text(task.get("type", "unknown"), 64),
@@ -535,8 +542,9 @@ class DecisionEngine:
             self.logger.critical(f"Deterministic HALT: {exc}")
             self.memory.record_event("fallback_halt",
                                      {"detail": type(exc).__name__})
-            return {"status": "refused", "reason": sanitize_text(str(exc), 160),
-                    "terminal": True}
+            return {"status": "refused", "outcome": "governor_block",
+                    "reason": sanitize_text(str(exc), 160), "terminal": True,
+                    "stages": list(getattr(self, "_task_trail", [])) + ["RECORD"]}
         except GovernorError as exc:
             # A budget / deadline / deadlock interlock fired: escalate to the
             # deterministic fallback controller with the right trigger kind.
@@ -545,7 +553,9 @@ class DecisionEngine:
             self.logger.error(f"Governor interlock triggered: {exc}")
             self.memory.record_event("governor_block",
                                      {"kind": kind, "detail": type(exc).__name__})
-            return {"status": "refused", "reason": sanitize_text(str(exc), 160)}
+            return {"status": "refused", "outcome": "governor_block",
+                    "reason": sanitize_text(str(exc), 160),
+                    "stages": list(getattr(self, "_task_trail", [])) + ["RECORD"]}
         except Exception as exc:
             self.memory.record_event(
                 "task_failure",
@@ -554,10 +564,19 @@ class DecisionEngine:
             )
             self.memory.resolve_step()
             self.logging_manager.log_error("Error during task execution", exc)
-            return {"status": "error", "message": type(exc).__name__}
+            return {"status": "error", "outcome": "task_failure",
+                    "message": type(exc).__name__,
+                    "stages": list(getattr(self, "_task_trail", [])) + ["RECORD"]}
 
     def _run_gated_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
-        """The gated pipeline, executed one governor state at a time."""
+        """The gated pipeline, executed one governor state at a time.
+
+        Every return carries ``outcome`` (cycle-result contract) and
+        ``stages`` (the governor steps that actually ran) so the agent shell
+        can render an honest trail instead of inferring one.
+        """
+        trail = self._task_trail  # live list owned by execute_task
+        trail.append("GATE")
         self.governor.step(AgentState.GATING)
         allowed, reason = self._evaluate_policy(task)
         if not allowed:
@@ -565,8 +584,11 @@ class DecisionEngine:
             self._record_block("task", task, reason or "policy check failed")
             self.fallbacks.report_violation("invariant_violations", reason or "policy")
             self.governor.step(AgentState.IDLE)
-            return {"status": "refused", "reason": reason or "policy check failed"}
+            return {"status": "refused", "outcome": "policy_block",
+                    "reason": reason or "policy check failed",
+                    "stages": list(trail) + ["RECORD"]}
 
+        trail.append("DECIDE")
         self.governor.step(AgentState.DECIDING)
         decision = self.make_decision(task)
 
@@ -574,20 +596,33 @@ class DecisionEngine:
             # No valid structured proposal (offline stub models, parse failure):
             # honest error - never fabricate a success. Designed semantics:
             # DECIDE -> no viable action -> RECORD -> next cycle, so the
-            # outcome is journaled even though nothing executed.
+            # outcome is journaled even though nothing executed. The call
+            # error classes let the shell distinguish BACKEND_FAILURE (the
+            # ensemble was unreachable) from NO_ACTION (it answered, but
+            # proposed nothing executable).
+            call_errors = getattr(self.subconscious, "last_call_errors", {}) or {}
+            classes = sorted({str(v).split(":")[0] for v in call_errors.values()})
+            detail = "no viable action proposed by the model ensemble"
+            if classes:
+                detail += f"; call_errors={','.join(classes)}"
             self.memory.record_event(
                 "no_viable_action",
                 {"task_type": sanitize_text(task.get("type", "unknown"), 64),
-                 "detail": "no viable action proposed by the model ensemble"},
+                 "detail": sanitize_text(detail, 200)},
             )
             self.governor.step(AgentState.IDLE)
             self.memory.resolve_step()
-            return {"status": "error",
-                    "message": "no viable action proposed by the model ensemble"}
+            return {"status": "error", "outcome": "no_viable_action",
+                    "message": "no viable action proposed by the model ensemble",
+                    "call_errors": {str(k)[:64]: str(v)[:80]
+                                    for k, v in call_errors.items()},
+                    "stages": list(trail) + ["RECORD"]}
 
         if decision.get("action_type") == "multi_step_process":
+            trail.append("EXECUTE")
             self.governor.step(AgentState.EXECUTING)
             result = self._execute_multi_step(task, decision)
+            trail.append("EVALUATE")
             self.governor.step(AgentState.EVALUATING)
             # RECORD: multi-step cycles record their outcome like any other
             # action path (overall status + per-step statuses).
@@ -601,20 +636,33 @@ class DecisionEngine:
                       for entry in result.get("steps_results", [])]), 200)},
             )
             self.memory.resolve_step()
-            return result
+            steps_results = result.get("steps_results") or []
+            wrapped = dict(result)
+            wrapped["executed"] = bool(steps_results)
+            wrapped["result_status"] = str(result.get("status", "unknown"))
+            wrapped["outcome"] = ("policy_block" if not steps_results
+                                  else "success"
+                                  if str(result.get("status")) == "success"
+                                  else "task_failure")
+            wrapped["stages"] = list(trail) + ["RECORD"]
+            return wrapped
 
         allowed, reason = self._gate_decision(decision)
         if not allowed:
             self._record_block("decision", decision, reason or "gated")
             self.governor.step(AgentState.IDLE)
             self.memory.resolve_step()
-            return {"status": "refused", "reason": reason or "gated"}
+            return {"status": "refused", "outcome": "policy_block",
+                    "reason": reason or "gated",
+                    "stages": list(trail) + ["RECORD"]}
 
+        trail.append("EXECUTE")
         self.governor.step(AgentState.EXECUTING)
         self.governor.consume_step(1)  # one tool dispatch
         result = self._execute_gated(decision)
         self.reinforcement_learning.update_model_performance(task, decision, result)
         self.logging_manager.log_decision(task, redact(decision), redact(result))
+        trail.append("EVALUATE")
         self.governor.step(AgentState.EVALUATING)
         self.memory.record_event(
             "tool_execution",
@@ -624,7 +672,12 @@ class DecisionEngine:
              "detail": sanitize_text(str(result), 200)},
         )
         self.memory.resolve_step()
-        return result
+        wrapped = dict(result)
+        wrapped["outcome"] = "success"
+        wrapped["executed"] = True
+        wrapped["result_status"] = str(result.get("status", "unknown"))
+        wrapped["stages"] = list(trail) + ["RECORD"]
+        return wrapped
 
     def _gate_decision(self, decision: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
         """

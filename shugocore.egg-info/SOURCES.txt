@@ -47,6 +47,7 @@ tests/test_android.py
 tests/test_android_control_plane.py
 tests/test_android_lifecycle_stress.py
 tests/test_android_tree_sync.py
+tests/test_closed_loop.py
 tests/test_continuous_agent.py
 tests/test_dream.py
 tests/test_human_interaction.py

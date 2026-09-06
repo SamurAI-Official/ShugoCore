@@ -32,6 +32,7 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
     private val tier2: TextView
     private val tier3: TextView
     private val humanPresence: TextView
+    private val visionRow: TextView
     private val humanObservations: TextView
     private val statusLine: TextView
     private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US)
@@ -103,6 +104,7 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
         // -- Interaction ---------------------------------------------------------------
         col.addView(Ui.section(context, "Interaction"))
         humanPresence = col.addKv("Human")
+        visionRow = col.addKv("Vision")
         humanObservations = col.addKv("Observations")
 
         // -- Controls -------------------------------------------------------------------
@@ -208,11 +210,28 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
         val interaction = Ui.sub(agent, "interaction")
         if (interaction == null) {
             humanPresence.text = "—"
+            visionRow.text = "—"
             humanObservations.text = "—"
         } else {
             val presence = Ui.str(interaction, "presence", "user_absent")
             humanPresence.text = if (presence == "user_present") "PRESENT" else "ABSENT"
             humanPresence.setTextColor(if (presence == "user_present") Ui.OK else Ui.DIM)
+            // Vision truth from the agent's bus: PERSON / NO PERSON / — when
+            // the visual provider has not reported (or went stale).
+            when (interaction.get("person_present")) {
+                true -> {
+                    visionRow.text = "PERSON"
+                    visionRow.setTextColor(Ui.OK)
+                }
+                false -> {
+                    visionRow.text = "NO PERSON"
+                    visionRow.setTextColor(Ui.DIM)
+                }
+                else -> {
+                    visionRow.text = "—"
+                    visionRow.setTextColor(Ui.DIM)
+                }
+            }
             humanObservations.text = "${Ui.num(interaction, "observations")} recorded"
         }
     }

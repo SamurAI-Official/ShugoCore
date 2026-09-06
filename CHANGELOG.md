@@ -4,6 +4,47 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.13.0] - 2026-09-06 — vision: person presence
+
+### Camera perception (the first Vision provider)
+
+- **New `runtime/VisionProvider.kt`** — person presence from the FRONT camera
+  at ~1 fps, posted as `HumanObservation(type=visual,
+  payload={person_present, face_count})` through the same interaction bus any
+  future camera (robot, Quest, glasses) will use.
+- **Zero ML dependency**: person detection uses the platform
+  `android.media.FaceDetector` over an upright, 320px, RGB_565 frame
+  (CameraX `ImageAnalysis` + `ImageProxy.toBitmap()`); swappable behind the
+  provider for richer vision models later. CameraX (core/camera2/lifecycle
+  1.3.4) is the app's first new dependency since v1.9 — deliberately.
+- **Edge-triggered + heartbeat**: observations post on state CHANGE and every
+  45 s while present; skipped frames never flood the bus.
+- **Hysteresis**: `person_present=true` on the first confident face;
+  `false` only after 20 s of continuous absence — honest presence, no
+  flicker.
+- **Contract semantics extended**: a visual observation carrying
+  `person_present: false` now implies absence (drives USER_LEFT through the
+  bus's debounced state machine), so vision alone — without a separate
+  presence event — moves the presence lifecycle.
+- **`human_context()` / `stats()`** gained `person_present` (from the freshest
+  visual observation, None when vision went stale >60 s) and
+  `vision_recent` — DECIDE now knows whether a person is in front of the
+  device as ordinary task context.
+- **Honest liveness**: every analyzed frame stamps `PerceptionState`, so the
+  SENSORS tab CAMERA row reads ACTIVE only while frames truly arrive
+  (previously hardwired IDLE).
+- **Lifecycle**: the provider follows camera-permission reality — synced
+  every housekeeping tick by `ShugoCoreService` (grant → start, revoke →
+  stop), stopped in onDestroy. Tapping CAMERA in the SENSORS tab requests the
+  runtime permission; granting starts perception.
+- **UI**: the AGENT tab's Interaction section gains a **Vision** row
+  (PERSON / NO PERSON / — when vision has not reported).
+
+### Tests
+
+- 3 new bus tests (visual presence/absence semantics, vision freshness
+  fields) — suite: **532 passing**.
+
 ## [1.12.0] - 2026-09-06 — human interaction foundation
 
 ### The Human Interaction contract (provider-side)

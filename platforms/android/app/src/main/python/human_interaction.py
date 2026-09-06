@@ -228,8 +228,11 @@ class InteractionBus:
             return False, reason
 
         now = self._clock()
-        present_implied = not (observation.type == "presence"
-                               and observation.payload.get("present") is False)
+        present_implied = not (
+            (observation.type == "presence"
+             and observation.payload.get("present") is False)
+            or (observation.type == "visual"
+                and observation.payload.get("person_present") is False))
         presence_event = ""
         with self._lock:
             self._seq += 1
@@ -300,13 +303,31 @@ class InteractionBus:
                 entry.get("type") == "speech"
                 and now - entry.get("timestamp", 0.0) <= 30.0
                 for entry in self._buffer)
+            last_visual = next((e for e in reversed(self._buffer)
+                                if e.get("type") == "visual"), None)
+            vision_recent = bool(
+                last_visual is not None
+                and now - last_visual.get("timestamp", 0.0) <= 30.0)
+            person_present = self._last_person_present(now)
             return {
                 "presence": self._presence,
                 "seconds_since_last_observation":
                     round(age, 1) if age is not None else None,
                 "observations_recorded": sum(self._counts.values()),
                 "speech_recent": speech_recent,
+                "vision_recent": vision_recent,
+                "person_present": person_present,
             }
+
+    def _last_person_present(self, now: float) -> Optional[bool]:
+        """person_present from the most recent visual observation when it is
+        fresh (< 60s); None when vision has not reported or went stale."""
+        last_visual = next((e for e in reversed(self._buffer)
+                            if e.get("type") == "visual"), None)
+        if last_visual is None or now - last_visual.get("timestamp", 0.0) > 60.0:
+            return None
+        value = last_visual.get("payload", {}).get("person_present")
+        return bool(value) if value is not None else None
 
     def stats(self) -> Dict[str, Any]:
         with self._lock:
@@ -321,4 +342,5 @@ class InteractionBus:
                 "buffered": len(self._buffer),
                 "last_observation_age_s":
                     round(age, 1) if age is not None else None,
+                "person_present": self._last_person_present(now),
             }

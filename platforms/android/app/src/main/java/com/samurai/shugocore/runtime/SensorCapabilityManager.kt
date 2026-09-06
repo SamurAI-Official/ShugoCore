@@ -137,7 +137,11 @@ class SensorCapabilityManager(private val context: Context) {
             "imu" -> if (fresh(lastAccelMs) || fresh(lastGyroMs) || fresh(lastRotMs))
                 StreamState.ACTIVE else StreamState.IDLE
             "wifi" -> if (isWifiConnected()) StreamState.ACTIVE else StreamState.IDLE
-            // camera/mic/gps/bluetooth: idle until the agent actually opens one
+            // camera: ACTIVE only while the vision provider truly analyzed a
+            // frame within the freshness window; mic/gps/bluetooth: idle until
+            // their providers open one.
+            "camera" -> if (fresh(PerceptionState.lastCameraFrameMs))
+                StreamState.ACTIVE else StreamState.IDLE
             else -> StreamState.IDLE
         }
     }

@@ -18,6 +18,7 @@ import com.samurai.shugocore.runtime.HumanInteractionBus
 import com.samurai.shugocore.runtime.LogBus
 import com.samurai.shugocore.runtime.ServerStats
 import com.samurai.shugocore.runtime.SensorCapabilityManager
+import com.samurai.shugocore.runtime.VisionProvider
 import com.chaquo.python.Python
 import com.chaquo.python.PyObject
 import com.chaquo.python.android.AndroidPlatform
@@ -38,6 +39,7 @@ class ShugoCoreService : Service() {
     private var thermalMonitor: ThermalMonitor? = null
     private var capabilityDetector: CapabilityDetector? = null
     private var capabilityManager: SensorCapabilityManager? = null
+    private var visionProvider: VisionProvider? = null
     @Volatile private var agentRunning = false
     private val lastLogSeq = java.util.concurrent.atomic.AtomicInteger()
     private val lastLogSeqSeedDone = java.util.concurrent.atomic.AtomicBoolean()
@@ -70,6 +72,7 @@ class ShugoCoreService : Service() {
         thermalMonitor = ThermalMonitor(this)
         capabilityDetector = CapabilityDetector(this)
         capabilityManager = SensorCapabilityManager(this)
+        visionProvider = VisionProvider(this)
         createNotificationChannel()
     }
 
@@ -84,6 +87,7 @@ class ShugoCoreService : Service() {
                 // current, so the UI never shows stale state.
                 pollAgentLogsIntoBus()
                 pushCapabilitiesIfChanged()
+                visionProvider?.sync()   // camera follows permission reality
                 if (agentRunning) {
                     val config = thermalMonitor?.getInferenceConfig()
                     if (config?.shouldShutdown == true) {
@@ -632,6 +636,7 @@ class ShugoCoreService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         HumanInteractionBus.setPublisher(null)
+        visionProvider?.stop()
         Log.i(TAG, "Service destroyed")
         LogBus.log(LogBus.Category.AGENT, "node service destroyed")
         agentRunning = false

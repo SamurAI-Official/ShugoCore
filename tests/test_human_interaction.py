@@ -177,6 +177,44 @@ class TestInteractionBus(unittest.TestCase):
         self.assertTrue(ctx["speech_recent"])
         self.assertEqual(ctx["observations_recorded"], 1)
 
+    def test_visual_person_present_drives_presence(self):
+        clock = _FakeClock()
+        bus = InteractionBus(clock=clock)
+        _, detail = bus.publish(_obs(type_="visual", source="front_camera",
+                                     payload={"person_present": True,
+                                              "face_count": 1},
+                                     timestamp=clock()))
+        self.assertEqual(detail, USER_PRESENT_EVENT)
+        self.assertTrue(bus.human_context()["person_present"])
+
+    def test_visual_person_absent_drives_absence(self):
+        clock = _FakeClock()
+        bus = InteractionBus(clock=clock)
+        bus.publish(_obs(type_="visual", payload={"person_present": True},
+                         timestamp=clock()))
+        self.assertEqual(bus.presence(), USER_PRESENT)
+        clock.advance(5.0)
+        _, detail = bus.publish(_obs(type_="visual", source="front_camera",
+                                     payload={"person_present": False,
+                                              "face_count": 0},
+                                     timestamp=clock()))
+        self.assertEqual(detail, USER_LEFT_EVENT)
+        self.assertEqual(bus.presence(), USER_ABSENT)
+        self.assertEqual(bus.human_context()["person_present"], False)
+
+    def test_human_context_vision_fields(self):
+        clock = _FakeClock()
+        bus = InteractionBus(clock=clock)
+        ctx = bus.human_context()
+        self.assertIsNone(ctx["person_present"])
+        self.assertFalse(ctx["vision_recent"])
+        bus.publish(_obs(type_="visual", payload={"person_present": True},
+                         timestamp=clock()))
+        ctx = bus.human_context()
+        self.assertTrue(ctx["vision_recent"])
+        self.assertEqual(ctx["person_present"], True)
+        self.assertEqual(bus.stats()["person_present"], True)
+
     def test_listener_notified_and_isolated(self):
         bus = InteractionBus()
         seen, broken = [], []

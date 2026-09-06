@@ -56,8 +56,11 @@ class ShugoCoreService : Service() {
     private val executor: ScheduledExecutorService = Executors.newScheduledThreadPool(2)
     private val handler = Handler(Looper.getMainLooper())
     private val binder = LocalBinder()
-    // v1.18: the boot greeting is spoken at most once per process.
-    private val bootGreetingDone = java.util.concurrent.atomic.AtomicBoolean(false)
+    // v1.19: two-flag boot-greeting lifecycle — Scheduled is set at agent init
+    // (the greeting leaves the decision boundary), Delivered is set only after
+    // tts.speak() returns true. Retry up to 40 s or until TTS terminally fails.
+    private val bootGreetingScheduled = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val bootGreetingDelivered = java.util.concurrent.atomic.AtomicBoolean(false)
     // v1.18: echo dead time after TTS ends before barge-in re-arms (ms).
     private val ECHO_DEAD_TIME_MS = 400L
 
@@ -193,25 +196,39 @@ class ShugoCoreService : Service() {
         }
     }
 
-    /** v1.18 presence: one warm self-introduction per service run. Spoken
-     * only when the TTS engine is genuinely ready (polled with retries) —
-     * never simulated, at most once (personality, not noise). */
+    /** v1.19 boot greeting: one warm self-introduction per service run. The
+     * Scheduled flag is set when this routine first runs (the greeting has
+     * left the decision boundary); Delivered is set ONLY after tts.speak()
+     * returns true. Retries up to ~40 s at a 3 s cadence, or stops early
+     * if TTS terminally fails — the greeting is never permanently consumed
+     * because a flag is too eager. */
     private fun scheduleBootGreeting() {
-        if (!bootGreetingDone.compareAndSet(false, true)) return
+        if (!bootGreetingScheduled.compareAndSet(false, true)) return
         var attempts = 0
         val greet = object : Runnable {
             override fun run() {
+                if (bootGreetingDelivered.get()) return
                 val tts = ttsProvider
-                if (tts == null || !tts.isReady) {
-                    if (++attempts <= 5) handler.postDelayed(this, 1_500L)
+                if (tts == null || (!tts.isReady && !tts.isFailed)) {
+                    if (++attempts <= 12) handler.postDelayed(this, 3_000L)
+                    else LogBus.log(LogBus.Category.AGENT,
+                        "boot greeting: TTS not ready after $attempts attempts — giving up")
+                    return
+                }
+                if (tts.isFailed) {
+                    LogBus.log(LogBus.Category.AGENT,
+                        "boot greeting: TTS init failed — skipping")
                     return
                 }
                 if (tts.speak("Hi, I'm Shugo. I'm online and listening.")) {
+                    bootGreetingDelivered.set(true)
                     LogBus.log(LogBus.Category.AGENT, "boot greeting spoken")
+                } else {
+                    if (++attempts <= 12) handler.postDelayed(this, 3_000L)
                 }
             }
         }
-        handler.postDelayed(greet, 2_000L)
+        handler.postDelayed(greet, 3_000L)
     }
 
     

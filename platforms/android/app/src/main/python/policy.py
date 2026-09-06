@@ -42,7 +42,7 @@ SPEECH_OUTPUT_ACTION_TYPES = {"speak"}
 # (consent stays with the operator's explicit registry entry).
 ASK_USER_ACTION_TYPES = {"ask_user"}
 # Robotics actions: physical side effects, require consent AND approval.
-ROBOTICS_ACTION_TYPES = {"robot_navigate", "robot_manipulate", "robot_gripper"}
+ROBOTICS_ACTION_TYPES = {"robot_navigate", "robot_manipulate", "robot_gripper", "robot_look"}
 # Safety-critical robotics actions: bypass consent/approval gates.
 ROBOTICS_SAFETY_ACTION_TYPES = {"robot_stop"}
 # Robotics read-only actions: no consent required.

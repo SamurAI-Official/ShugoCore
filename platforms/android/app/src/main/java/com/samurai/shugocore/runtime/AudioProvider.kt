@@ -128,6 +128,9 @@ class AudioProvider(private val context: Context) {
             mode = Mode.IDLE
             PerceptionState.lastMicActivityMs = 0L
             PerceptionState.lastPartialTranscript = ""
+            PerceptionState.micActive = false  // v1.19
+            PerceptionState.voiceDetected = false
+            PerceptionState.humanSpeech = false
             LogBus.log(LogBus.Category.SENSOR, "hearing provider stopped")
         }
     }
@@ -183,6 +186,7 @@ class AudioProvider(private val context: Context) {
             val read = record.read(buffer, 0, FRAME_SAMPLES)
             if (read < FRAME_SAMPLES) continue
             PerceptionState.lastMicActivityMs = System.currentTimeMillis()
+            PerceptionState.micActive = true  // v1.19: we hold the mic
             val rms = kotlin.math.sqrt(
                 buffer.fold(0.0) { acc, s -> acc + s.toDouble() * s } / read)
             // Adaptive noise floor: track ambient level while quiet.
@@ -192,6 +196,7 @@ class AudioProvider(private val context: Context) {
                 loudStreak += 1
                 if (loudStreak >= ONSET_FRAMES) {
                     loudStreak = 0
+                    PerceptionState.voiceDetected = true  // v1.19
                     onSpeechOnset?.invoke()
                     startRecognition()
                     return
@@ -346,10 +351,12 @@ class AudioProvider(private val context: Context) {
     private val listener = object : RecognitionListener {
         override fun onRmsChanged(rmsdB: Float) {
             PerceptionState.lastMicActivityMs = System.currentTimeMillis()
+            PerceptionState.voiceDetected = true  // v1.19: recogniser receiving audio
         }
 
         override fun onBeginningOfSpeech() {
             PerceptionState.lastMicActivityMs = System.currentTimeMillis()
+            PerceptionState.voiceDetected = true  // v1.19: endpointer confirms speech
             // The recognizer's own endpointer heard speech onset: signal
             // barge-in (the service half-duplex gate decides whether it
             // actually stops playback — echo suppression, v1.18).
@@ -365,6 +372,11 @@ class AudioProvider(private val context: Context) {
             // bus, never the journal (only final transcripts are recorded).
             PerceptionState.lastPartialTranscript = text.take(MAX_TRANSCRIPT_LEN)
             PerceptionState.lastMicActivityMs = System.currentTimeMillis()
+            // v1.19: stamp the transcription signal + humanSpeech (echo-gated).
+            PerceptionState.transcription = PerceptionSignal(
+                text.take(MAX_TRANSCRIPT_LEN), System.currentTimeMillis(),
+                source = "on_device")
+            PerceptionState.humanSpeech = true
             val now = System.currentTimeMillis()
             if (now - lastPartialLogMs >= PARTIAL_LOG_MIN_INTERVAL_MS) {
                 lastPartialLogMs = now
@@ -451,6 +463,10 @@ class AudioProvider(private val context: Context) {
         errorBackoffMs = ERROR_BACKOFF_BASE_MS  // success resets the backoff
         val trimmed = text.take(MAX_TRANSCRIPT_LEN)
         PerceptionState.lastTranscript = trimmed
+        // v1.19: stamp the full transcription signal + humanSpeech.
+        PerceptionState.transcription = PerceptionSignal(
+            trimmed, System.currentTimeMillis(), source = "on_device")
+        PerceptionState.humanSpeech = true
         HumanInteractionBus.post("speech", "on_device_stt",
             JSONObject()
                 .put("transcript", trimmed)

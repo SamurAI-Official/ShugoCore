@@ -166,12 +166,15 @@ class NodeStatusHeader(context: Context) : LinearLayout(context) {
         // decorative animation: the face only shows what is actually
         // happening right now.
         PerceptionState.taskInFlight = Ui.bool(agent, "task_in_flight")
+        val micRecent = System.currentTimeMillis() - PerceptionState.lastMicActivityMs < 1_500
+        val micAfterTts = PerceptionState.lastMicActivityMs >
+            PerceptionState.ttsLastEndMs + 400  // echo dead time
         face.mode = when {
             !agentRunning -> ShugoFaceView.Mode.OFFLINE
             PerceptionState.ttsSpeaking -> ShugoFaceView.Mode.SPEAKING
             PerceptionState.taskInFlight -> ShugoFaceView.Mode.THINKING
-            System.currentTimeMillis() - PerceptionState.lastMicActivityMs < 1_500 ->
-                ShugoFaceView.Mode.LISTENING
+            PerceptionState.humanSpeech -> ShugoFaceView.Mode.LISTENING
+            micRecent && micAfterTts -> ShugoFaceView.Mode.LISTENING
             else -> ShugoFaceView.Mode.IDLE
         }
     }

@@ -668,6 +668,12 @@ class AndroidAgent:
                 else:
                     context = (self.memory.retrieve_context("maintain_agent_loop", top_k=3)
                                if self.memory is not None else {})
+                    # v1.19: inject the causal ID chain into the decision
+                    # context so the policy token binds the trace.
+                    if self.interaction is not None:
+                        istats = self.interaction.stats()
+                        context["conversation_id"] = istats.get("conversation_id")
+                        context["turn_id"] = istats.get("current_turn_id")
                     engine_result = self._execute_engine_task(
                         {"id": f"android-tick-{self.tick_count}",
                          "type": "maintain_agent_loop", "context": context})
@@ -809,7 +815,27 @@ class AndroidAgent:
         if self.interaction is not None:
             # Human context rides into DECIDE as task context data — the
             # provider rule: the core never imports the interaction module.
-            observation["human"] = self.interaction.human_context()
+            hctx = self.interaction.human_context() or {}
+            # v1.19 multimodal fusion: enrich with Tier-2 entity-graph
+            # facts (the "Markus was doing Y" leg).
+            if self.memory is not None:
+                transcript = (hctx.get("user_context", {})
+                             .get("last_transcript") or "")
+                if transcript:
+                    try:
+                        entities = self.memory.tier2.extract_entities(
+                            transcript)[:3]
+                        facts = []
+                        for ent in entities:
+                            facts.extend(
+                                self.memory.tier2.facts_about(
+                                    ent, limit=2))
+                        if facts:
+                            hctx.setdefault("user_context", {})
+                            hctx["user_context"]["entity_facts"] = facts
+                    except Exception:
+                        pass
+            observation["human"] = hctx
         return observation
 
     def _get_battery(self) -> int:

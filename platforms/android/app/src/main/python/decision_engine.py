@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import re
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
@@ -252,6 +253,8 @@ class DecisionEngine:
         self.audit = AuditChain(audit_path) if audit_path else None
 
         self.vector_db = VectorDB(vector_db_config)
+        # v1.19 causal ID sequence for decisions and executions.
+        self._decision_seq = 0
 
         # Phase 1: strict state-machine interlocks + deterministic fallbacks.
         self.governor = governor if governor is not None else ExecutionGovernor(
@@ -443,7 +446,9 @@ class DecisionEngine:
                 "params": best.get("params") or {},
                 "confidence": best.get("confidence", 0.0),
                 "proposal_source": source_id,
+                "decision_id": "dec-{}".format(self._decision_seq),
             }
+            self._decision_seq += 1
             # Reset only on an EXECUTABLE proposal: a well-formed
             # {"action_type": null} is the model saying "nothing to do" —
             # healthy once, but a model that ONLY ever says null must still
@@ -791,8 +796,16 @@ class DecisionEngine:
 
     def _execute_gated(self, decision: Dict[str, Any]) -> Dict[str, Any]:
         """Attach the hash-bound policy verdict and execute."""
-        token = {"verdict": "allow", "decision_hash": canonical_hash(decision)}
+        # v1.19: mint execution_id and inject the trace before the hash
+        # so the policy token binds the lineage (tamper-evident).
+        self._decision_seq += 1
+        trace = {
+            "execution_id": "exe-{}".format(self._decision_seq),
+            "decision_id": decision.get("decision_id"),
+        }
         payload = dict(decision)
+        payload["_trace"] = {k: v for k, v in trace.items() if v is not None}
+        token = {"verdict": "allow", "decision_hash": canonical_hash(payload)}
         payload["_policy"] = token
         return self.execution_layer.execute(payload)
 

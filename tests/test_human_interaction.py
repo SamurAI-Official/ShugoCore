@@ -441,9 +441,11 @@ class TestMultimodalFusion(unittest.TestCase):
         self.assertTrue(uc["person_present"])
         self.assertTrue(uc["speech_recent"])
         self.assertEqual(uc["last_transcript"], "I need help")
-        # Reserved for the XR providers — schema stable before sources.
-        self.assertIsNone(uc["gaze"])
-        self.assertIsNone(uc["attention_target"])
+        # v1.19: gaze/attention/environment filled from provider data when
+        # available; attention_target carries the most recent human speech
+        # text until named-entity extraction is wired from memory.
+        self.assertIsNone(uc["gaze"])  # no gaze in visual payload
+        self.assertEqual(uc["attention_target"], "I need help")
         self.assertIsNone(uc["environment"])
         self.assertAlmostEqual(uc["confidence"], 0.87, places=1)
 

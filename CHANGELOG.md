@@ -4,6 +4,35 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.19.0] - 2026-09-06 — causal trace, multimodal fusion, unified perception, robot look (+ hardening)
+
+### Hardening (v1.18 bugs fixed)
+
+- **TTS per-utterance state machine** (`TtsProvider`): replaced `AtomicInteger pending` with `ConcurrentHashMap<String, Phase>` + `AtomicLong`. Late `onDone`/`onError` callbacks after `stopAll()` do `map.remove(id)` — `null` return = already cancelled → **pure no-op**. This fixes BOTH the negative-counter bug (queue-limit guard rot) and the hard-to-trigger late-callback that could re-arm the half-duplex barge-in gate mid-utterance. New `isFailed` flag for terminal TTS init detection.
+- **Boot greeting lifecycle** (`ShugoCoreService`): split `bootGreetingDone` (too eager) into `bootGreetingScheduled` (set at agent init) + `bootGreetingDelivered` (set **only** after `tts.speak()` returns). Retries ~12 × 3 s up to 40 s, stops early on `tts.isFailed`.
+- **Face echo-gate** (`NodeStatusHeader`): LISTENING now requires `lastMicActivityMs > ttsLastEndMs + 400 ms` — residual speaker audio after SPEAKING ends no longer triggers a false LISTENING.
+
+### Unified perception state (`PerceptionState.kt`)
+
+- Every provider stamps typed `PerceptionSignal<T>(value, tsMs, confidence, source)` — `micActive`, `voiceDetected`, `humanSpeech`, `transcription`, `visualPresence`. Faces uses `humanSpeech` for LISTENING ("a human is talking to it"), not mic-stream activity.
+
+### Causal ID chain (conversation → turn → observation → decision → execution → response)
+
+- Every `HumanObservation` carries an `observation_id` (`obs-N`); every `AgentResponse` carries a `response_id` (`rsp-N`) linked to its turn.
+- `InteractionBus` manages `conversation_id` (UUID, rotated on USER_RETURNED), `turn_id` (per human-speech exchange, drained on agent response).
+- Agent shell injects IDs into the decision context; `make_decision` mints `decision_id` (`dec-N`); `_execute_gated` mints `execution_id` (`exe-N`) and injects `_trace {execution_id, decision_id}` **before** `canonical_hash` — the policy token binds the lineage (tamper-evident by construction).
+- `"Why did Shugo say that?"`: deterministic offline join over Tier-1 journal + audit chain, from response back to the exact observation.
+
+### Multimodal fusion (vision × speech × memory)
+
+- `HumanContext` fuses visual presence, voice/speech signals, bounded conversation turns, and Tier-2 entity-graph facts (`facts_about(...)` — the "Markus was doing Y" leg). Each modality with freshness window + confidence.
+- Fusion slots: `gaze`, `attention_target`, `environment` — honest `None` until the real sources are wired.
+
+### Robot transport extended
+
+- `robot_look` (head pan/tilt) added to `ROBOTICS_ACTION_TYPES` (consent-gated — moving a camera is a physical act). Executor publishes to `/head_controller/follow_joint_trajectory` with safety bounds (±86° pan, ±57° tilt).
+- Verb normalization: gripper accepts `grasp`/`release` params.
+- Every robotics execution inherits causal IDs through `_execute_gated`.
 ## [1.18.0] - 2026-09-06 — voice & presence: Shugo speaks in complete sentences and shows its face
 
 ### Hearing — the recognizer IS the listener (self-cutoffs and clipped sentences fixed)

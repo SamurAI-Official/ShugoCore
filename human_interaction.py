@@ -15,6 +15,7 @@ payloads are sanitized and bounded on ingest and nothing here has egress.
 """
 import threading
 import time
+import uuid
 from collections import deque
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -122,10 +123,12 @@ class HumanObservation:
 
     def __init__(self, type: str, source: str, payload: Any = None,
                  confidence: float = 1.0, timestamp: Optional[float] = None,
-                 privacy_scope: str = "local"):
+                 privacy_scope: str = "local",
+                 observation_id: Optional[str] = None):
         self.type = str(type).strip().lower()
         self.source = sanitize_text(str(source or ""), _MAX_SOURCE_LEN)
         self.payload = _sanitize_payload(payload)
+        self.observation_id = str(observation_id) if observation_id else None
         conf = _clean_float(confidence)
         if conf is None:
             # 0.0 and 1.0 are meaningful values; unparseable confidence is
@@ -152,10 +155,13 @@ class HumanObservation:
         return True, "ok"
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"type": self.type, "source": self.source,
+        d: Dict[str, Any] = {"type": self.type, "source": self.source,
                 "payload": dict(self.payload), "confidence": self.confidence,
                 "timestamp": self.timestamp,
                 "privacy_scope": self.privacy_scope}
+        if self.observation_id:
+            d["observation_id"] = self.observation_id
+        return d
 
     @classmethod
     def from_dict(cls, data: Any) -> Tuple[Optional["HumanObservation"], str]:
@@ -168,7 +174,8 @@ class HumanObservation:
                   payload=data.get("payload"),
                   confidence=data.get("confidence", 1.0),
                   timestamp=data.get("timestamp"),
-                  privacy_scope=str(data.get("privacy_scope") or "local"))
+                  privacy_scope=str(data.get("privacy_scope") or "local"),
+                  observation_id=str(data.get("observation_id")) if data.get("observation_id") else None)
         ok, reason = obs.validate()
         return (obs, reason) if ok else (None, reason)
 
@@ -178,13 +185,17 @@ class AgentResponse:
     v1.15/1.16 speech/action capabilities; carried by the same bus)."""
 
     def __init__(self, type: str, content: str = "", target: str = "",
-                 priority: float = 0.5, expects_answer: bool = False):
+                 priority: float = 0.5, expects_answer: bool = False,
+                 response_id: Optional[str] = None,
+                 in_response_to: Optional[str] = None):
         self.type = str(type).strip().lower()
         self.content = sanitize_text(str(content or ""),
                                      _MAX_RESPONSE_CONTENT_LEN)
         self.target = sanitize_text(str(target or ""), _MAX_SOURCE_LEN)
         prio = _clean_float(priority)
         self.priority = prio if prio is not None else 0.5
+        self.response_id = str(response_id) if response_id else None
+        self.in_response_to = str(in_response_to) if in_response_to else None
         # v1.16: a response that is a QUESTION (ask_user action) — the bus
         # pairs the next speech observation with it as the answer.
         self.expects_answer = bool(expects_answer)
@@ -199,9 +210,14 @@ class AgentResponse:
         return True, "ok"
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"type": self.type, "content": self.content,
+        d: Dict[str, Any] = {"type": self.type, "content": self.content,
                 "target": self.target, "priority": self.priority,
                 "expects_answer": self.expects_answer}
+        if self.response_id:
+            d["response_id"] = self.response_id
+        if self.in_response_to:
+            d["in_response_to"] = self.in_response_to
+        return d
 
     @classmethod
     def from_dict(cls, data: Any) -> Tuple[Optional["AgentResponse"], str]:
@@ -211,7 +227,9 @@ class AgentResponse:
                    content=str(data.get("content") or ""),
                    target=str(data.get("target") or ""),
                    priority=data.get("priority", 0.5),
-                   expects_answer=bool(data.get("expects_answer", False)))
+                   expects_answer=bool(data.get("expects_answer", False)),
+                   response_id=str(data.get("response_id")) if data.get("response_id") else None,
+                   in_response_to=str(data.get("in_response_to")) if data.get("in_response_to") else None)
         ok, reason = resp.validate()
         return (resp, reason) if ok else (None, reason)
 
@@ -242,6 +260,13 @@ class InteractionBus:
         self._rejected = 0
         self._last_timestamp = 0.0
         self._seq = 0
+        # v1.19 causal ID chain: every observation, response, and turn
+        # carries a sequential id for deterministic trace reconstruction.
+        self._conversation_id: str = "conv-" + uuid.uuid4().hex[:12]
+        self._obs_seq = 0
+        self._rsp_seq = 0
+        self._turn_seq = 0
+        self._current_turn_id: Optional[str] = None
         # AgentResponse side of the contract (v1.15 speech output): what the
         # agent last said to the human, and how many responses it emitted.
         self._last_response: Optional[Dict[str, Any]] = None
@@ -287,6 +312,18 @@ class InteractionBus:
         with self._lock:
             self._seq += 1
             entry = observation.to_dict()
+            # v1.19: assign causal IDs to this observation.
+            self._obs_seq += 1
+            obs_id = f"obs-{self._obs_seq}"
+            entry["observation_id"] = obs_id
+            entry["conversation_id"] = self._conversation_id
+            observation.observation_id = obs_id
+            # Speech starts or continues a turn.
+            if transcript:
+                if self._current_turn_id is None:
+                    self._turn_seq += 1
+                    self._current_turn_id = f"turn-{self._turn_seq}"
+                entry["turn_id"] = self._current_turn_id
             # v1.16 question/answer pairing: a speech observation carrying
             # words while a question is pending (fresh within _ANSWER_TTL_S)
             # is that question's answer.
@@ -304,6 +341,9 @@ class InteractionBus:
                         "answer": transcript,
                         "round_trip_s": round(now - question["ts"], 2),
                         "ts": entry["timestamp"],
+                        "conversation_id": self._conversation_id,
+                        "turn_id": self._current_turn_id,
+                        "observation_id": obs_id,
                     })
                 self._pending_question = None
                 self._conversation.append({"role": "human",
@@ -322,6 +362,12 @@ class InteractionBus:
                                       if self._has_been_present
                                       else USER_PRESENT_EVENT)
                     self._has_been_present = True
+                    if presence_event == USER_RETURNED_EVENT:
+                        # Rotate the conversation id on return — a new
+                        # conversational context after an absence.
+                        self._conversation_id = "conv-" + uuid.uuid4().hex[:12]
+                        self._turn_seq = 0
+                        self._current_turn_id = None
                 elif not present_implied and self._presence == USER_PRESENT:
                     self._presence = USER_ABSENT
                     self._presence_changed_at = now
@@ -359,13 +405,21 @@ class InteractionBus:
                 self._rejected += 1
             return False, reason
         with self._lock:
+            # v1.19: assign causal response id.
+            self._rsp_seq += 1
+            rsp_id = f"rsp-{self._rsp_seq}"
+            response.response_id = rsp_id
+            response.in_response_to = self._current_turn_id
             self._last_response = response.to_dict()
             self._response_count += 1
             self._last_response_ts = self._clock()
             if response.type == "speech" and response.content:
                 self._conversation.append({"role": "agent",
                                            "text": response.content,
-                                           "ts": self._clock()})
+                                           "ts": self._clock(),
+                                           "response_id": rsp_id})
+                # The turn is complete — clear for the next one.
+                self._current_turn_id = None
                 if response.expects_answer:
                     self._last_question = response.content
                     self._pending_question = {"text": response.content,
@@ -503,15 +557,36 @@ class InteractionBus:
                     pending["text"]
                     if pending is not None
                     and now - pending["ts"] <= _ANSWER_TTL_S else None),
+                # v1.19 causal ID chain: trace the decision back to
+                # the exact observation that triggered it.
+                "conversation_id": self._conversation_id,
+                "current_turn_id": self._current_turn_id,
                 "user_context": {
                     "person_present": person_present,
                     "speech_recent": speech_recent,
+                    "vision_recent": vision_recent,
                     "last_transcript": (
                         conversation[-1]["text"]
                         if conversation
                         and conversation[-1]["role"] == "human" else None),
-                    "gaze": None,
-                    "attention_target": None,
+                    # v1.19 multimodal fusion slots: filled from provider
+                    # data when available (gaze from camera landmarks,
+                    # attention from speech transcript context,
+                    # environment from device telemetry). Honest None
+                    # until the real sources are wired.
+                    "gaze": (
+                        last_visual.get("payload", {}).get("gaze_direction")
+                        if last_visual
+                        and last_visual.get("payload", {}).get("gaze_direction")
+                        else None),
+                    "attention_target": (
+                        conversation[-1]["text"]
+                        if conversation
+                        and conversation[-1].get("role") == "human"
+                        and conversation[-1].get("text")
+                        # Named-entity extraction is reserved for
+                        # memory enrichment; pass the raw text here.
+                        else None),
                     "environment": None,
                     "confidence": (round(sum(recent_conf) / len(recent_conf), 2)
                                    if recent_conf else None),
@@ -562,6 +637,13 @@ class InteractionBus:
                 "last_question": self._last_question,
                 "last_answer": self._last_answer,
                 "conversation_turns": len(self._conversation),
+                # v1.19 causal ID chain: the current conversation, observation,
+                # turn, and response ids for trace reconstruction.
+                "conversation_id": self._conversation_id,
+                "current_turn_id": self._current_turn_id,
+                "last_response_id": (
+                    self._last_response.get("response_id")
+                    if self._last_response else None),
                 # v1.17 closed-loop truth: completed round trips and the
                 # last one (question/answer/latency), for UI + tests.
                 "conversation_events": len(self._conversation_events),

@@ -61,6 +61,7 @@ tests/test_sensor_engagement.py
 tests/test_shugocore_server.py
 tests/test_shugonet.py
 tests/test_simulation.py
+tests/test_speech_output.py
 tests/test_thermal_stress.py
 tests/test_v1.py
 tests/test_vector_embedding.py

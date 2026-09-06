@@ -6,8 +6,12 @@
 //     on the speaker; isReady only after a real engine init.
 //   - Bounded queue: a runaway monologue is impossible — at most MAX_QUEUE
 //     utterances pending, beyond that the text is dropped and reported.
-//   - Barge-in: the AudioProvider's VAD onset hook stops playback instantly,
-//     so the human always wins the audio channel.
+//   - Barge-in (v1.18, half-duplex): the service suppresses the mic's
+//     speech-onset hook while this provider is speaking and for a short
+//     dead time after, because on a tablet the speaker sits centimetres
+//     from the mic — otherwise the agent hears ITSELF and cuts its own
+//     sentences short. The human still wins the channel after the
+//     utterance completes.
 //   - Provider rule: this class is attached to the Python agent as the
 //     executor of the internal `speak` action; the decision core only ever
 //     proposes the action, it never imports this class.
@@ -44,20 +48,34 @@ class TtsProvider(private val context: Context) {
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {
                         isSpeaking = true
+                        // v1.18: shared liveness for the face + half-duplex.
+                        PerceptionState.ttsSpeaking = true
                     }
                     override fun onDone(utteranceId: String?) {
-                        isSpeaking = pending.get() > 0
                         pending.decrementAndGet()
-                        if (pending.get() <= 0) isSpeaking = false
+                        if (pending.get() <= 0) {
+                            isSpeaking = false
+                            // v1.18: stamp speech end for barge-in dead time.
+                            PerceptionState.ttsSpeaking = false
+                            PerceptionState.ttsLastEndMs = android.os.SystemClock.elapsedRealtime()
+                        }
                     }
                     @Deprecated("Kept for API compatibility")
                     override fun onError(utteranceId: String?) {
                         pending.decrementAndGet()
-                        if (pending.get() <= 0) isSpeaking = false
+                        if (pending.get() <= 0) {
+                            isSpeaking = false
+                            PerceptionState.ttsSpeaking = false
+                            PerceptionState.ttsLastEndMs = android.os.SystemClock.elapsedRealtime()
+                        }
                     }
                     override fun onError(utteranceId: String?, errorCode: Int) {
                         pending.decrementAndGet()
-                        if (pending.get() <= 0) isSpeaking = false
+                        if (pending.get() <= 0) {
+                            isSpeaking = false
+                            PerceptionState.ttsSpeaking = false
+                            PerceptionState.ttsLastEndMs = android.os.SystemClock.elapsedRealtime()
+                        }
                     }
                 })
                 LogBus.log(LogBus.Category.AGENT, "speech provider ready")
@@ -86,13 +104,16 @@ class TtsProvider(private val context: Context) {
         return true
     }
 
-    /** Barge-in: stop playback and clear the queue immediately. */
+    /** Stop playback and clear the queue immediately (called on barge-in
+     * and on shutdown; stamps the end time for the echo dead-time). */
     fun stopAll() {
         if (pending.get() > 0) {
             try { tts?.stop() } catch (_: Exception) {}
         }
         pending.set(0)
         isSpeaking = false
+        PerceptionState.ttsSpeaking = false
+        PerceptionState.ttsLastEndMs = android.os.SystemClock.elapsedRealtime()
     }
 
     fun shutdown() {

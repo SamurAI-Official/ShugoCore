@@ -24,6 +24,9 @@ class TabBar(context: Context, tabs: List<String>, private val onSelect: (Int) -
                 layoutParams = LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f)
                     .apply { setMargins(Ui.dp(context, 2), 0, Ui.dp(context, 2), 0) }
                 setOnClickListener {
+                    // v1.18: the shade must FOLLOW the click — previously only
+                    // onSelect ran and the highlight stayed on tab 0 forever.
+                    if (index != selected) setSelected(index)
                     onSelect(index)
                 }
             }

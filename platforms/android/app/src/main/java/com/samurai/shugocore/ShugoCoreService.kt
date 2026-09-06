@@ -18,6 +18,7 @@ import com.samurai.shugocore.runtime.AudioProvider
 import com.samurai.shugocore.runtime.TtsProvider
 import com.samurai.shugocore.runtime.HumanInteractionBus
 import com.samurai.shugocore.runtime.LogBus
+import com.samurai.shugocore.runtime.PerceptionState
 import com.samurai.shugocore.runtime.ServerStats
 import com.samurai.shugocore.runtime.SensorCapabilityManager
 import com.samurai.shugocore.runtime.VisionProvider
@@ -55,6 +56,10 @@ class ShugoCoreService : Service() {
     private val executor: ScheduledExecutorService = Executors.newScheduledThreadPool(2)
     private val handler = Handler(Looper.getMainLooper())
     private val binder = LocalBinder()
+    // v1.18: the boot greeting is spoken at most once per process.
+    private val bootGreetingDone = java.util.concurrent.atomic.AtomicBoolean(false)
+    // v1.18: echo dead time after TTS ends before barge-in re-arms (ms).
+    private val ECHO_DEAD_TIME_MS = 400L
 
     /** Backup (desktop) URL — the STOP-SERVER fallback the agent re-points to. */
     private val fallbackUrl: String?
@@ -159,10 +164,23 @@ class ShugoCoreService : Service() {
                     }
                 }
                 // v1.15 speech output: the Python `speak` action calls back
-                // into the Kotlin TTS provider (Chaquopy reverse callback);
-                // VAD onset barges in so the human always wins the channel.
+                // into the Kotlin TTS provider (Chaquopy reverse callback).
+                // v1.18 HALF-DUPLEX GATE: the speaker sits centimetres from
+                // the mic, so barge-in MUST ignore the agent's own voice —
+                // otherwise it hears itself and cuts its sentences short.
+                // Suppress onsets while TTS is audibly speaking and for a
+                // short echo dead time after; the human still wins the
+                // channel once the utterance completes.
                 pyAgent?.callAttr("register_speak_listener", SpeakBridge())
-                audioProvider?.onSpeechOnset = { ttsProvider?.stopAll() }
+                audioProvider?.onSpeechOnset = {
+                    if (!PerceptionState.ttsSpeaking &&
+                        android.os.SystemClock.elapsedRealtime() -
+                        PerceptionState.ttsLastEndMs > ECHO_DEAD_TIME_MS
+                    ) {
+                        ttsProvider?.stopAll()
+                    }
+                }
+                scheduleBootGreeting()
                 LogBus.log(LogBus.Category.AGENT,
                     "agent initialized (${caps?.soc ?: Build.MODEL})")
             }
@@ -173,6 +191,27 @@ class ShugoCoreService : Service() {
                 "agent init failed: ${e.message ?: e.javaClass.simpleName}", isError = true)
             updateNotification("Error: ${e.message}")
         }
+    }
+
+    /** v1.18 presence: one warm self-introduction per service run. Spoken
+     * only when the TTS engine is genuinely ready (polled with retries) —
+     * never simulated, at most once (personality, not noise). */
+    private fun scheduleBootGreeting() {
+        if (!bootGreetingDone.compareAndSet(false, true)) return
+        var attempts = 0
+        val greet = object : Runnable {
+            override fun run() {
+                val tts = ttsProvider
+                if (tts == null || !tts.isReady) {
+                    if (++attempts <= 5) handler.postDelayed(this, 1_500L)
+                    return
+                }
+                if (tts.speak("Hi, I'm Shugo. I'm online and listening.")) {
+                    LogBus.log(LogBus.Category.AGENT, "boot greeting spoken")
+                }
+            }
+        }
+        handler.postDelayed(greet, 2_000L)
     }
 
     

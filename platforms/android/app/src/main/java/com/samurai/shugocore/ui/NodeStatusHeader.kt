@@ -6,12 +6,14 @@ import android.graphics.Typeface
 import android.view.Gravity
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.samurai.shugocore.runtime.PerceptionState
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 class NodeStatusHeader(context: Context) : LinearLayout(context) {
 
+    private val face: ShugoFaceView
     private val agentDot: TextView
     private val agentText: TextView
     private val model: TextView
@@ -30,13 +32,27 @@ class NodeStatusHeader(context: Context) : LinearLayout(context) {
         val pad = Ui.dp(context, 14)
         setPadding(pad, pad, pad, pad)
 
+        // v1.18 presence: Shugo's face sits beside its name, visible from
+        // every tab. States are driven by real runtime signals only.
+        val titleRow = LinearLayout(context).apply {
+            orientation = HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        face = ShugoFaceView(context).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                Ui.dp(context, 44), Ui.dp(context, 44)).apply {
+                marginEnd = Ui.dp(context, 10)
+            }
+        }
+        titleRow.addView(face)
         val title = TextView(context).apply {
             text = "SHUGOCORE"
             textSize = 20f
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(Ui.TEXT)
         }
-        addView(title)
+        titleRow.addView(title)
+        addView(titleRow)
 
         val agentRow = LinearLayout(context).apply {
             orientation = HORIZONTAL
@@ -144,6 +160,20 @@ class NodeStatusHeader(context: Context) : LinearLayout(context) {
         val batteryLevel = Ui.num(thermal, "battery")
         val charging = Ui.bool(thermal, "charging")
         battery.text = if (batteryLevel > 0) "$batteryLevel%${if (charging) " ⚡" else ""}" else "—"
+
+        // v1.18 face: honest states only, from real runtime signals —
+        // speaking beats thinking beats listening beats idle. Never a
+        // decorative animation: the face only shows what is actually
+        // happening right now.
+        PerceptionState.taskInFlight = Ui.bool(agent, "task_in_flight")
+        face.mode = when {
+            !agentRunning -> ShugoFaceView.Mode.OFFLINE
+            PerceptionState.ttsSpeaking -> ShugoFaceView.Mode.SPEAKING
+            PerceptionState.taskInFlight -> ShugoFaceView.Mode.THINKING
+            System.currentTimeMillis() - PerceptionState.lastMicActivityMs < 1_500 ->
+                ShugoFaceView.Mode.LISTENING
+            else -> ShugoFaceView.Mode.IDLE
+        }
     }
 
     private fun hostOf(url: String): String = try {

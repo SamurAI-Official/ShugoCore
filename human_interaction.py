@@ -61,6 +61,26 @@ def _clean_float(value: Any) -> Optional[float]:
     return value
 
 
+def truncate_sentence(text: str, limit: int = 400) -> str:
+    """Trim spoken text to ``limit`` WITHOUT cutting a sentence or a word:
+    prefer the last sentence end inside the limit, else the last word
+    boundary, else the hard limit. The v1.18 voice rule: the agent never
+    speaks a fragment it did not choose. Never raises; never empty-wrongs
+    (a clean empty string in, empty string out)."""
+    cleaned = sanitize_text(str(text or ""), max(limit * 2, limit))
+    if len(cleaned) <= limit:
+        return cleaned
+    cut = cleaned[:limit]
+    for sep in (". ", "! ", "? ", ".", "!", "?"):
+        pos = cut.rfind(sep)
+        if pos > limit // 2:
+            return cut[:pos + 1].rstrip()
+    pos = cut.rfind(" ")
+    if pos > limit // 2:
+        return cut[:pos].rstrip()
+    return cut.rstrip()
+
+
 def _sanitize_payload(payload: Any) -> Dict[str, Any]:
     """Bound + flatten a payload into primitives. Junk never reaches memory:
     non-dict payloads are wrapped under ``text``/``value``, strings pass

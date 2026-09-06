@@ -4,6 +4,79 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.18.0] - 2026-09-06 — voice & presence: Shugo speaks in complete sentences and shows its face
+
+### Hearing — the recognizer IS the listener (self-cutoffs and clipped sentences fixed)
+
+- **Persistent recognition** (`AudioProvider`): the v1.17 VAD→handoff design
+  cold-started the recognizer after every onset (clipped sentence beginnings)
+  and default endpointing closed the utterance on the first pause (clipped
+  ends). The on-device `SpeechRecognizer` now holds the mic continuously and
+  restarts AT ONCE on the same instance after each result — it is already
+  listening when the user starts talking. Our energy VAD survives only as the
+  honest FALLBACK (no on-device recognizer → speech-detected events, as in
+  1.14).
+- **Endpointing hints**: `COMPLETE_SILENCE 1600 ms / POSSIBLY_COMPLETE
+  900 ms / MIN_UTTERANCE 2500 ms` — a mid-sentence pause no longer ends the
+  utterance.
+- **Partial transcripts** stream into `PerceptionState.lastPartialTranscript`
+  (LOG liveliness at most once per second); the journal still records only
+  FINAL transcripts.
+- **Honest idle cycling**: the recognizer's no-speech timeout (NO_MATCH /
+  SPEECH_TIMEOUT) is normal empty-room behavior — logged at info level
+  ("listening again"), restarted with a fixed 750 ms gap instead of an
+  ever-growing error backoff (which would leave the listener asleep most of
+  the day). Genuine faults keep the doubled backoff; missing permission
+  degrades honestly to VAD-only.
+
+### Speech — the agent never interrupts itself, never speaks a fragment
+
+- **Half-duplex echo gate** (`ShugoCoreService`): the speaker sits
+  centimetres from the mic, so the v1.15 barge-in hook (any onset →
+  `stopAll()`) made Shugo cut its own sentences short. Onsets are now
+  suppressed while TTS is audibly speaking and for a 400 ms dead time after
+  (`PerceptionState.ttsSpeaking` / `ttsLastEndMs`); the human still wins the
+  channel after an utterance completes. Barge-in re-enablement returns when
+  acoustic echo cancellation proves strong enough on-device.
+- **Sentence-aware output bound** (`human_interaction.truncate_sentence`):
+  speak/ask_user texts bound at 400 chars (was 200) cut at a sentence end,
+  else a word boundary, else the hard limit — never a fragment Shugo did
+  not choose.
+- **Voice persona in the decision prompt** (`subconscious`): when the
+  executor set carries `speak`/`ask_user`, the prompt states Shugo's persona
+  and the one-warm-complete-sentence rule (the small model needs it said to
+  finish its sentences). Generated from the real action schema as before —
+  the prompt↔executor alignment test still enforces it.
+- **`task_in_flight`** surfaced in `get_status()` (drives the THINKING face).
+
+### Presence — the Shugo face
+
+- **`ShugoFaceView`**: an abstract Canvas face (two eyes + mouth, no assets)
+  beside the SHUGOCORE title, visible from every tab. Honest states only,
+  driven by real runtime signals: OFFLINE (agent stopped), IDLE (periodic
+  blink), LISTENING (mic activity fresh), THINKING (decision cycle in
+  flight), SPEAKING (TTS audibly on the speaker, mouth animating). Never
+  decorative: the face only shows what is actually happening.
+- **Boot greeting**: one warm self-introduction per service run
+  ("Hi, I'm Shugo. I'm online and listening."), spoken only once the TTS
+  engine is genuinely ready — personality, not noise.
+
+### Interface
+
+- **Tab shade follows clicks** (`TabBar`): the tap listener updated
+  `onSelect` but never `setSelected`, so the highlight froze on SERVER
+  forever. Fixed.
+
+### Verified on device (Galaxy Tab S9 FE, Qwen2.5-1.5B Q4_K_M)
+
+- Agent self-names and speaks complete warm sentences through the real
+  gate: `{"spoken": "I'm Shugo, your friendly local assistant. Ready to
+  help with your tasks!", "delivered": true}` — steady tick-spaced cadence
+  (no self-cutoff signature).
+- Recognizer holds and cycles the mic continuously; AGENT-tab validation
+  shows HEARING OK / SPEECH OK.
+- Tab shade tracks taps (AGENT, LOG verified); face renders on every tab.
+
 ## [1.17.0] - 2026-09-06 — closed-loop validation: the loop is proven, not assumed
 
 ### Conversation events — the Record stage of the conversational loop

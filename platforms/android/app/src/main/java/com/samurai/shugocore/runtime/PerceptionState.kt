@@ -16,4 +16,20 @@ object PerceptionState {
 
     /** Transcript of the most recent recognized utterance (null = none). */
     @Volatile var lastTranscript: String? = null
+
+    // ---- v1.18 voice & presence ----
+
+    /** Live partial transcript from the recognizer (LOG + face liveliness;
+     * the journal still only records FINAL transcripts, never partials). */
+    @Volatile var lastPartialTranscript: String = ""
+
+    /** True while TTS is audibly speaking (drives the SPEAKING face state
+     * and the half-duplex barge-in suppression). */
+    @Volatile var ttsSpeaking: Boolean = false
+
+    /** True while a decision cycle is in flight (THINKING face state). */
+    @Volatile var taskInFlight: Boolean = false
+
+    /** ElapsedRealtime of the last TTS end (echo dead-time for barge-in). */
+    @Volatile var ttsLastEndMs: Long = 0L
 }

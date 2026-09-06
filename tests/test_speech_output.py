@@ -15,7 +15,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from execution_layer import ExecutionLayer  # noqa: E402
-from human_interaction import AgentResponse, InteractionBus  # noqa: E402
+from human_interaction import (AgentResponse, InteractionBus,  # noqa: E402
+                               truncate_sentence)
 from policy import (  # noqa: E402
     KNOWN_ACTION_TYPES,
     SIDE_EFFECTING_ACTION_TYPES,
@@ -23,6 +24,7 @@ from policy import (  # noqa: E402
 )
 from security import canonical_hash  # noqa: E402
 from shugocore_agent import create_agent  # noqa: E402
+from subconscious import _build_decision_prompt  # noqa: E402
 
 
 def _token(decision):
@@ -238,6 +240,128 @@ class TestAskUser(unittest.TestCase):
              "confidence": 1.0, "proposal_source": "test"})
         self.assertEqual(result["status"], "success", result)
         self.assertEqual(speaker.spoken, ["words from the text field"])
+
+
+class TestSentenceBoundTruncation(unittest.TestCase):
+    """v1.18: the agent never speaks a fragment it did not choose —
+    speak/ask_user texts are bounded at a sentence or word boundary."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="shugocore_bound_")
+        self.agent = create_agent(device_caps="Exynos-1380",
+                                  api_url="http://127.0.0.1:11434",
+                                  data_dir=self.tmp)
+
+    def tearDown(self):
+        try:
+            self.agent.cleanup()
+        except Exception:
+            pass
+
+    def test_short_text_untouched(self):
+        self.assertEqual(truncate_sentence("Hello there.", 400),
+                         "Hello there.")
+
+    def test_cut_at_sentence_boundary(self):
+        text = ("First sentence is reasonably long here. "
+                "Second sentence continues and gets chopped at the limit! "
+                + "filler " * 80)
+        out = truncate_sentence(text, 120)
+        self.assertLessEqual(len(out), 120)
+        # kept text ends on a complete sentence (the "!" sentence), the
+        # filler after it is dropped whole
+        self.assertTrue(out.endswith(("!", ".", "?")), out)
+        self.assertIn("limit!", out)
+
+    def test_cut_at_word_boundary_when_no_sentence(self):
+        text = (" ".join(["word"] * 200))
+        out = truncate_sentence(text, 137)
+        self.assertLessEqual(len(out), 137)
+        self.assertFalse(out.endswith("wordword"), out)
+        self.assertTrue(len(out.split()) < 200)
+        self.assertFalse(out.endswith("wo"), out)  # never a partial word
+
+    def test_hard_limit_when_no_boundaries(self):
+        out = truncate_sentence("a" * 900, 100)
+        self.assertLessEqual(len(out), 100)
+
+    def test_empty_and_none_are_safe(self):
+        self.assertEqual(truncate_sentence("", 400), "")
+        self.assertEqual(truncate_sentence(None, 400), "")
+
+    def test_speak_action_bounds_long_text(self):
+        # The executor path itself uses the sentence-aware bound now.
+        speaker = _FakeSpeaker()
+        self.agent.register_speak_listener(speaker)
+        # ~48 chars per sentence → the last complete sentence inside the
+        # 400-char window ends in the second half, so the sentence rule wins.
+        long_text = "".join(
+            "This is sentence number %d and it is complete. " % i
+            for i in range(12))
+        result = self.agent._execute_speak(
+            {"action_type": "speak", "params": {"text": long_text},
+             "confidence": 1.0, "proposal_source": "test"})
+        self.assertEqual(result["status"], "success", result)
+        self.assertEqual(len(speaker.spoken), 1)
+        spoken = speaker.spoken[0]
+        self.assertLessEqual(len(spoken), 400)
+        self.assertTrue(spoken.endswith("."), spoken[-60:])
+        self.assertIn("sentence number", spoken)
+        # dropped everything after the kept sentence — never a fragment
+        self.assertNotIn("sentence number 11", spoken)
+
+    def test_speak_action_word_bounds_punctuation_free_text(self):
+        speaker = _FakeSpeaker()
+        self.agent.register_speak_listener(speaker)
+        long_text = "filler word " * 80   # no sentence marks → word cut
+        result = self.agent._execute_speak(
+            {"action_type": "speak", "params": {"text": long_text},
+             "confidence": 1.0, "proposal_source": "test"})
+        self.assertEqual(result["status"], "success", result)
+        spoken = speaker.spoken[0]
+        self.assertLessEqual(len(spoken), 400)
+        self.assertTrue(spoken.endswith("word"), spoken[-30:])
+
+
+class TestSpeechDialectPrompt(unittest.TestCase):
+    """v1.18: when the executor set carries the human-facing speech actions,
+    the decision prompt carries Shugo's persona and the one-complete-
+    sentence rule (the small model needs it stated to finish sentences)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="shugocore_dialect_")
+        self.agent = create_agent(device_caps="Exynos-1380",
+                                  api_url="http://127.0.0.1:11434",
+                                  data_dir=self.tmp)
+
+    def tearDown(self):
+        try:
+            self.agent.cleanup()
+        except Exception:
+            pass
+
+    def test_persona_present_with_speech_actions(self):
+        prompt = _build_decision_prompt(
+            "test", ["record_observation", "speak", "ask_user"])
+        self.assertIn("Shugo", prompt)
+        self.assertIn("ONE warm, complete sentence", prompt)
+        # the generated protocol must still list every real action type
+        self.assertIn("speak", prompt)
+        self.assertIn("record_observation", prompt)
+        self.assertIn("or null", prompt)
+
+    def test_no_speech_line_without_speech_actions(self):
+        prompt = _build_decision_prompt("test", ["record_observation"])
+        self.assertNotIn("Shugo", prompt)
+        self.assertIn("record_observation", prompt)
+        self.assertIn("or null", prompt)
+
+    def test_prompt_is_generated_from_real_executor_set(self):
+        # Alignment rule: the prompt lists exactly what the engine executes.
+        self.assertIn("speak", self.agent.engine.available_action_types())
+        prompt = _build_decision_prompt(
+            "test", self.agent.engine.available_action_types())
+        self.assertIn("Shugo", prompt)
 
 
 if __name__ == "__main__":

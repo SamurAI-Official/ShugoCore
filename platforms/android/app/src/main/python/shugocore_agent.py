@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # failure here must degrade to a reporting agent, never kill the bootstrap.
 try:
     from human_interaction import (AgentResponse, InteractionBus,
-                                   HumanObservation)
+                                   HumanObservation, truncate_sentence)
     _HAS_INTERACTION = True
 except Exception:  # pragma: no cover
     _HAS_INTERACTION = False
@@ -374,8 +374,9 @@ class AndroidAgent:
         # Dialect tolerance: small models put the words in params.text,
         # params.utterance, or (after parser normalization) top-level text
         # routed into params.utterance. Accept any, prefer text.
-        text = sanitize_text(
-            str(params.get("text") or params.get("utterance") or ""), 200)
+        # v1.18: sentence-aware bound — the agent never speaks a fragment.
+        text = truncate_sentence(
+            str(params.get("text") or params.get("utterance") or ""), 400)
         if not text:
             return {"status": "refused", "reason": "empty speech content"}
         listener = self._speak_listener
@@ -402,9 +403,10 @@ class AndroidAgent:
         observation within the TTL is paired with it. A spoken reply is DATA
         the agent may reason over — it is never a consent record."""
         params = decision.get("params") or {}
-        text = sanitize_text(
+        # v1.18: sentence-aware bound (never a spoken fragment).
+        text = truncate_sentence(
             str(params.get("question") or params.get("text")
-                or params.get("utterance") or ""), 200)
+                or params.get("utterance") or ""), 400)
         if not text:
             return {"status": "refused", "reason": "empty question"}
         listener = self._speak_listener
@@ -871,6 +873,10 @@ class AndroidAgent:
             "last_evaluation": self._last_evaluation,
             "last_cycle_result": self._last_cycle_result,
             "last_tick_ts": self._last_tick_ts,
+            # v1.18: face/liveness signal — true while a decision cycle is
+            # between start and finish (drives the THINKING face state).
+            # getattr: the gate is created lazily on the first engine task.
+            "task_in_flight": bool(getattr(self, "_task_in_flight", False)),
             "backend_url": self.api_url,
             "capabilities": self.get_capabilities(),
             "interaction": (self.interaction.stats()

@@ -117,8 +117,10 @@ class AndroidAgent:
             try:
                 self.engine.execution_layer.register_handler(
                     "speak", self._execute_speak)
+                self.engine.execution_layer.register_handler(
+                    "ask_user", self._execute_ask_user)
             except Exception as exc:
-                self.log("ERROR", f"speak handler registration failed: {exc}",
+                self.log("ERROR", f"speech handler registration failed: {exc}",
                          level="ERROR")
         self.log("AGENT", f"agent ready (device={self.device_caps}, "
                           f"api={self.api_url}, "
@@ -369,7 +371,11 @@ class AndroidAgent:
         The AgentResponse lands on the interaction bus so the UI and telemetry
         tell the truth about what the agent said."""
         params = decision.get("params") or {}
-        text = sanitize_text(str(params.get("text") or ""), 200)
+        # Dialect tolerance: small models put the words in params.text,
+        # params.utterance, or (after parser normalization) top-level text
+        # routed into params.utterance. Accept any, prefer text.
+        text = sanitize_text(
+            str(params.get("text") or params.get("utterance") or ""), 200)
         if not text:
             return {"status": "refused", "reason": "empty speech content"}
         listener = self._speak_listener
@@ -387,6 +393,39 @@ class AndroidAgent:
             self.interaction.record_agent_response(AgentResponse(
                 type="speech", content=text, target="user"))
         return {"status": "success", "spoken": text, "delivered": delivered}
+
+    def _execute_ask_user(self, decision: Dict[str, Any]) -> Dict[str, Any]:
+        """Executor for the v1.16 ask_user action: the agent is uncertain and
+        ASKS the operator instead of guessing (OBSERVE -> GATE -> ASK USER ->
+        LISTEN -> DECIDE). Same TTS edge as speak; the question is journaled,
+        marked on the bus as expecting an answer, and the next speech
+        observation within the TTL is paired with it. A spoken reply is DATA
+        the agent may reason over — it is never a consent record."""
+        params = decision.get("params") or {}
+        text = sanitize_text(
+            str(params.get("question") or params.get("text")
+                or params.get("utterance") or ""), 200)
+        if not text:
+            return {"status": "refused", "reason": "empty question"}
+        listener = self._speak_listener
+        if listener is None:
+            return {"status": "no_output",
+                    "reason": ("no speech provider attached; actions are "
+                               "never simulated")}
+        try:
+            delivered = bool(listener.speak(text))
+        except Exception as exc:
+            self.log("ERROR", f"ask_user listener failed: {type(exc).__name__}",
+                     level="ERROR")
+            return {"status": "error", "message": type(exc).__name__}
+        if self.interaction is not None:
+            self.interaction.record_agent_response(AgentResponse(
+                type="speech", content=text, target="user",
+                expects_answer=True))
+        if self.memory is not None:
+            self.memory.record_event(
+                "agent_question", {"question": text})
+        return {"status": "success", "asked": text, "delivered": delivered}
 
     def speak_test(self, text: Optional[str] = None) -> Dict[str, Any]:
         """Operator control (AGENT tab 'Test speech'): drives one speak

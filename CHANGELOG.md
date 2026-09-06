@@ -4,6 +4,53 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.16.0] - 2026-09-06 — multimodal: the agent asks, listens, and remembers the conversation
+
+### User-state fusion (`human_interaction.py`)
+
+- **Fused `user_context`** — one view the agent reasons over: `person_present`,
+  `speech_recent`, `last_transcript`, plus **reserved `gaze` /
+  `attention_target` / `environment` fields (None until the XR providers
+  arrive — the schema is stable before the sources)**, and a mean confidence
+  over fresh observations.
+- **Bounded conversation memory** — the bus keeps the last 12 turns
+  (human speech observations + agent speech responses, chronological),
+  exposing the last 6 in `human_context()` so every tick's task context
+  carries the recent dialogue.
+- **Question/answer pairing** — a question (`ask_user`, or any speech
+  response marked `expects_answer`) arms a pending-question slot (TTL
+  120 s, debounced); the next speech observation carrying words is paired
+  with it (`answer_to` on the observation payload, `last_answer` in stats)
+  and disarms the slot. Expired questions never pair.
+
+### The `ask_user` action — uncertainty becomes a question
+
+- **New internal action class** `ASK_USER_ACTION_TYPES`: the agent that is
+  uncertain ASKS the operator through the same TTS edge instead of guessing
+  (OBSERVE → GATE → ASK USER → LISTEN → DECIDE). No consent, no approval,
+  always journaled (`agent_question` event).
+- **The safety line, explicit**: a spoken "yes" is DATA the agent may reason
+  over — it is never a consent record. Consent stays with the operator's
+  explicit registry entry; asking never unlocks a gated action.
+- **Registered like speak**: honest `not_implemented` on nodes without a
+  speech provider; `register_handler` allowlist extended; the model's
+  action schema includes `ask_user` exactly where a real executor exists.
+
+### Dialect fix (latent bug found while wiring)
+
+- `_execute_speak` read only `params.text`, but the 1.15 parser
+  normalization routes top-level `text` into `params.utterance` — the
+  top-level-text-only dialect would have been refused. The executor now
+  accepts `text` **or** `utterance`; `ask_user` accepts `question`/`text`/
+  `utterance` the same way.
+
+### Truth rows
+
+- **AGENT tab `Last exchange`** — the last question the agent asked and the
+  last answer it heard (`Q: … → A: …`), `—` until a real exchange exists.
+- 14 new tests (conversation bounds, pairing + TTL expiry, fusion fields,
+  ask_user gate/dispatch/journal honesty, utterance fallback) — 564 total.
+
 ## [1.15.0] - 2026-09-06 — speech: the agent talks back (local TTS)
 
 ### The first SpeechOutput provider

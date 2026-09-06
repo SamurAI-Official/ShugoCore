@@ -368,6 +368,92 @@ class TestProviderRule(unittest.TestCase):
             ("speech", "visual", "action", "acknowledgement"))
 
 
+class TestMultimodalFusion(unittest.TestCase):
+    """v1.16: bounded conversation memory, question/answer pairing, and the
+    fused user context the agent reasons over."""
+
+    def _speech(self, text, clock, confidence=0.9):
+        return _obs("speech", "stt", {"transcript": text},
+                    confidence=confidence, timestamp=clock())
+
+    def test_conversation_records_both_sides(self):
+        clock = _FakeClock()
+        bus = InteractionBus(clock=clock)
+        bus.publish(self._speech("Shugo, are you there?", clock))
+        bus.record_agent_response(AgentResponse(
+            type="speech", content="I am here."))
+        turns = bus.human_context()["conversation"]
+        self.assertEqual([t["role"] for t in turns], ["human", "agent"])
+        self.assertEqual(turns[0]["text"], "Shugo, are you there?")
+        self.assertEqual(turns[1]["text"], "I am here.")
+        self.assertEqual(bus.stats()["conversation_turns"], 2)
+
+    def test_question_paired_with_next_speech(self):
+        clock = _FakeClock()
+        bus = InteractionBus(clock=clock)
+        bus.record_agent_response(AgentResponse(
+            type="speech", content="Should I continue?",
+            expects_answer=True))
+        self.assertEqual(bus.human_context()["pending_question"],
+                         "Should I continue?")
+        bus.publish(self._speech("yes", clock))
+        ctx = bus.human_context()
+        self.assertIsNone(ctx["pending_question"])
+        self.assertEqual(bus.stats()["last_answer"], "yes")
+        turns = ctx["conversation"]
+        self.assertEqual([t["role"] for t in turns], ["agent", "human"])
+
+    def test_expired_question_not_paired(self):
+        clock = _FakeClock()
+        bus = InteractionBus(clock=clock)
+        bus.expect_answer("Do you need help?")
+        clock.advance(121.0)  # past _ANSWER_TTL_S
+        bus.publish(self._speech("hello", clock))
+        ctx = bus.human_context()
+        self.assertIsNone(ctx["pending_question"])
+        self.assertIsNone(bus.stats()["last_answer"])
+
+    def test_expect_answer_direct(self):
+        clock = _FakeClock()
+        bus = InteractionBus(clock=clock)
+        self.assertTrue(bus.expect_answer("Where?"))
+        self.assertFalse(bus.expect_answer(""))
+        self.assertEqual(bus.human_context()["pending_question"], "Where?")
+
+    def test_conversation_bounded(self):
+        clock = _FakeClock()
+        bus = InteractionBus(clock=clock)
+        for i in range(30):
+            bus.publish(self._speech(f"turn {i}", clock))
+            clock.advance(0.1)
+        self.assertEqual(bus.stats()["conversation_turns"], 12)
+        turns = bus.human_context()["conversation"]
+        self.assertLessEqual(len(turns), 6)
+        self.assertEqual(turns[-1]["text"], "turn 29")
+
+    def test_user_context_fusion_fields(self):
+        clock = _FakeClock()
+        bus = InteractionBus(clock=clock)
+        bus.publish(_obs("visual", "camera", {"person_present": True},
+                         confidence=0.94, timestamp=clock()))
+        bus.publish(self._speech("I need help", clock, confidence=0.8))
+        uc = bus.human_context()["user_context"]
+        self.assertTrue(uc["person_present"])
+        self.assertTrue(uc["speech_recent"])
+        self.assertEqual(uc["last_transcript"], "I need help")
+        # Reserved for the XR providers — schema stable before sources.
+        self.assertIsNone(uc["gaze"])
+        self.assertIsNone(uc["attention_target"])
+        self.assertIsNone(uc["environment"])
+        self.assertAlmostEqual(uc["confidence"], 0.87, places=1)
+
+    def test_user_context_confidence_none_when_fresh_only_junk(self):
+        clock = _FakeClock()
+        bus = InteractionBus(clock=clock)
+        bus.publish(self._speech("words", clock, confidence=float("nan")))
+        self.assertIsNone(bus.human_context()["user_context"]["confidence"])
+
+
 if __name__ == "__main__":
     unittest.main()
 

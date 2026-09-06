@@ -42,6 +42,10 @@ _MAX_PAYLOAD_VALUE_LEN = 160
 _MAX_PAYLOAD_KEY_LEN = 40
 _MAX_PAYLOAD_KEYS = 12
 _MAX_RESPONSE_CONTENT_LEN = 300
+# v1.16 multimodal: bounded conversation memory + question/answer pairing.
+_MAX_CONVERSATION_TURNS = 12
+_MAX_CONTEXT_TURNS = 6
+_ANSWER_TTL_S = 120.0
 
 
 def _clean_float(value: Any) -> Optional[float]:
@@ -151,13 +155,16 @@ class AgentResponse:
     v1.15/1.16 speech/action capabilities; carried by the same bus)."""
 
     def __init__(self, type: str, content: str = "", target: str = "",
-                 priority: float = 0.5):
+                 priority: float = 0.5, expects_answer: bool = False):
         self.type = str(type).strip().lower()
         self.content = sanitize_text(str(content or ""),
                                      _MAX_RESPONSE_CONTENT_LEN)
         self.target = sanitize_text(str(target or ""), _MAX_SOURCE_LEN)
         prio = _clean_float(priority)
         self.priority = prio if prio is not None else 0.5
+        # v1.16: a response that is a QUESTION (ask_user action) — the bus
+        # pairs the next speech observation with it as the answer.
+        self.expects_answer = bool(expects_answer)
 
     def validate(self) -> Tuple[bool, str]:
         if self.type not in RESPONSE_TYPES:
@@ -170,7 +177,8 @@ class AgentResponse:
 
     def to_dict(self) -> Dict[str, Any]:
         return {"type": self.type, "content": self.content,
-                "target": self.target, "priority": self.priority}
+                "target": self.target, "priority": self.priority,
+                "expects_answer": self.expects_answer}
 
     @classmethod
     def from_dict(cls, data: Any) -> Tuple[Optional["AgentResponse"], str]:
@@ -179,7 +187,8 @@ class AgentResponse:
         resp = cls(type=str(data.get("type") or ""),
                    content=str(data.get("content") or ""),
                    target=str(data.get("target") or ""),
-                   priority=data.get("priority", 0.5))
+                   priority=data.get("priority", 0.5),
+                   expects_answer=bool(data.get("expects_answer", False)))
         ok, reason = resp.validate()
         return (resp, reason) if ok else (None, reason)
 
@@ -214,6 +223,13 @@ class InteractionBus:
         # agent last said to the human, and how many responses it emitted.
         self._last_response: Optional[Dict[str, Any]] = None
         self._response_count = 0
+        # v1.16 multimodal: bounded two-sided conversation memory (human
+        # speech turns + agent speech turns, chronological) and the pending
+        # question awaiting a spoken answer.
+        self._conversation: deque = deque(maxlen=_MAX_CONVERSATION_TURNS)
+        self._last_question: Optional[str] = None
+        self._last_answer: Optional[str] = None
+        self._pending_question: Optional[Dict[str, Any]] = None
 
     # -- ingestion ------------------------------------------------------------
 
@@ -237,10 +253,25 @@ class InteractionBus:
              and observation.payload.get("present") is False)
             or (observation.type == "visual"
                 and observation.payload.get("person_present") is False))
+        transcript = (str(observation.payload.get("transcript") or "").strip()
+                      if observation.type == "speech" else "")
         presence_event = ""
         with self._lock:
             self._seq += 1
             entry = observation.to_dict()
+            # v1.16 question/answer pairing: a speech observation carrying
+            # words while a question is pending (fresh within _ANSWER_TTL_S)
+            # is that question's answer.
+            if transcript:
+                question = self._pending_question
+                if (question is not None
+                        and now - question["ts"] <= _ANSWER_TTL_S):
+                    entry["payload"]["answer_to"] = question["text"]
+                    self._last_answer = transcript
+                self._pending_question = None
+                self._conversation.append({"role": "human",
+                                           "text": transcript,
+                                           "ts": entry["timestamp"]})
             entry["seq"] = self._seq
             self._buffer.append(entry)
             self._counts[observation.type] = (
@@ -293,7 +324,29 @@ class InteractionBus:
         with self._lock:
             self._last_response = response.to_dict()
             self._response_count += 1
+            if response.type == "speech" and response.content:
+                self._conversation.append({"role": "agent",
+                                           "text": response.content,
+                                           "ts": self._clock()})
+                if response.expects_answer:
+                    self._last_question = response.content
+                    self._pending_question = {"text": response.content,
+                                              "ts": self._clock()}
         return True, "ok"
+
+    def expect_answer(self, question: str) -> bool:
+        """Mark a question the agent just asked as awaiting a spoken answer
+        (v1.16 ask_user path for responses not recorded through
+        record_agent_response). The next speech observation within
+        _ANSWER_TTL_S is paired with it. Bounded + sanitized like everything
+        else here; never raises."""
+        text = sanitize_text(str(question or ""), _MAX_RESPONSE_CONTENT_LEN)
+        if not text:
+            return False
+        with self._lock:
+            self._last_question = text
+            self._pending_question = {"text": text, "ts": self._clock()}
+        return True
 
     def add_listener(self, listener: Callable[[Dict[str, Any]], None]) -> None:
         with self._lock:
@@ -331,6 +384,15 @@ class InteractionBus:
                 last_visual is not None
                 and now - last_visual.get("timestamp", 0.0) <= 30.0)
             person_present = self._last_person_present(now)
+            # v1.16 multimodal user-state fusion: one view the agent reasons
+            # over. Gaze/attention/environment are reserved (None) until the
+            # XR providers arrive — the schema is stable before the sources.
+            recent_conf = [e.get("confidence") for e in self._buffer
+                           if now - e.get("timestamp", 0.0) <= 30.0
+                           and isinstance(e.get("confidence"), (int, float))]
+            conversation = [dict(t) for t in list(self._conversation)[
+                -_MAX_CONTEXT_TURNS:]]
+            pending = self._pending_question
             return {
                 "presence": self._presence,
                 "seconds_since_last_observation":
@@ -339,6 +401,24 @@ class InteractionBus:
                 "speech_recent": speech_recent,
                 "vision_recent": vision_recent,
                 "person_present": person_present,
+                "conversation": conversation,
+                "pending_question": (
+                    pending["text"]
+                    if pending is not None
+                    and now - pending["ts"] <= _ANSWER_TTL_S else None),
+                "user_context": {
+                    "person_present": person_present,
+                    "speech_recent": speech_recent,
+                    "last_transcript": (
+                        conversation[-1]["text"]
+                        if conversation
+                        and conversation[-1]["role"] == "human" else None),
+                    "gaze": None,
+                    "attention_target": None,
+                    "environment": None,
+                    "confidence": (round(sum(recent_conf) / len(recent_conf), 2)
+                                   if recent_conf else None),
+                },
             }
 
     def _last_person_present(self, now: float) -> Optional[bool]:
@@ -380,4 +460,9 @@ class InteractionBus:
                     and self._last_response.get("type") == "speech"
                     else None),
                 "agent_responses": self._response_count,
+                # v1.16 conversation truth: the last asked question, the last
+                # heard answer, and how many bounded turns are held.
+                "last_question": self._last_question,
+                "last_answer": self._last_answer,
+                "conversation_turns": len(self._conversation),
             }

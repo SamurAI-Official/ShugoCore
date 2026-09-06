@@ -36,6 +36,7 @@ from policy import (
     ROBOTICS_SAFETY_ACTION_TYPES,
     SIDE_EFFECTING_ACTION_TYPES,
     SPEECH_OUTPUT_ACTION_TYPES,
+    ASK_USER_ACTION_TYPES,
 )
 from security import (
     CircuitBreaker,
@@ -81,7 +82,8 @@ class ExecutionLayer:
                    | MOBILE_ACTION_TYPES | MOBILE_READ_ACTION_TYPES
                    | NETWORK_ACTION_TYPES | NETWORK_READ_ACTION_TYPES
                    | OBSERVATION_ACTION_TYPES
-                   | SPEECH_OUTPUT_ACTION_TYPES)
+                   | SPEECH_OUTPUT_ACTION_TYPES
+                   | ASK_USER_ACTION_TYPES)
         if action_type not in allowed:
             raise ValueError(f"handlers are only allowed for allowed types "
                              f"{sorted(allowed)}")
@@ -147,6 +149,14 @@ class ExecutionLayer:
                     return {"status": "not_implemented",
                             "reason": ("no speech provider registered for "
                                        "'speak'; actions are never "
+                                       "simulated")}
+                return handler(decision)
+            if action_type == "ask_user":
+                handler = self._handlers.get("ask_user")
+                if handler is None:
+                    return {"status": "not_implemented",
+                            "reason": ("no speech provider registered for "
+                                       "'ask_user'; actions are never "
                                        "simulated")}
                 return handler(decision)
             return {"status": "error", "message": "Unknown action type"}

@@ -37,6 +37,7 @@ from memory_system import CoreIdentity, MemoryManager, SemanticMemory
 from model_backends import create_backend, validate_model_name
 from model_manager import ModelManager
 from policy import (
+    ASK_USER_ACTION_TYPES,
     OBSERVATION_ACTION_TYPES,
     SIDE_EFFECTING_ACTION_TYPES,
     SPEECH_OUTPUT_ACTION_TYPES,
@@ -172,7 +173,7 @@ _KNOWN_ACTION_TYPES = {
     "api_call", "database_update", "hardware_interaction",
     "news_api", "search_api", "multi_step_process",
     "record_observation",
-} | SPEECH_OUTPUT_ACTION_TYPES
+} | SPEECH_OUTPUT_ACTION_TYPES | ASK_USER_ACTION_TYPES
 if _HAS_ROBOTICS:
     _KNOWN_ACTION_TYPES |= (ROBOTICS_ACTION_TYPES
                             | ROBOTICS_SAFETY_ACTION_TYPES

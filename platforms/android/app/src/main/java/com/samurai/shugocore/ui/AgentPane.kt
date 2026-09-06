@@ -35,6 +35,7 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
     private val visionRow: TextView
     private val hearingRow: TextView
     private val speechRow: TextView
+    private val lastExchange: TextView
     private val humanObservations: TextView
     private val statusLine: TextView
     private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US)
@@ -109,6 +110,7 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
         visionRow = col.addKv("Vision")
         hearingRow = col.addKv("Hearing")
         speechRow = col.addKv("Speech")
+        lastExchange = col.addKv("Last exchange")
         humanObservations = col.addKv("Observations")
 
         // -- Controls -------------------------------------------------------------------
@@ -220,6 +222,7 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
             visionRow.text = "—"
             hearingRow.text = "—"
             speechRow.text = "—"
+            lastExchange.text = "—"
             humanObservations.text = "—"
         } else {
             val presence = Ui.str(interaction, "presence", "user_absent")
@@ -251,6 +254,18 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
             val spoken = Ui.str(interaction, "last_spoken", "")
             speechRow.text = spoken.ifEmpty { "—" }
             speechRow.setTextColor(if (spoken.isEmpty()) Ui.DIM else Ui.OK)
+            // v1.16 conversation truth: the last question the agent asked
+            // and the last answer it heard, paired when both exist.
+            val q = Ui.str(interaction, "last_question", "")
+            val a = Ui.str(interaction, "last_answer", "")
+            lastExchange.text = when {
+                q.isNotEmpty() && a.isNotEmpty() ->
+                    "Q: ${q.take(42)} → A: ${a.take(42)}"
+                q.isNotEmpty() -> "Q: ${q.take(70)}"
+                a.isNotEmpty() -> "A: ${a.take(70)}"
+                else -> "—"
+            }
+            lastExchange.setTextColor(if (q.isEmpty() && a.isEmpty()) Ui.DIM else Ui.TEXT)
         }
     }
 

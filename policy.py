@@ -35,6 +35,12 @@ OBSERVATION_ACTION_TYPES = {"record_observation"}
 # the host — and the text is sanitized like any memory write, so it rides in
 # the internal class: no consent, no approval, but always journaled.
 SPEECH_OUTPUT_ACTION_TYPES = {"speak"}
+# v1.16: the agent ASKING the human a question (uncertainty -> ask). Speech
+# output to the local operator again — internal class, no consent, no
+# approval, always journaled. Asking never unlocks anything by itself: a
+# spoken "yes" is DATA the agent may reason over, never a consent record
+# (consent stays with the operator's explicit registry entry).
+ASK_USER_ACTION_TYPES = {"ask_user"}
 # Robotics actions: physical side effects, require consent AND approval.
 ROBOTICS_ACTION_TYPES = {"robot_navigate", "robot_manipulate", "robot_gripper"}
 # Safety-critical robotics actions: bypass consent/approval gates.
@@ -55,7 +61,7 @@ KNOWN_ACTION_TYPES = (SIDE_EFFECTING_ACTION_TYPES | EXTERNAL_READ_ACTION_TYPES
                       | ROBOTICS_READ_ACTION_TYPES | MOBILE_ACTION_TYPES
                       | MOBILE_READ_ACTION_TYPES | NETWORK_ACTION_TYPES
                       | NETWORK_READ_ACTION_TYPES | OBSERVATION_ACTION_TYPES
-                      | SPEECH_OUTPUT_ACTION_TYPES
+                      | SPEECH_OUTPUT_ACTION_TYPES | ASK_USER_ACTION_TYPES
                       | {"multi_step_process"})
 
 

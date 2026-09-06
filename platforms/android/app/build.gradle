@@ -14,8 +14,8 @@ android {
         applicationId "com.samurai.shugocore"
         minSdk 28
         targetSdk 34
-        versionCode 2
-        versionName "1.8.1"
+        versionCode 3
+        versionName "1.9.0"
 
         ndk {
             // arm64-v8a: 2020+ devices; x86_64: emulator testing
@@ -25,7 +25,13 @@ android {
         externalNativeBuild {
             cmake {
                 cppFlags "-std=c++17"
-                arguments "-DANDROID_STL=c++_shared"
+                // CRITICAL: force an optimized native build. Gradle's debug
+                // variant otherwise injects CMAKE_BUILD_TYPE=Debug (-O0) into
+                // the llama.cpp/ggml numerical kernels, which runs ~20-50x
+                // slower (measured: 0.65 tok/s decode, 273s prefill for a
+                // 0.5B Q4 model vs ~10 tok/s / seconds with -O3). Java-side
+                // debuggability of the debug APK is unaffected.
+                arguments "-DANDROID_STL=c++_shared", "-DCMAKE_BUILD_TYPE=Release"
             }
         }
 
@@ -67,7 +73,13 @@ chaquopy {
         buildPython "python3"
         version "3.13"
         pip {
-            install "shugocore==1.8.1"
+            // NOTE: the shugocore package itself is deliberately NOT pip-installed
+            // here. A pinned "shugocore==x.y.z" resolves the prebuilt wheel in
+            // ../../dist, which silently shadows the bundled (and kept-in-sync)
+            // src/main/python tree with stale code - the DECIDE/RECORD semantics
+            // fix shipped in the APK but the device kept executing the old 1.8.1
+            // wheel. The bundled tree covers the entire on-device import graph
+            // (robotics/mobile/shugonet handlers degrade via try/except).
             install "requests"
             install "numpy"
         }

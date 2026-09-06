@@ -43,6 +43,7 @@ shugocore.egg-info/requires.txt
 shugocore.egg-info/top_level.txt
 tests/test_acceleration.py
 tests/test_android.py
+tests/test_android_control_plane.py
 tests/test_android_lifecycle_stress.py
 tests/test_continuous_agent.py
 tests/test_dream.py

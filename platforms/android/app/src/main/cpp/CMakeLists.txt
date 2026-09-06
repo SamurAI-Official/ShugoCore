@@ -23,6 +23,21 @@ endif()
 # ---------------------------------------------------------------------------
 option(SHUGOCORE_VULKAN "Enable Vulkan GPU offload (Adreno/Mali)" OFF)
 
+# Defensive: Gradle's debug variant passes -DCMAKE_BUILD_TYPE=Debug, which
+# would compile ggml at -O0. Inference is unusable unoptimized, so even the
+# debug APK must ship an optimized engine (build.gradle also passes Release).
+if(ANDROID AND CMAKE_BUILD_TYPE MATCHES "^[Dd][Ee][Bb][Uu][Gg]$")
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
+endif()
+
+# ARMv8.2 dotprod kernels for arm64-v8a: without them Q4_K_M matmuls run
+# the generic NEON path (measured ~1 tok/s prefill on Exynos 1380). The
+# device exposes asimddp on ALL cores (arm64 cpuinfo lists the feature
+# intersection), so dotprod codegen is safe on every core.
+if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a")
+    set(GGML_CPU_ARM_ARCH "armv8.2-a+dotprod" CACHE STRING "" FORCE)
+endif()
+
 if(SHUGOCORE_VULKAN)
     set(GGML_VULKAN ON CACHE BOOL "" FORCE)
 endif()
@@ -42,6 +57,14 @@ target_include_directories(llama_jni PRIVATE
     ${LLAMA_CPP_DIR}/include
     ${LLAMA_CPP_DIR}/ggml/include
 )
+
+# Android 15+ 16KB page size compat: the ELF's LOAD segments must be
+# aligned to 16384 bytes or the dynamic linker refuses to map the library
+# with "ELF alignment failed". -z max-page-size tells the linker to lay
+# out the binary for the larger page granularity.
+if(ANDROID)
+    target_link_options(llama_jni PRIVATE -Wl,-z,max-page-size=16384)
+endif()
 
 if(ANDROID)
     # Android NDK build: log lives in the platform libs.

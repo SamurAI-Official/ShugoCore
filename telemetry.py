@@ -76,28 +76,49 @@ class _NoopSpan(Span):
 
 
 class _OtelSpan(Span):
-    """Adapter over a real OpenTelemetry span (when available)."""
+    """Adapter over a real OpenTelemetry span (when available).
 
-    def __init__(self, span: Any):
+    Attribute/event calls are mirrored locally so the diagnostic
+    ``recent_spans()`` buffer stays populated even when no OTel
+    provider/exporter is configured (the common dev case) — previously
+    the OTel path ended before recording anything, silently emptying
+    the buffer on any host with ``opentelemetry-api`` installed.
+    """
+
+    def __init__(self, span: Any, name: str,
+                 attributes: Optional[Dict[str, Any]] = None):
         self._span = span
+        self.name = name
+        self._started = time.monotonic()
+        self._attributes: Dict[str, Any] = dict(attributes or {})
+        self._events: List[Dict[str, Any]] = []
 
     def set_attribute(self, key: str, value: Any) -> None:
+        self._attributes[key] = value
         try:
             self._span.set_attribute(key, value)
         except Exception:
             pass
 
     def add_event(self, name: str, attributes: Optional[Dict[str, Any]] = None) -> None:
+        self._events.append({"name": name, "attributes": dict(attributes or {})})
         try:
             self._span.add_event(name, attributes or {})
         except Exception:
             pass
 
-    def _finish(self) -> None:
+    def _finish(self) -> Dict[str, Any]:
+        self._ended = time.monotonic()
         try:
-            self._span.end()
+            self._span.end()   # still flows to any host-configured provider
         except Exception:
             pass
+        return {
+            "name": self.name,
+            "attributes": dict(self._attributes),
+            "duration_ms": round((self._ended - self._started) * 1000.0, 3),
+            "events": list(self._events),
+        }
 
 
 class Tracer:
@@ -116,11 +137,17 @@ class Tracer:
             try:
                 instrumentor = _otel_trace.get_tracer(self.name)
                 span = instrumentor.start_span(name, attributes=attributes or {})
-                yield _OtelSpan(span)  # type: ignore[misc]
-                span = None
-                return
             except Exception:
                 span = None
+            if span is not None:
+                adapter = _OtelSpan(span, name, attributes)
+                try:
+                    yield adapter
+                finally:
+                    record = adapter._finish()
+                    with self._lock:
+                        self._recent.append(record)
+                return
 
         noop = _NoopSpan(name, attributes)
         try:

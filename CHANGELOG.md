@@ -4,6 +4,161 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.9.0] - 2026-09-04
+
+### Added — Android node control plane (5 tabs + node status header)
+
+The single-screen engineering-proof app is now the **management console for an
+embodied AI node**: an always-visible NODE STATUS header plus SERVER / AGENT /
+SENSORS / SECURITY / LOG tabs. The UI remains zero-dependency programmatic
+Views, factored into `ui/` pane classes over a shared `runtime/` layer —
+every row renders real runtime state, never a decorative green dot.
+
+- **NODE STATUS header** — `● AGENT ONLINE` plus Model / Inference
+  (LOCAL / BACKUP host / OFFLINE) / Memory / Sensors n-of-n / Policy /
+  Network / Temperature / Battery, aggregated from a new
+  `ShugoCoreService.getNodeSnapshot()` binder call.
+- **SERVER tab** — inference section (engine, model, quantization parsed from
+  the GGUF filename, endpoint), the four health indicators
+  `MODEL LOADED / INFERENCE READY / API READY / AGENT READY`, live server
+  stats (requests, tokens, last latency — new `LocalApiServer` counters), the
+  v1.8.1 model-catalog download/select dialog, the backup-server URL field,
+  and START/STOP SERVER.
+- **AGENT tab** — subsystem statuses, current cycle (cycle #, last tick wall
+  time, last decision / action / evaluation straight from the Tier 1 head),
+  the OBSERVE→GATE→DECIDE→EXECUTE→EVALUATE→RECORD→CONSOLIDATE pipeline with
+  the stages that actually ran highlighted, memory tiers 0–3 (Tier 3 always
+  READ ONLY), and START/STOP AGENT (tick-loop pause; node stays up).
+- **SENSORS tab** — the capability acknowledgement system:
+  `Android hardware → permission → capability declaration → data stream →
+  ShugoCore → agent ACK`. `runtime/SensorCapabilityManager` enumerates the
+  eight capabilities with honest stream state (a stream is ACTIVE only when
+  sensor data actually arrived); tapping a capability requests its runtime
+  permission (new manifest permissions CAMERA / RECORD_AUDIO / location /
+  Bluetooth, requested on-demand only); the agent ACK section renders what
+  the Python side actually acknowledged.
+- **SECURITY tab** — the capability governor: device permissions (Android) vs
+  agent capabilities (authority toggles, fail-closed DISABLED by default —
+  *Android permission ≠ agent authority*), network posture (localhost always
+  on; LAN default on; Internet default DENIED and **actually enforced**),
+  tools (fail-closed DENIED defaults) and policy flags (FAIL CLOSED / AUDIT /
+  CONSENT).
+- **LOG tab** — live feed from a central `runtime/LogBus` (500-entry ring
+  buffer) fed by both Kotlin events and the Python agent (seq-monotonic
+  `recent_logs(after_seq)` polling), with [ALL] [MODEL] [AGENT] [SENSOR]
+  [POLICY] [MEMORY] [ERROR] filters.
+
+### Changed — STOP SERVER semantics (server + agent coupling)
+
+- **STOP SERVER** halts the on-device inference stack and — per the node
+  design — **stops the agent too, unless a backup (desktop) server URL is
+  configured**. With a backup URL the agent keeps running, re-pointed live to
+  the backup via the new `AndroidAgent.set_backend_url()` (updates the cached
+  backend adapters and the model config in one place). **START SERVER**
+  restarts the inference stack and brings the agent back when both were
+  stopped together. START AGENT guarantees a backend exists first.
+
+### Added — Python agent control-plane surface (`shugocore_agent.py`)
+
+- `update_capabilities(declarations)` — the explicit capability
+  acknowledgement registry (receiving a declaration never grants authority).
+- `update_policy(agent_caps, internet, lan)` — authority + network posture,
+  **enforced in `tick()`**: a backend outside the loopback address is checked
+  against the posture (LAN ranges / `.local` vs public Internet) and a
+  blocked target stops the tick at GATE with a `policy_block` event — the
+  agent never calls the engine.
+- Enriched `get_status()`: tier 0/1/2 counts, Tier 3 state, engine_ready,
+  last decision/action/evaluation (derived from the Tier 1 head — real
+  events, not assumptions), pipeline stage list, backend URL, capability
+  acks and the live policy map. All v1.8.1 keys preserved.
+- Honest pipeline stage tracking: a stage is reported as run only when the
+  code path for it actually executed (e.g. a refused cycle never claims
+  EXECUTE ran).
+- Bounded, seq-numbered log buffer + `recent_logs()` for the LOG tab.
+
+### Tests
+
+- `tests/test_android_control_plane.py` — 15 tests: capability
+  acknowledgement contract, ack-is-not-authority, backend re-pointing,
+  localhost/LAN/Internet policy gates, fail-closed refusal before the engine,
+  status enrichment with legacy-key compatibility, honest stage tracking and
+  the log buffer. Suite: 61 platform tests + 15 new, all green.
+
+### Deferred (follow-ups)
+
+- ApprovalBroker operator-approval UI flow.
+- Camera/mic/GPS/Bluetooth stream state stays IDLE until the agent actually
+  opens those devices (honest); per-sensor data-rate display for them comes
+  with the first real consumers.
+
+### Fixes
+
+- **Crash on launch (`IllegalStateException: The specified child already has a
+  parent`)** — the four pane constructors added the inner column returned by
+  `Ui.pane()` directly to themselves, but that column is already parented inside
+  the pane's `ScrollView`. This threw before the first frame in
+  `MainActivity.onCreate`, so the app opened and instantly closed. Each pane now
+  adds the `ScrollView` (the pair's first element) and fills the inner column.
+  Verified on-device: clean crash buffer, activity resumed, service + Chaquopy
+  Python runtime initializing, sensor listeners registered.
+- **Decision Engine permanently ABSENT on-device** — `decision_engine.py`
+  imported `open_semantic_memory` from `pg_memory` at module top level, and
+  `pg_memory` imports `psycopg2`, which is not bundled in the Chaquopy Android
+  build. Every `DecisionEngine` construction therefore died with `ImportError`
+  before any engine existed, leaving the agent shell "running" with no decision
+  core. The import is now a lazy `_get_pg_memory()` accessor (root and bundled
+  copies in sync); Android persists events via the audit JSONL chain, not
+  Postgres, so nothing else changes.
+- **Python↔Kotlin boundary silently dropping data (empty LOG tab, dead
+  telemetry/capability pushes)** — Chaquopy hands Python non-iterable Java
+  proxies for Kotlin collections, so the log poll produced nothing, telemetry
+  and capability pushes failed, and every failure was invisible in the UI.
+  All boundary crossings are now JSON strings: `get_status_json`,
+  `recent_logs_json`, `update_telemetry_json`, `update_capabilities_json`.
+  The first log poll seeds `last_log_seq` from the status head so the LOG tab
+  shows current activity instead of flooding with history.
+- **Failures now honest and visible** — `_bootstrap()` never raises (a failed
+  subsystem degrades to a reporting agent instead of a zombie "RUNNING"), any
+  engine/init error is persisted to `engine_error.txt` / `agent_error.txt` in
+  the app's files dir, surfaced in `get_status` as `engine_error` / `init_error`,
+  and rendered as real error text in the AGENT pane instead of a bare ABSENT.
+- Verified on S9 FE after a clean rebuild (stale incremental APK assets were
+  also masking the Python fixes): Decision Engine READY, gated pipeline firing
+  `decision_requested` every tick, `episodic_journal.jsonl` growing,
+  `semantic_memory.db` at 1.1 MB, no error files, zero entries in the crash
+  buffer.
+- **telemetry.py OTel path was dead code on OTel-equipped hosts** — `start_span`
+  constructed `_OtelSpan(span)` without its required `name`/`attributes`
+  arguments, the resulting `TypeError` was swallowed by the `except Exception`
+  fallback, so every span silently degraded to the no-op path, real OTel spans
+  were started but never ended (leaked), and `recent_spans()` was populated only
+  by accident. The OTel branch now mirrors into the diagnostic ring buffer and
+  always ends the underlying span; `tests/test_v1.py` covers both tracer paths
+  deterministically.
+- **Stale pip wheel was shadowing the bundled Python on-device** — the Chaquopy
+  block pip-installed `shugocore==1.8.1`, which resolved the prebuilt wheel in
+  `dist/` (built from pre-1.9.0 source). On-device, that wheel shadowed the
+  bundled `src/main/python` tree, so engine-code changes shipped in the APK but
+  the runtime kept executing the old 1.8.1 copy (the DECIDE/RECORD fix was
+  invisible until this was found). The self-install is removed: the bundled
+  tree is the single source of truth for on-device Python (verified it covers
+  the entire on-device import graph; robotics/mobile/shugonet handlers degrade
+  cleanly via their optional try/except imports). A fresh 1.9.0 wheel was
+  rebuilt into `dist/` (a git-ignored build-output dir) and the stale 1.8.x
+  wheels were deleted, so the shadowing failure mode cannot recur.
+- **DECIDE-cycle semantics aligned with the design** — the designed cycle is
+  DECIDE → (action proposed) → policy gate → EXECUTE → EVALUATE → RECORD, with
+  the no-viable-action branch going straight to RECORD → next cycle. Three
+  branches violated "every cycle ends in a record": the no-viable branch
+  returned an error with no journal entry at all (the most frequent terminal
+  branch on-device, where stub outputs rarely propose), the multi-step path
+  journaled no overall outcome, and governor pre-pipeline refusals
+  (paused/halted/re-entrant) returned without recording. All three now record
+  (`no_viable_action`, `tool_execution` with `multi_step_process` +
+  per-step statuses, `governor_block` kind `begin_task`), and the AGENT pane's
+  stage trail honestly shows `RECORD` on refused/error engine cycles (still
+  never EXECUTE/EVALUATE without a real execution). Tests cover all paths.
+
 ## [1.8.1] - 2026-09-04
 
 ### Added — On-device model download & selection UI

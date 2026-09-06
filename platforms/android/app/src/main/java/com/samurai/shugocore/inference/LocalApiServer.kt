@@ -13,6 +13,8 @@
 package com.samurai.shugocore.inference
 
 import android.util.Log
+import com.samurai.shugocore.runtime.LogBus
+import com.samurai.shugocore.runtime.ServerStats
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.BufferedWriter
@@ -40,12 +42,29 @@ class LocalApiServer(
     private var serverSocket: ServerSocket? = null
     private val executor: ExecutorService = Executors.newCachedThreadPool()
     private val requestCounter = AtomicLong(0)
+    // Single-flight gate for inference: the bridge is serialized anyway, but
+    // letting requests QUEUE on it means clients that already timed out still
+    // burn minutes of CPU and delay the live request. Reject with 503 so the
+    // agent sees "busy" immediately and retries on a later tick instead.
+    private val generateBusy = AtomicBoolean(false)
+    private val requestsCompleted = AtomicLong(0)
+    private val tokensTotal = AtomicLong(0)
+    @Volatile private var lastLatencyMs = 0L
 
     fun start() {
         if (running.get()) return
-        val ss = ServerSocket(port, 50, InetAddress.getLoopbackAddress())
+        // Bind the documented IPv4 loopback explicitly. InetAddress
+        // .getLoopbackAddress() returns ::1 on some Android devices, and a
+        // specific IPv6 bind accepts no IPv4 connections - the Python agent
+        // dials http://127.0.0.1:11434 and would be refused on every call
+        // (silent eval=error on every tick; thought never initiates).
+        val ss = ServerSocket(port, 50, InetAddress.getByName("127.0.0.1"))
         serverSocket = ss
         running.set(true)
+        // Log the ACTUAL bound address, never the intent - a bind regression
+        // must be visible in logcat, not masked by a hardcoded string.
+        val bound = "${ss.inetAddress.hostAddress}:$port"
+        LogBus.log(LogBus.Category.MODEL, "API listening on $bound (model=$modelName)")
         Thread({
             while (running.get()) {
                 try {
@@ -56,17 +75,33 @@ class LocalApiServer(
                 }
             }
         }, "shugocore-api-accept").apply { isDaemon = true }.start()
-        Log.i(TAG, "Local API server listening on 127.0.0.1:$port (model=$modelName)")
+        Log.i(TAG, "Local API server listening on $bound (model=$modelName)")
     }
 
     fun stop() {
         running.set(false)
         try { serverSocket?.close() } catch (_: Exception) {}
         executor.shutdownNow()
+        LogBus.log(LogBus.Category.MODEL, "API stopped (127.0.0.1:$port)")
         Log.i(TAG, "Local API server stopped")
     }
 
     val isRunning: Boolean get() = running.get()
+
+    /** Counter snapshot for the SERVER tab. */
+    fun statsSnapshot(): ServerStats =
+        ServerStats(requestsCompleted.get(), tokensTotal.get(), lastLatencyMs)
+
+    /** Record one completed inference request (tokens + wall-clock latency). */
+    private fun recordRequest(path: String, tokenCount: Int, elapsedMs: Long) {
+        requestsCompleted.incrementAndGet()
+        tokensTotal.addAndGet(tokenCount.toLong())
+        lastLatencyMs = elapsedMs
+        LogBus.log(
+            LogBus.Category.MODEL,
+            "#${requestCounter.get()} $path -> $tokenCount tokens in ${elapsedMs}ms (${modelName})",
+            isError = false)
+    }
 
     // -------------------------------------------------------------------------
     // Minimal HTTP/1.1 connection handling
@@ -136,6 +171,13 @@ class LocalApiServer(
     // -------------------------------------------------------------------------
 
     private fun handleGenerate(socket: Socket, request: HttpRequest) {
+        if (!generateBusy.compareAndSet(false, true)) {
+            Log.w(TAG, "generate rejected: engine already busy")
+            respondJson(socket, 503, JSONObject()
+                .put("error", "engine busy: a generation is already in progress"))
+            return
+        }
+        try {
         val req = try { JSONObject(request.body) } catch (e: Exception) {
             respondJson(socket, 400, JSONObject().put("error", "invalid JSON: ${e.message}"))
             return
@@ -155,6 +197,16 @@ class LocalApiServer(
         val seed = options.optInt("seed", -1)
         val maxTokens = options.optInt("num_predict", 256).coerceIn(1, 2048)
         val stream = req.optBoolean("stream", false)
+// Ollama-compatible stop words: array or single string.
+        val stops = when {
+            options.isNull("stop") -> emptyList()
+            options.optJSONArray("stop") != null -> {
+                val arr = options.optJSONArray("stop")
+                (0 until arr.length()).map { arr.optString(it) }
+                    .filter { it.isNotEmpty() }
+            }
+            else -> listOf(options.optString("stop")).filter { it.isNotEmpty() }
+        }
 
         val startNs = System.nanoTime()
         var tokenCount = 0
@@ -168,6 +220,7 @@ class LocalApiServer(
         val callback = object : LlamaCppBridge.CompletionCallback {
             override fun onToken(token: String) {
                 tokenCount++
+                Log.d(TAG, "onToken #$tokenCount: '${token.take(40)}' (${token.length} chars)")
                 if (stream && writer != null) {
                     val chunk = JSONObject()
                         .put("model", modelName)
@@ -182,7 +235,9 @@ class LocalApiServer(
                     collected.append(token)
                 }
             }
-            override fun onComplete(stats: Map<String, Any>) {}
+            override fun onComplete(stats: Map<String, Any>) {
+                Log.d(TAG, "onComplete: $stats")
+            }
             override fun onError(error: String) {
                 Log.w(TAG, "generation error: $error")
             }
@@ -197,6 +252,7 @@ class LocalApiServer(
                 topP = topP,
                 repeatPenalty = repeatPenalty,
                 seed = seed,
+                stops = stops,
                 callback = callback
             )
         } catch (e: Exception) {
@@ -210,8 +266,13 @@ class LocalApiServer(
 
         val elapsedNs = System.nanoTime() - startNs
         val responseText = if (stream) text else collected.toString()
+        Log.d(TAG, "generate done: stream=$stream collected=${collected.length} text=${text.length} responseText=${responseText.length} tokens=$tokenCount")
 
         if (writer != null) {
+val elapsedNs = System.nanoTime() - startNs
+        val responseText = if (stream) text else collected.toString()
+        Log.d(TAG, "generate returned charset=${responseText.length} " +
+                "tokens=$tokenCount elapsedMs=${elapsedNs / 1_000_000}")
             val final = JSONObject()
                 .put("model", modelName)
                 .put("created_at", nowIso())
@@ -236,9 +297,20 @@ class LocalApiServer(
                 .put("eval_duration", elapsedNs)
             respondJson(socket, 200, out)
         }
+        recordRequest("/api/generate", tokenCount, elapsedNs / 1_000_000)
+        } finally {
+            generateBusy.set(false)
+        }
     }
 
     private fun handleChat(socket: Socket, request: HttpRequest) {
+        if (!generateBusy.compareAndSet(false, true)) {
+            Log.w(TAG, "chat rejected: engine already busy")
+            respondJson(socket, 503, JSONObject()
+                .put("error", "engine busy: a generation is already in progress"))
+            return
+        }
+        try {
         val req = try { JSONObject(request.body) } catch (e: Exception) {
             respondJson(socket, 400, JSONObject().put("error", "invalid JSON: ${e.message}"))
             return
@@ -344,6 +416,10 @@ class LocalApiServer(
                 .put("done", true)
                 .put("total_duration", elapsedNs)
                 .put("eval_count", tokenCount))
+        }
+        recordRequest("/api/chat", tokenCount, elapsedNs / 1_000_000)
+        } finally {
+            generateBusy.set(false)
         }
     }
 

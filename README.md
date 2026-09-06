@@ -3,8 +3,8 @@
 > A continuous orchestration layer for synthetic functional agency.
 
 [![PyPI](https://img.shields.io/pypi/v/shugocore)](https://pypi.org/project/shugocore/)
-![Release](https://img.shields.io/badge/release-v1.4.0-blue)
-![Tests](https://img.shields.io/badge/tests-410%20passing-brightgreen)
+![Release](https://img.shields.io/badge/release-v1.9.0-blue)
+![Tests](https://img.shields.io/badge/tests-489%20passing-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%E2%80%933.12-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android%20%28Termux%2FChaquopy%29-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -87,7 +87,7 @@ decoupled maintenance worker that never blocks the primary loop.
 | `token_budget.py` | Context budgeting |
 | `android_inference.py` | Android local inference backend (OpenAI-compatible) |
 | `shugocore_server.py` | Desktop server: Ollama wire contract + engine API (`shugocore-server`) |
-| `platforms/android/` | Android app shell with llama.cpp JNI, foreground service, local API server |
+| `platforms/android/` | Android node app: 5-tab control-plane UI, embedded llama.cpp (JNI) + Ollama-compatible local API, foreground service, bundled Python agent tree |
 
 ## Memory architecture
 
@@ -197,10 +197,50 @@ in [`clients/android/`](clients/android/); the full integration guide - wire
 topics, security model, launcher matrix, SoC accelerator cheat-sheet, Termux
 fallback - is [`docs/android_integration.md`](docs/android_integration.md).
 
-On-device model execution uses standard local launchers: ShugoCore probes
-llama.cpp (`/health`), Ollama (`/api/tags`) and LM Studio (`/v1/models`),
-and every backend URL must pass the loopback + port allowlist check before
-the first prompt leaves the process.
+On-device model execution runs against the app's **embedded llama.cpp
+engine** (JNI, no external launcher required) or standard local launchers:
+ShugoCore probes llama.cpp (`/health`), Ollama (`/api/tags`) and LM Studio
+(`/v1/models`), and every backend URL must pass the loopback + port
+allowlist check before the first prompt leaves the process.
+
+### Android node control plane (v1.9.0)
+
+The Android app is the management console for an embodied AI node: an
+always-visible **NODE STATUS** header (agent online, model, inference mode,
+memory, sensors n-of-n, policy, network, temperature, battery) above
+**SERVER / AGENT / SENSORS / SECURITY / LOG** tabs. Every row renders real
+runtime state via a `getNodeSnapshot()` service binder call — no decorative
+indicators.
+
+- **SERVER** — the embedded llama.cpp engine serving an Ollama-compatible
+  API on `127.0.0.1:11434` (native libraries are 16 KB page-size aligned for
+  Android 15+ devices), four health indicators (`MODEL LOADED / INFERENCE
+  READY / API READY / AGENT READY`), live request/token/latency counters, a
+  GGUF model catalog with download/select, and a **backup-server fallback**:
+  stopping the local stack while a desktop backup URL is configured re-points
+  the agent at the backup and keeps it running.
+- **AGENT** — subsystem statuses, the current cycle with the last
+  decision / action / evaluation taken from the Tier 1 head, the
+  OBSERVE→GATE→DECIDE→EXECUTE→EVALUATE→RECORD→CONSOLIDATE pipeline with only
+  the stages that actually ran highlighted, and memory tiers 0–3.
+- **SENSORS** — a capability contract, not a permissions page: Android
+  hardware → runtime permission → capability declaration → live stream →
+  explicit agent acknowledgement, so the agent never assumes a capability
+  exists just because Android granted a permission.
+- **SECURITY** — Android permissions vs. agent authority shown as separate
+  states, network posture with real enforcement (loopback always; LAN /
+  internet fail-closed by default), tool allowlists, and the policy flags
+  (fail-closed, audit, consent).
+- **LOG** — a live category-filtered feed (MODEL / AGENT / SENSOR / POLICY /
+  MEMORY / ERROR) backed by a ring-buffer log bus that both the Kotlin
+  runtime and the Python agent write to.
+
+Every DECIDE cycle terminates in a record — `tool_execution` on the action
+path, `no_viable_action` / `policy_block` / `governor_block` otherwise — so
+the stage trail shown on the device is an honest transcript of what ran.
+The Kotlin↔Python boundary speaks JSON (`get_status_json`,
+`recent_logs_json`, `update_capabilities_json`, …) so no state is lost to
+crossing the runtime edge.
 
 ### Desktop server mode (no high-end phone needed)
 
@@ -406,7 +446,7 @@ pip install shugocore
 **From the GitHub release (identical artifacts):**
 
 ```bash
-pip install https://github.com/SamurAI-Official/ShugoCore/releases/download/v1.4.0/shugocore-1.4.0-py3-none-any.whl
+pip install https://github.com/SamurAI-Official/ShugoCore/releases/download/v1.9.0/shugocore-1.9.0-py3-none-any.whl
 ```
 
 **From source:**
@@ -426,9 +466,9 @@ Optional extras:
 - `shugonet` - Shogunet networking runtime for multi-agent fleets (`shugonet_bridge.py`)
 - `psycopg2-binary` - PostgreSQL + pgvector fleet-shared Tier 2 memory (`pg_memory.py`)
 
-> Published on [PyPI](https://pypi.org/project/shugocore/1.4.0/) - the wheel
-> and sdist there are byte-identical to the `v1.4.0` git tag and the GitHub
-> release assets (sha256 digests recorded on both).
+> Published on [PyPI](https://pypi.org/project/shugocore/) - the `v1.9.0`
+> wheel built from this tree is also attached to the
+> [GitHub release](https://github.com/SamurAI-Official/ShugoCore/releases/tag/v1.9.0).
 
 ## Quickstart
 
@@ -486,7 +526,7 @@ for fact in candidates:
 ## Testing
 
 ```bash
-python -m unittest discover -s tests -v     # 335 tests, no native deps
+python -m unittest discover -s tests -v     # 489 tests, no native deps
 ```
 
 Beyond security and integration regression tests (v1.2.0), the suite includes
@@ -507,6 +547,11 @@ hardware-facing stress suites:
   real loopback HTTP double (`tests/fake_llama_server.py`) that speaks the
   llama.cpp, Ollama and LM Studio wire protocols with injectable failure
   modes: hang, HTTP 500, malformed JSON, empty choices, artificial latency.
+- **Android control plane** - the capability-acknowledgement contract, the
+  Chaquopy-safe JSON boundary calls, DECIDE-cycle semantics (every cycle
+  terminates in a record), policy enforcement points, and the agent's honest
+  stage trail — exercised against the same Python tree that is bundled into
+  the APK (`tests/test_android_control_plane.py`).
 
 A `sensor_node` soak runs for 5 seconds at 20 Hz against the pure-Python fake
 bridge and asserts monotonic heartbeats plus bounded, non-runaway output -
@@ -576,6 +621,10 @@ ShugoCore/
 ├── token_budget.py           # context budgeting
 ├── version.py                # SemVer, frozen for the 1.x series
 ├── clients/android/          # reference Kotlin bridge client + Gradle shell
+├── platforms/android/        # Android node app: 5-tab control-plane UI (ui/),
+│                             #   runtime/ layer (log bus, node state, sensor
+│                             #   capabilities), embedded llama.cpp JNI server,
+│                             #   bundled Python agent (src/main/python)
 ├── docs/android_integration.md  # Android integration guide
 ├── tests/                    # security, integration & hardware-stress tests
 └── requirements.txt
@@ -591,6 +640,8 @@ Runtime artifacts (`semantic_memory.db`, logs) are local and gitignored.
 - Per-agent memory policies (isolation vs. sharing profiles)
 - HMAC-signed audit chains and remote log shipping
 - Human approval UI beyond the programmatic broker API
+- Operator approval surface on the Android SECURITY tab (ApprovalBroker integration)
+- Camera / microphone / GPS live-stream display in the SENSORS tab
 - Per-model backend pools with health-based routing
 - CI trusted publishing to PyPI via GitHub Actions (OIDC, no static token)
 - Android llama.cpp-compatible host server for Termux (self-hosted launcher path)

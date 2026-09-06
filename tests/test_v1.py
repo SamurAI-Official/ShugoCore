@@ -9,6 +9,9 @@ import sys
 import tempfile
 import threading
 import time
+import time
+import unittest
+from unittest import mock
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -229,16 +232,50 @@ class MemoryV1TestCase(unittest.TestCase):
 
 
 class TelemetryTestCase(unittest.TestCase):
+    """Both tracer paths must record into recent_spans(). Regression: the OTel
+    branch constructed _OtelSpan without its required arguments, the TypeError
+    was swallowed by the fallback, so on any OTel-equipped host every span
+    silently degraded to the no-op and real OTel spans were never ended."""
+
     def test_noop_tracer_records_spans(self):
-        tracer = get_tracer("v1-test")
-        with tracer.start_span("op", {"a": 1}) as span:
-            span.set_attribute("b", 2)
-            span.add_event("checkpoint")
+        import telemetry as tel
+        tracer = tel.Tracer("v1-test")
+        with mock.patch.object(tel, "_HAS_OTEL", False):
+            with tracer.start_span("op", {"a": 1}) as span:
+                span.set_attribute("b", 2)
+                span.add_event("checkpoint")
         spans = tracer.recent_spans()
-        self.assertTrue(any(s["name"] == "op" for s in spans))
         record = [s for s in spans if s["name"] == "op"][-1]
         self.assertGreaterEqual(record["duration_ms"], 0.0)
-        self.assertEqual(record["attributes"]["a"], 1)
+        self.assertEqual(record["attributes"], {"a": 1, "b": 2})
+        self.assertEqual(record["events"][0]["name"], "checkpoint")
+
+    def test_otel_span_mirrors_to_recent_and_ends(self):
+        import telemetry as tel
+
+        real = {"ended": False}
+
+        class FakeSpan:
+            def set_attribute(self, k, v): pass
+            def add_event(self, name, attributes=None): pass
+            def end(self): real["ended"] = True
+
+        class FakeInstrumentor:
+            def start_span(self, name, attributes=None):
+                return FakeSpan()
+
+        class FakeTrace:
+            def get_tracer(self, name): return FakeInstrumentor()
+
+        tracer = tel.Tracer("v1-otel")
+        with mock.patch.object(tel, "_HAS_OTEL", True), \
+                mock.patch.object(tel, "_otel_trace", FakeTrace()):
+            with tracer.start_span("otel-op", {"a": 1}) as span:
+                span.set_attribute("b", 2)
+        record = [s for s in tracer.recent_spans()
+                  if s["name"] == "otel-op"][-1]
+        self.assertEqual(record["attributes"], {"a": 1, "b": 2})
+        self.assertTrue(real["ended"], "real OTel span must be ended")
 
 
 class EngineV1IntegrationTestCase(unittest.TestCase):
@@ -277,6 +314,48 @@ class EngineV1IntegrationTestCase(unittest.TestCase):
         result = self.engine.execute_task({"type": "text", "content": "x"})
         self.assertEqual(result.get("status"), "refused")
         self.assertIn("paused", result.get("reason", ""))
+        # Designed semantics: even a pre-pipeline refusal RECORDs its outcome.
+        event_types = [e.get("type") for e in self.engine.memory.tier1.recent(20)]
+        self.assertIn("governor_block", event_types)
+
+    def test_no_viable_action_records_outcome(self):
+        """Designed semantics: DECIDE with no viable action still RECORDs
+        before the next cycle (stub models never propose a valid action)."""
+        result = self.engine.execute_task({"type": "text", "content": "x"})
+        self.assertEqual(result.get("status"), "error")
+        self.assertIn("no viable action", result.get("message", ""))
+        event_types = [e.get("type") for e in self.engine.memory.tier1.recent(20)]
+        self.assertIn("no_viable_action", event_types)
+
+    def test_multi_step_records_outcome(self):
+        """Designed semantics: the multi-step path also ends in RECORD with
+        the overall status journaled (steps here refuse: side-effecting
+        action without consent, so no network is touched)."""
+
+        class ProposingBackend:
+            name = "fake-proposer"
+
+            def generate(self, model_id, prompt, timeout=None):
+                return json.dumps({
+                    "action_type": "multi_step_process",
+                    "params": {"steps": [
+                        {"action_type": "api_call", "params": {"q": "x"}},
+                    ]},
+                    "confidence": 0.9,
+                })
+
+            def list_models(self):
+                return []
+
+        self.engine._backend_for = lambda model: ProposingBackend()
+        result = self.engine.execute_task({"type": "text", "content": "probe"})
+        self.assertEqual(result.get("status"), "error")
+        outcomes = [e for e in self.engine.memory.tier1.recent(30)
+                    if e.get("type") == "tool_execution"
+                    and (e.get("payload") or {}).get("action_type")
+                    == "multi_step_process"]
+        self.assertTrue(outcomes, "multi-step outcome must be journaled")
+        self.assertEqual(outcomes[-1]["payload"]["status"], "error")
 
     def test_episodic_journal_wired(self):
         self.engine.memory.record_event("wired_probe", {"n": 1})
@@ -389,8 +468,16 @@ class EthicsHardeningTestCase(unittest.TestCase):
 
 
 class VersionTestCase(unittest.TestCase):
-    def test_version_is_1_7(self):
-        self.assertEqual(__version__, "1.8.0")
+    def test_version_matches_pyproject(self):
+        # version.py is the single source of truth; pyproject.toml must stay
+        # in lockstep so release drift fails loudly (this pin silently
+        # lagged through 1.8.1 and 1.9.0 while the suite went unrun).
+        import re
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "pyproject.toml")) as fh:
+            match = re.search(r'^version\s*=\s*"([^"]+)"', fh.read(), re.M)
+        self.assertIsNotNone(match, "pyproject.toml is missing a version")
+        self.assertEqual(__version__, match.group(1))
 
 
 if __name__ == "__main__":

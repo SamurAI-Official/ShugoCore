@@ -33,10 +33,12 @@ logger = logging.getLogger(__name__)
 
 _DECISION_PROMPT = (
     "You are the decision module of an autonomous agent. Respond ONLY with a "
-    "JSON object with keys: \"action_type\" (one of api_call, database_update, "
-    "hardware_interaction, news_api, search_api, multi_step_process, or null), "
-    "\"params\" (object), \"confidence\" (number between 0.0 and 1.0), and "
-    "\"text\" (short explanation). Do not add any text outside the JSON.\n"
+    "single-line JSON object with keys: \"action_type\" (one of api_call, "
+    "database_update, hardware_interaction, news_api, search_api, "
+    "multi_step_process, or null), \"params\" (object), \"confidence\" "
+    "(number between 0.0 and 1.0), and \"text\" (short explanation). "
+    "Keep the entire JSON object on one line with no line breaks, and do not "
+    "add any text outside the JSON.\n"
     "Task: {task_json}"
 )
 
@@ -47,7 +49,7 @@ class SubconsciousModel:
     def __init__(self, vector_db: Optional[VectorDB] = None,
                  backend: Optional[BaseBackend] = None,
                  backend_config: Optional[Dict[str, Any]] = None,
-                 request_timeout: float = 30.0,
+                 request_timeout: float = 600.0,
                  model_list_cache_seconds: float = 60.0):
         self.vector_db = vector_db
         self.backend = backend if backend is not None else create_backend(backend_config)

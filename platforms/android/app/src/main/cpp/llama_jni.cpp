@@ -19,16 +19,20 @@
 #include <vector>
 #include <thread>
 #include <mutex>
+#include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 
 #ifdef __ANDROID__
 #include <android/log.h>
+#include <sched.h>
+#include <cerrno>
+#include <unistd.h>
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN,  TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 #else
-#include <cstdio>
 #define LOGI(...) do { fprintf(stdout, "[llama_jni] " __VA_ARGS__); fprintf(stdout, "\n"); } while (0)
 #define LOGW(...) do { fprintf(stderr, "[llama_jni] W " __VA_ARGS__); fprintf(stderr, "\n"); } while (0)
 #define LOGE(...) do { fprintf(stderr, "[llama_jni] E " __VA_ARGS__); fprintf(stderr, "\n"); } while (0)
@@ -45,6 +49,7 @@ struct ShugoSession {
     llama_context*     ctx    = nullptr;
     const llama_vocab* vocab  = nullptr;
     uint32_t           n_ctx  = 0;
+    uint32_t           n_batch = 512;
     int32_t            n_past = 0;
     std::string        pending; // partial UTF-8 bytes awaiting completion
 };
@@ -54,6 +59,55 @@ std::mutex g_session_mutex; // serializes inference on the single session
 ShugoSession* as_session(jlong ptr) {
     return reinterpret_cast<ShugoSession*>(static_cast<intptr_t>(ptr));
 }
+
+#ifdef __ANDROID__
+// Pin the calling thread to the device's performance cores.
+//
+// big.LITTLE SoCs (Exynos 1380: 4x A78 + 4x A55) let the scheduler place
+// ggml's worker threads on the efficiency cluster, where every decode
+// barrier stalls the fast cores behind the slow ones. Workers spawned by
+// ggml inherit the affinity of the thread that runs llama_decode, so
+// pinning here (init/eval/sample paths) propagates to the whole pool.
+void pin_to_performance_cores() {
+    static std::once_flag once;
+    static cpu_set_t perf_mask;
+    static bool have_mask = false;
+    static bool warned = false;
+    std::call_once(once, [&]() {
+        const long ncpu = sysconf(_SC_NPROCESSORS_CONF);
+        if (ncpu < 1 || ncpu > CPU_SETSIZE) return;
+        long freq[CPU_SETSIZE];
+        long max_freq = 0;
+        for (long i = 0; i < ncpu; ++i) {
+            char path[96];
+            snprintf(path, sizeof(path),
+                     "/sys/devices/system/cpu/cpu%ld/cpufreq/cpuinfo_max_freq", i);
+            long v = 0;
+            FILE* f = fopen(path, "r");
+            if (f) { if (fscanf(f, "%ld", &v) != 1) v = 0; fclose(f); }
+            freq[i] = v;
+            if (v > max_freq) max_freq = v;
+        }
+        if (max_freq <= 0) return;
+        CPU_ZERO(&perf_mask);
+        int count = 0;
+        // Cores within 15% of the top frequency form the performance set.
+        for (long i = 0; i < ncpu; ++i) {
+            if (freq[i] >= (max_freq * 85) / 100) { CPU_SET(static_cast<int>(i), &perf_mask); ++count; }
+        }
+        have_mask = count > 0;
+        LOGI("perf-core affinity: %d of %ld cores (max_freq=%ld kHz)", count, ncpu, max_freq);
+    });
+    if (have_mask && sched_setaffinity(0, sizeof(perf_mask), &perf_mask) != 0) {
+        if (!warned) {
+            warned = true;
+            LOGW("sched_setaffinity failed: %s (cgroup cpuset may restrict)", strerror(errno));
+        }
+    }
+}
+#else
+void pin_to_performance_cores() {}
+#endif
 
 // Extract only complete UTF-8 sequences from `pending`, leaving any trailing
 // partial sequence in place for the next call.
@@ -77,13 +131,32 @@ std::string take_complete_utf8(std::string& pending) {
 }
 
 bool decode_tokens(ShugoSession* s, const llama_token* tokens, int32_t n_tokens) {
-    llama_batch batch = llama_batch_get_one(const_cast<llama_token*>(tokens), n_tokens);
-    const int rc = llama_decode(s->ctx, batch); // 0 = success, <0 = error, >0 = warning
-    if (rc < 0) {
-        LOGE("llama_decode failed rc=%d", rc);
-        return false;
+    const auto t0 = std::chrono::steady_clock::now();
+    auto ms_since = [&]() -> double {
+        return std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t0).count();
+    };
+    const int32_t n_past_before = s->n_past;
+    // llama_decode requires batch.n_tokens <= n_batch (otherwise llama.cpp
+    // aborts with a failed assertion). Long prompts can exceed n_batch after
+    // tokenization, so decode in n_batch-sized chunks.
+    const int32_t chunk = static_cast<int32_t>(s->n_batch ? s->n_batch : 512);
+    for (int32_t off = 0; off < n_tokens; off += chunk) {
+        const int32_t n = std::min(chunk, n_tokens - off);
+        // pos=NULL: this llama.cpp tracks token positions automatically for
+        // sequential decoding (see llama.h llama_batch docs), so each request
+        // in the generate loop continues the sequence correctly at the KV end.
+        llama_batch batch = llama_batch_get_one(
+            const_cast<llama_token*>(tokens + off), n);
+        const int rc = llama_decode(s->ctx, batch); // 0 = ok, <0 = err, >0 = warn
+        if (rc < 0) {
+            LOGE("llama_decode failed rc=%d at off=%d n=%d", rc, off, n);
+            return false;
+        }
+        s->n_past += n;
     }
-    s->n_past += n_tokens;
+    LOGI("decode OK n=%d n_past_before=%d elapsed_ms=%.1f",
+         n_tokens, n_past_before, ms_since());
     return true;
 }
 
@@ -115,6 +188,11 @@ Java_com_samurai_shugocore_inference_LlamaCppBridge_nativeInit(
         if (n_threads < 1) n_threads = 2;
     }
     if (n_ctx < 64) n_ctx = 2048;
+
+    // Pin this thread to the performance cores before any llama work:
+    // ggml worker threads inherit the affinity of the thread that runs the
+    // first decode, so the whole pool stays on the fast cluster.
+    pin_to_performance_cores();
 
     std::lock_guard<std::mutex> lock(g_session_mutex);
     llama_backend_init();
@@ -148,7 +226,9 @@ Java_com_samurai_shugocore_inference_LlamaCppBridge_nativeInit(
     session->ctx   = ctx;
     session->vocab = llama_model_get_vocab(model);
     session->n_ctx = llama_n_ctx(ctx);
-    LOGI("session ready: n_ctx=%u", session->n_ctx);
+    session->n_batch = cparams.n_batch;
+    LOGI("session ready: n_ctx=%u n_batch=%u n_threads=%d",
+         session->n_ctx, session->n_batch, n_threads);
     return reinterpret_cast<jlong>(session);
 }
 
@@ -195,6 +275,7 @@ Java_com_samurai_shugocore_inference_LlamaCppBridge_nativeTokenize(
         env->SetIntArrayRegion(out_tokens, 0, n,
                                reinterpret_cast<const jint*>(tokens.data()));
     }
+    LOGI("tokenize: %d tokens", n);
     return n;
 }
 
@@ -238,6 +319,10 @@ Java_com_samurai_shugocore_inference_LlamaCppBridge_nativeEvalPrompt(
     std::vector<llama_token> prompt(static_cast<size_t>(n_tokens));
     env->GetIntArrayRegion(tokens, 0, n_tokens,
                            reinterpret_cast<jint*>(prompt.data()));
+
+    // Ensure this (HTTP handler) thread is pinned to performance cores; the
+    // ggml worker pool for prefill spawns on this thread's affinity.
+    pin_to_performance_cores();
 
     // Reset KV when the new prompt would overflow the context window.
     if (s->n_past + n_tokens > static_cast<int32_t>(s->n_ctx)) {
@@ -294,7 +379,9 @@ Java_com_samurai_shugocore_inference_LlamaCppBridge_nativeReset(
     auto* s = as_session(session_ptr);
     if (!s || !s->ctx) return;
     std::lock_guard<std::mutex> lock(g_session_mutex);
+    LOGI("reset: clearing KV (n_past=%d)", s->n_past);
     llama_memory_clear(llama_get_memory(s->ctx), /*data=*/true);
     s->n_past = 0;
     s->pending.clear();
+    LOGI("reset: done");
 }

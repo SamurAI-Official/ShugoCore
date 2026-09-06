@@ -21,7 +21,7 @@ class LlamaCppBridge(val modelPath: String) : AutoCloseable {
 
     // Default parameters
     var nCtx: Int = 2048
-    var nThreads: Int = Runtime.getRuntime().availableProcessors()
+    var nThreads: Int = detectPerformanceCores()
     var nGpuLayers: Int = 0  // CPU only by default
 
     // Callback for streamed tokens
@@ -39,6 +39,46 @@ class LlamaCppBridge(val modelPath: String) : AutoCloseable {
         get() = isInitialized.get() && sessionPtr != 0L
 
     /**
+     * Count the device's *performance* cores by reading each core's max
+     * frequency from sysfs and taking those within 15% of the maximum.
+     *
+     * big.LITTLE / DynamIQ CPUs pair fast "performance" cores with slow
+     * "efficiency" cores (e.g. Exynos 1380: 4x A78 @ 2.4 GHz + 4x A55 @
+     * 2.0 GHz). Spawning one llama.cpp thread per *logical* core lands half
+     * of them on the efficiency cluster; the decode barrier then stalls the
+     * fast cores behind the slow ones. Pinning the threadpool to the fast
+     * cluster alone removes that bottleneck and, because it heats the chip
+     * less, lets those cores sustain higher clocks.
+     */
+    private fun detectPerformanceCores(): Int {
+        return try {
+            val n = Runtime.getRuntime().availableProcessors()
+            val maxFreqs = (0 until n).map { core ->
+                try {
+                    java.io.File("/sys/devices/system/cpu/cpu$core/cpufreq/cpuinfo_max_freq")
+                        .takeIf { it.exists() }
+                        ?.readText()?.trim()?.toIntOrNull() ?: 0
+                } catch (e: Exception) {
+                    0
+                }
+            }
+            val maxFreq = maxFreqs.maxOrNull() ?: 0
+            val detected = if (maxFreq == 0) {
+                // sysfs unreadable (emulator / restricted): conservative default.
+                (n / 2).coerceAtLeast(2)
+            } else {
+                // Cores within 15% of the top frequency are the performance set.
+                maxFreqs.count { it >= maxFreq * 85 / 100 }.coerceAtLeast(2)
+            }
+            Log.i(TAG, "detectPerformanceCores: n=$n maxFreqs=$maxFreqs maxFreq=$maxFreq -> $detected")
+            detected
+        } catch (e: Exception) {
+            Log.w(TAG, "detectPerformanceCores failed, defaulting to 4", e)
+            4
+        }
+    }
+
+    /**
      * Initialize the native inference session (loads the GGUF model).
      */
     fun initialize(): Boolean {
@@ -52,7 +92,7 @@ class LlamaCppBridge(val modelPath: String) : AutoCloseable {
         }
 
         isInitialized.set(true)
-        Log.i(TAG, "Native session initialized: $sessionPtr")
+        Log.i(TAG, "Native session initialized: $sessionPtr nCtx=$nCtx nThreads=$nThreads nGpuLayers=$nGpuLayers")
         return true
     }
 
@@ -68,6 +108,7 @@ class LlamaCppBridge(val modelPath: String) : AutoCloseable {
         topP: Float = 0.9f,
         repeatPenalty: Float = 1.1f,
         seed: Int = -1,
+        stops: List<String> = emptyList(),
         callback: CompletionCallback? = null
     ): String {
         if (!isReady) {
@@ -76,8 +117,10 @@ class LlamaCppBridge(val modelPath: String) : AutoCloseable {
         }
 
         synchronized(inferLock) {
+            Log.d(TAG, "generate start: pLen=${prompt.length} max=$maxTokens")
             // Fresh KV state per request.
             nativeReset(sessionPtr)
+            Log.d(TAG, "generate: after reset")
 
             val startTime = System.currentTimeMillis()
 
@@ -96,6 +139,10 @@ class LlamaCppBridge(val modelPath: String) : AutoCloseable {
 
             val output = StringBuilder()
             for (i in 0 until maxTokens) {
+                if (i % 32 == 0) {
+                    Log.d(TAG, "generating token $i/$maxTokens (elapsed " +
+                            "${System.currentTimeMillis() - startTime}ms)")
+                }
                 // -2 = end-of-generation, -1 = native error
                 val tokenId = nativeGenerateToken(
                     sessionPtr, temperature, topK, topP,
@@ -112,6 +159,10 @@ class LlamaCppBridge(val modelPath: String) : AutoCloseable {
                         if (piece.isNotEmpty()) {
                             output.append(piece)
                             callback?.onToken(piece)
+                            // Clients send stop words (e.g. "\n") so CPU-only
+                            // structured generation halts early instead of
+                            // running to the full maxTokens budget.
+                            if (stops.any { output.indexOf(it, output.length - it.length - 4) >= 0 }) break
                         }
                     }
                 }

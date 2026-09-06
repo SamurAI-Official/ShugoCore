@@ -18,6 +18,7 @@ through ``execute_task``:
 
 import json
 import logging
+import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -35,13 +36,27 @@ from logging_manager import LoggingManager
 from memory_system import CoreIdentity, MemoryManager, SemanticMemory
 from model_backends import create_backend, validate_model_name
 from model_manager import ModelManager
-from pg_memory import open_semantic_memory
 from policy import (
     SIDE_EFFECTING_ACTION_TYPES,
     ApprovalBroker,
     CapabilityRegistry,
     ConsentRegistry,
 )
+
+_pg_memory_fn = None  # Lazily imported — pg_memory pulls in psycopg2 which is
+                      # not bundled in the Android build. Android persists
+                      # events via the audit JSONL chain, not Postgres.
+
+
+def _get_pg_memory():
+    global _pg_memory_fn
+    if _pg_memory_fn is None:
+        try:
+            from pg_memory import open_semantic_memory
+            _pg_memory_fn = open_semantic_memory
+        except Exception:
+            _pg_memory_fn = False  # mark unavailable; don't retry
+    return _pg_memory_fn
 from reinforcement_learning import ReinforcementLearning
 from security import (
     RateLimiter,
@@ -99,6 +114,58 @@ logger = logging.getLogger(__name__)
 
 _PROPOSAL_JSON_PATTERN = re.compile(r"\{.*\}", re.DOTALL)
 
+
+def _proposal_json_candidates(text: str):
+    """
+    Yield candidate JSON blobs from model output, most specific first.
+
+    Small on-device models frequently wrap the JSON (prose before/after) or
+    truncate it at the token cap; greedy ``{...}`` matching on the full text
+    grabs everything from the first to the last brace, which fails when the
+    trailing prose contains its own braces. Strategy:
+
+    1. Greedy first-brace-to-last-brace blob (backwards compatible).
+    2. Each balanced ``{...}`` region starting at every ``{`` (handles prose
+       after the object and nested braces).
+    3. The longest prefix that parses as a dict (handles truncated JSON where
+       the tail is cut mid-value).
+    """
+    m = _PROPOSAL_JSON_PATTERN.search(text)
+    if m:
+        yield m.group(0)
+    for m in re.finditer(r"\{", text):
+        depth = 0
+        for i in range(m.start(), len(text)):
+            ch = text[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    yield text[m.start():i + 1]
+                    break
+    # Truncated-at-token-cap repair: if the merged text starts with '{' and is
+    # unterminated but already carries an action_type key, close the still-open
+    # object braces deterministically and try it last.
+    stripped = text.lstrip()
+    if stripped.startswith("{") and "action_type" in stripped[:96]:
+        net = 0
+        for ch in stripped:
+            if ch == "{":
+                net += 1
+            elif ch == "}":
+                net -= 1
+        if net > 0:
+            yield stripped + ("}" * net)
+    for cut in range(len(text), 0, -8):
+        try:
+            data = json.loads(text[:cut])
+        except Exception:
+            continue
+        if isinstance(data, dict):
+            yield text[:cut]
+            break
+
 _KNOWN_ACTION_TYPES = {
     "api_call", "database_update", "hardware_interaction",
     "news_api", "search_api", "multi_step_process",
@@ -145,19 +212,28 @@ class DecisionEngine:
                  approvals: Optional[ApprovalBroker] = None,
                  consents: Optional[ConsentRegistry] = None,
                  audit_path: Optional[str] = "audit_chain.jsonl",
-                 request_timeout: float = 10.0,
+                 request_timeout: float = 600.0,
                  subconscious_backend: Optional[Any] = None,
                  governor: Optional[ExecutionGovernor] = None,
                  fallbacks: Optional[FallbackController] = None,
                  step_budget: int = 50,
-                 task_deadline_seconds: float = 120.0,
+                 # On-device CPU inference (e.g. 0.5B Q4 on Exynos 1380) has a
+                 # ~300s prefill + decode time. The governor deadline must exceed
+                 # the HTTP request timeout (600s) or it kills the task mid-generation.
+                 task_deadline_seconds: float = 600.0,
                  token_budget: int = 8192,
                  episodic_journal_path: Optional[str] = None,
                  robotics_handler: Optional[Any] = None,
                  mobile_handler: Optional[Any] = None,
-                 shogonet_handler: Optional[Any] = None):
+                 shogonet_handler: Optional[Any] = None,
+                 log_dir: Optional[str] = None):
         self.models = models
         self.logger = logging.getLogger(__name__)
+        # Writable directory for file-based artifacts (logs, audit). On Android
+        # the Python cwd is "/" (read-only); pass data_dir so FileHandler
+        # targets a real, writable path instead of failing with EROFS.
+        self._log_dir = log_dir
+        self._model_failures = 0  # consecutive model parse failures (rule-fallback trigger)
 
         # Governance components (security architecture):
         self.secrets = secrets if secrets is not None else SecretResolver()
@@ -193,8 +269,14 @@ class DecisionEngine:
             self.device = "cpu"
             logging.info("torch not available; using CPU-only mode.")
 
-        self.subconscious = SubconsciousModel(self.vector_db,
-                                              backend=subconscious_backend)
+        # Model-call timeout belongs to the subconscious layer (the engine's
+        # request_timeout governs execution-layer tool calls). On-device CPU
+        # inference needs generous headroom, so never go below the 90s
+        # subconscious default.
+        self.subconscious = SubconsciousModel(
+            self.vector_db,
+            backend=subconscious_backend,
+            request_timeout=max(float(request_timeout), 90.0))
         self.rate_limiter = RateLimiter(calls_per_minute=60)
         self.execution_layer = ExecutionLayer(
             secrets=self.secrets,
@@ -228,7 +310,9 @@ class DecisionEngine:
         self.task_manager = TaskManager()
         # The queue executes through the same gated path (no bypass).
         self.task_manager.set_executor(self.execute_task)
-        self.logging_manager = LoggingManager()
+        self.logging_manager = LoggingManager(
+            log_file=os.path.join(self._log_dir, "decision_engine.log")
+            if self._log_dir else "decision_engine.log")
 
         # Tiered memory system: Tier 0/1 isolated, Tier 2/3 shareable.
         if core_identity is not None:
@@ -236,10 +320,13 @@ class DecisionEngine:
             core = core_identity
         else:
             core = CoreIdentity(consent_checker=self.consents.has_grant)
+        semantic = semantic_memory
+        if semantic is None:
+            pg_mem = _get_pg_memory()
+            semantic = pg_mem(memory_db_path) if pg_mem else SemanticMemory(db_path=memory_db_path)
         self.memory = MemoryManager(
             agent_id="decision_engine",
-            semantic=semantic_memory if semantic_memory is not None
-            else open_semantic_memory(memory_db_path),
+            semantic=semantic,
             core=core,
             episodic_journal_path=episodic_journal_path,
         )
@@ -314,9 +401,31 @@ class DecisionEngine:
                 "confidence": best.get("confidence", 0.0),
                 "proposal_source": source_id,
             }
+            self._model_failures = 0  # reset on success
         else:
-            decision = {"action_type": None, "params": {},
-                        "confidence": 0.0, "proposal_source": None}
+            self._model_failures += 1
+            if self._model_failures >= 3:
+                # Rule-based fallback: the on-device model (0.5B Q4) repeatedly
+                # regurgitates input context instead of emitting valid decision
+                # JSON. After N consecutive parse failures, emit a safe "observe"
+                # action so the agent loop keeps cycling and journaling instead
+                # of stalling on no_viable_action. Low confidence signals that
+                # this is heuristic, not a real model proposal.
+                self.logger.warning(
+                    f"Model failed to propose a valid action "
+                    f"({self._model_failures}x consecutive); "
+                    f"using rule-based fallback")
+                decision = {
+                    "action_type": "multi_step_process",
+                    "params": {"action": "observe",
+                               "reason": "model_fallback",
+                               "failures": self._model_failures},
+                    "confidence": 0.1,
+                    "proposal_source": "rule_fallback",
+                }
+            else:
+                decision = {"action_type": None, "params": {},
+                            "confidence": 0.0, "proposal_source": None}
 
         decision["model_outputs"] = model_outputs
         decision["aggregated_output"] = sum(score for _, _, score in proposals)
@@ -348,29 +457,38 @@ class DecisionEngine:
         """
         Extract a structured action proposal from model output. Only
         well-formed JSON with a known (or null) action_type is accepted.
+        Small on-device models frequently emit ``"null"`` as a string for
+        the action_type field - treat that the same as JSON null (None).
         """
         if not isinstance(text, str) or not text.strip():
             return None
-        match = _PROPOSAL_JSON_PATTERN.search(text)
-        if not match:
-            return None
-        try:
-            data = json.loads(match.group(0))
-        except (ValueError, TypeError):
-            return None
-        if not isinstance(data, dict):
-            return None
-        action_type = data.get("action_type")
-        if action_type is not None and action_type not in _KNOWN_ACTION_TYPES:
-            return None
-        params = data.get("params")
-        if not isinstance(params, dict):
-            params = {}
-        try:
-            confidence = max(0.0, min(1.0, float(data.get("confidence", 0.0))))
-        except (TypeError, ValueError):
-            confidence = 0.0
-        return {"action_type": action_type, "params": params, "confidence": confidence}
+        for blob in _proposal_json_candidates(text):
+            try:
+                data = json.loads(blob)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            action_type = data.get("action_type")
+            # Normalize string "null" to None (common 0.5B model behavior)
+            if isinstance(action_type, str) and action_type.lower() == "null":
+                action_type = None
+            if action_type is not None and action_type not in _KNOWN_ACTION_TYPES:
+                # Hard reject: the model proposed a real action with an
+                # unknown type. Do NOT fall through to other candidates -
+                # a degenerate repair (e.g. `{}`) would mask the invalid
+                # proposal as an action_type=None stub.
+                return None
+            params = data.get("params")
+            if not isinstance(params, dict):
+                params = {}
+            try:
+                confidence = max(0.0, min(1.0, float(data.get("confidence", 0.0))))
+            except (TypeError, ValueError):
+                confidence = 0.0
+            return {"action_type": action_type, "params": params,
+                    "confidence": confidence}
+        return None
 
     def aggregate_outputs(self, model_outputs: List[tuple]) -> Dict[str, Any]:
         """Legacy aggregation (kept for compatibility)."""
@@ -396,6 +514,12 @@ class DecisionEngine:
             try:
                 self.governor.begin_task(task.get("type", "unknown"))
             except GovernorError as exc:
+                # RECORD: even a pre-pipeline refusal (paused/halted/re-entrant)
+                # journals its outcome so every cycle ends in a record.
+                self.memory.record_event(
+                    "governor_block",
+                    {"kind": "begin_task", "detail": type(exc).__name__},
+                )
                 self.logger.warning(f"Governor refused task: {exc}")
                 return {"status": "refused", "reason": sanitize_text(str(exc), 160)}
 
@@ -448,7 +572,14 @@ class DecisionEngine:
 
         if not decision.get("action_type"):
             # No valid structured proposal (offline stub models, parse failure):
-            # honest error - never fabricate a success.
+            # honest error - never fabricate a success. Designed semantics:
+            # DECIDE -> no viable action -> RECORD -> next cycle, so the
+            # outcome is journaled even though nothing executed.
+            self.memory.record_event(
+                "no_viable_action",
+                {"task_type": sanitize_text(task.get("type", "unknown"), 64),
+                 "detail": "no viable action proposed by the model ensemble"},
+            )
             self.governor.step(AgentState.IDLE)
             self.memory.resolve_step()
             return {"status": "error",
@@ -458,6 +589,17 @@ class DecisionEngine:
             self.governor.step(AgentState.EXECUTING)
             result = self._execute_multi_step(task, decision)
             self.governor.step(AgentState.EVALUATING)
+            # RECORD: multi-step cycles record their outcome like any other
+            # action path (overall status + per-step statuses).
+            self.memory.record_event(
+                "tool_execution",
+                {"task_type": sanitize_text(task.get("type", "unknown"), 64),
+                 "action_type": "multi_step_process",
+                 "status": str(result.get("status", "unknown")),
+                 "detail": sanitize_text(str(
+                     [str(entry.get("status", "unknown"))
+                      for entry in result.get("steps_results", [])]), 200)},
+            )
             self.memory.resolve_step()
             return result
 

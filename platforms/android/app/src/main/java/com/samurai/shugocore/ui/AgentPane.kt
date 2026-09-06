@@ -34,6 +34,7 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
     private val humanPresence: TextView
     private val visionRow: TextView
     private val hearingRow: TextView
+    private val speechRow: TextView
     private val humanObservations: TextView
     private val statusLine: TextView
     private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US)
@@ -107,6 +108,7 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
         humanPresence = col.addKv("Human")
         visionRow = col.addKv("Vision")
         hearingRow = col.addKv("Hearing")
+        speechRow = col.addKv("Speech")
         humanObservations = col.addKv("Observations")
 
         // -- Controls -------------------------------------------------------------------
@@ -124,6 +126,9 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
         col.addView(row)
         col.addView(Ui.button(context, "Stop node service").apply {
             setOnClickListener { host.onStopNodeClicked() }
+        })
+        col.addView(Ui.button(context, "Test speech").apply {
+            setOnClickListener { host.onSpeakTestClicked() }
         })
         statusLine = TextView(context).apply {
             textSize = 13f; setTextColor(Ui.WARN)
@@ -214,6 +219,7 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
             humanPresence.text = "—"
             visionRow.text = "—"
             hearingRow.text = "—"
+            speechRow.text = "—"
             humanObservations.text = "—"
         } else {
             val presence = Ui.str(interaction, "presence", "user_absent")
@@ -240,6 +246,11 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
             // produced words — VAD-only speech events don't set it).
             val transcript = Ui.str(interaction, "last_transcript", "")
             hearingRow.text = transcript.ifEmpty { "—" }
+            // What the agent last SAID (speak action executed) — empty until
+            // the agent has actually spoken through the TTS provider.
+            val spoken = Ui.str(interaction, "last_spoken", "")
+            speechRow.text = spoken.ifEmpty { "—" }
+            speechRow.setTextColor(if (spoken.isEmpty()) Ui.DIM else Ui.OK)
         }
     }
 

@@ -330,6 +330,59 @@ class SecurityPrimitivesTestCase(unittest.TestCase):
             '{"action_type": "launch_missiles", "params": {}, "confidence": 1.0}'))
         self.assertIsNone(DecisionEngine._parse_proposal("not json at all"))
 
+    def test_parse_proposal_scans_past_text_echo_stub(self):
+        # Live on-device failure (v1.15.0 verification): the 1B model emits
+        # a prose-echo object BEFORE the real decision. The stub must not
+        # stop the scan - the speak proposal behind it must win.
+        from decision_engine import DecisionEngine
+        text = (' {"text": "Autonomous agents can be designed to make '
+                'decisions based on their environment.", "confidence": 0.95} '
+                '{"action_type": "speak", "params": {"utterance": "I am '
+                'here."}, "confidence": 0.95, "text": "I am here."} '
+                '{"action_type": "null", "params": {}}')
+        proposal = DecisionEngine._parse_proposal(text)
+        self.assertIsNotNone(proposal)
+        self.assertEqual(proposal["action_type"], "speak")
+        self.assertEqual(proposal["params"].get("utterance"), "I am here.")
+        self.assertAlmostEqual(proposal["confidence"], 0.95)
+
+    def test_parse_proposal_speak_is_known_action(self):
+        from decision_engine import DecisionEngine
+        proposal = DecisionEngine._parse_proposal(
+            '{"action_type": "speak", "params": {"utterance": "I am here."},'
+            ' "confidence": 0.9}')
+        self.assertIsNotNone(proposal)
+        self.assertEqual(proposal["action_type"], "speak")
+
+    def test_parse_proposal_speak_utterance_from_text_field(self):
+        # 1B dialect (live): empty params.utterance with the words in the
+        # top-level `text` field — normalize into params.utterance.
+        from decision_engine import DecisionEngine
+        proposal = DecisionEngine._parse_proposal(
+            '{"action_type": "speak", "params": {}, "confidence": 0.95,'
+            ' "text": "I have made a decision."}')
+        self.assertIsNotNone(proposal)
+        self.assertEqual(proposal["action_type"], "speak")
+        self.assertEqual(proposal["params"].get("utterance"),
+                         "I have made a decision.")
+
+    def test_parse_proposal_stub_only_still_null_proposal(self):
+        # A text-echo with no decision object anywhere remains a
+        # well-formed null proposal (drives failure accounting, 1.11).
+        from decision_engine import DecisionEngine
+        proposal = DecisionEngine._parse_proposal(
+            '{"text": "just talking", "confidence": 0.5}')
+        self.assertIsNotNone(proposal)
+        self.assertIsNone(proposal["action_type"])
+
+    def test_parse_proposal_unknown_action_not_masked_by_stub(self):
+        # Scan-past-stubs must not resurrect the masking bug: an unknown
+        # action after a stub is still a hard reject.
+        from decision_engine import DecisionEngine
+        text = ('{"text": "echo"} {"action_type": "launch_missiles",'
+                ' "params": {}, "confidence": 1.0}')
+        self.assertIsNone(DecisionEngine._parse_proposal(text))
+
 
 class MemoryAndQueueTestCase(unittest.TestCase):
     def test_semantic_memory_sanitizes_and_chmods(self):

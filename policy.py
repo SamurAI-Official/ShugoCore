@@ -30,6 +30,11 @@ EXTERNAL_READ_ACTION_TYPES = {"news_api", "search_api"}
 # Internal, non-side-effecting actions: always safe, no consent or approval
 # required (they write only to the agent's own memory).
 OBSERVATION_ACTION_TYPES = {"record_observation"}
+# Speech output: the agent addressing the LOCAL human through the device's
+# own speaker (TTS). Speaking to the operator is not egress — nothing leaves
+# the host — and the text is sanitized like any memory write, so it rides in
+# the internal class: no consent, no approval, but always journaled.
+SPEECH_OUTPUT_ACTION_TYPES = {"speak"}
 # Robotics actions: physical side effects, require consent AND approval.
 ROBOTICS_ACTION_TYPES = {"robot_navigate", "robot_manipulate", "robot_gripper"}
 # Safety-critical robotics actions: bypass consent/approval gates.
@@ -50,6 +55,7 @@ KNOWN_ACTION_TYPES = (SIDE_EFFECTING_ACTION_TYPES | EXTERNAL_READ_ACTION_TYPES
                       | ROBOTICS_READ_ACTION_TYPES | MOBILE_ACTION_TYPES
                       | MOBILE_READ_ACTION_TYPES | NETWORK_ACTION_TYPES
                       | NETWORK_READ_ACTION_TYPES | OBSERVATION_ACTION_TYPES
+                      | SPEECH_OUTPUT_ACTION_TYPES
                       | {"multi_step_process"})
 
 

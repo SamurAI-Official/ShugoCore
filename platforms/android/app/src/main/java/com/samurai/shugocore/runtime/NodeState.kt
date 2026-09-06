@@ -33,6 +33,7 @@ interface ControlPlaneHost {
     fun onAgentStartClicked()
     fun onAgentStopClicked()
     fun onStopNodeClicked()
+    fun onSpeakTestClicked()
     fun onAgentCapToggled(capId: String, enabled: Boolean)
     fun onNetworkToggled(key: String, enabled: Boolean)
     fun onBackupUrlChanged(url: String)

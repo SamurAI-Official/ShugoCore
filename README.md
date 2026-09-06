@@ -3,8 +3,8 @@
 > A continuous orchestration layer for synthetic functional agency.
 
 [![PyPI](https://img.shields.io/pypi/v/shugocore)](https://pypi.org/project/shugocore/)
-![Release](https://img.shields.io/badge/release-v1.14.0-blue)
-![Tests](https://img.shields.io/badge/tests-533%20passing-brightgreen)
+![Release](https://img.shields.io/badge/release-v1.15.0-blue)
+![Tests](https://img.shields.io/badge/tests-550%20passing-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%E2%80%933.12-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android%20%28Termux%2FChaquopy%29-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -71,6 +71,7 @@ decoupled maintenance worker that never blocks the primary loop.
 | `human_interaction.py` | Human Interaction contract: observation/response schema, bounded interaction bus, presence state machine |
 | `runtime/VisionProvider.kt` (Android) | v1.13 camera perception: ~1 fps front-camera person presence into the interaction bus |
 | `runtime/AudioProvider.kt` (Android) | v1.14 hearing: energy VAD gating on-device STT; transcript observations into the interaction bus |
+| `runtime/TtsProvider.kt` (Android) | v1.15 speech: local TTS output with bounded queue and VAD barge-in; the `speak` action's Kotlin executor |
 | `audit.py` | Tamper-evident hash-chained audit log |
 | `model_backends.py` | Pluggable model adapters (Ollama HTTP, OpenAI-compatible, stub) |
 | `ros2_interface.py` | ROS 2 abstraction: abstract message types, Twist sanitization, stub and rclpy implementations |

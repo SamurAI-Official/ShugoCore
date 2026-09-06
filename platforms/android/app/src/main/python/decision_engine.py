@@ -39,6 +39,7 @@ from model_manager import ModelManager
 from policy import (
     OBSERVATION_ACTION_TYPES,
     SIDE_EFFECTING_ACTION_TYPES,
+    SPEECH_OUTPUT_ACTION_TYPES,
     ApprovalBroker,
     CapabilityRegistry,
     ConsentRegistry,
@@ -171,7 +172,7 @@ _KNOWN_ACTION_TYPES = {
     "api_call", "database_update", "hardware_interaction",
     "news_api", "search_api", "multi_step_process",
     "record_observation",
-}
+} | SPEECH_OUTPUT_ACTION_TYPES
 if _HAS_ROBOTICS:
     _KNOWN_ACTION_TYPES |= (ROBOTICS_ACTION_TYPES
                             | ROBOTICS_SAFETY_ACTION_TYPES
@@ -509,6 +510,26 @@ class DecisionEngine:
         """
         if not isinstance(text, str) or not text.strip():
             return None
+        # 1B models often emit a prose-echo object (e.g. {"text": "..."})
+        # BEFORE the real decision object. Remember the first actionless
+        # stub as a potential null proposal but keep scanning - stopping
+        # at the stub would blind the engine to the real proposal behind
+        # it (observed live: model proposed `speak` after a text echo and
+        # the stub early-return discarded it).
+        null_stub: Optional[Dict[str, Any]] = None
+
+        def _finish(data: Dict[str, Any],
+                    action_type: Optional[str]) -> Dict[str, Any]:
+            params = data.get("params")
+            if not isinstance(params, dict):
+                params = {}
+            try:
+                confidence = max(0.0, min(1.0, float(data.get("confidence", 0.0))))
+            except (TypeError, ValueError):
+                confidence = 0.0
+            return {"action_type": action_type, "params": params,
+                    "confidence": confidence}
+
         for blob in _proposal_json_candidates(text):
             try:
                 data = json.loads(blob)
@@ -520,22 +541,28 @@ class DecisionEngine:
             # Normalize string "null" to None (common 0.5B model behavior)
             if isinstance(action_type, str) and action_type.lower() == "null":
                 action_type = None
-            if action_type is not None and action_type not in _KNOWN_ACTION_TYPES:
+            if action_type is None:
+                if null_stub is None:
+                    null_stub = _finish(data, None)
+                continue
+            if action_type not in _KNOWN_ACTION_TYPES:
                 # Hard reject: the model proposed a real action with an
                 # unknown type. Do NOT fall through to other candidates -
                 # a degenerate repair (e.g. `{}`) would mask the invalid
                 # proposal as an action_type=None stub.
                 return None
-            params = data.get("params")
-            if not isinstance(params, dict):
-                params = {}
-            try:
-                confidence = max(0.0, min(1.0, float(data.get("confidence", 0.0))))
-            except (TypeError, ValueError):
-                confidence = 0.0
-            return {"action_type": action_type, "params": params,
-                    "confidence": confidence}
-        return None
+            finished = _finish(data, action_type)
+            if (action_type == "speak"
+                    and not finished["params"].get("utterance")
+                    and isinstance(data.get("text"), str)
+                    and data["text"].strip()):
+                # Small-model dialect: the utterance rides in the top-level
+                # `text` field instead of params.utterance (observed live).
+                # Normalize so the executor receives the words the model
+                # meant to say; sanitization/bounding stay in the handler.
+                finished["params"]["utterance"] = data["text"]
+            return finished
+        return null_stub
 
     def aggregate_outputs(self, model_outputs: List[tuple]) -> Dict[str, Any]:
         """Legacy aggregation (kept for compatibility)."""

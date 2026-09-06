@@ -208,6 +208,16 @@ class MainActivity : AppCompatActivity(), ControlPlaneHost {
             ?: agentPane.status("Node service not running")
     }
 
+    override fun onSpeakTestClicked() {
+        val svc = service()
+        if (svc == null) {
+            agentPane.status("Node service not running — speech needs the agent")
+            return
+        }
+        svc.speakTest()
+        agentPane.status("speak_test dispatched — audio should follow")
+    }
+
     override fun onStopNodeClicked() {
         Intent(this, ShugoCoreService::class.java).also { stopService(it) }
         LogBus.log(LogBus.Category.AGENT, "node stopped by user")

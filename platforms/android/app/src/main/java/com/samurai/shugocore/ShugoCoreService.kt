@@ -15,6 +15,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.samurai.shugocore.inference.*
 import com.samurai.shugocore.runtime.AudioProvider
+import com.samurai.shugocore.runtime.TtsProvider
 import com.samurai.shugocore.runtime.HumanInteractionBus
 import com.samurai.shugocore.runtime.LogBus
 import com.samurai.shugocore.runtime.ServerStats
@@ -42,6 +43,7 @@ class ShugoCoreService : Service() {
     private var capabilityManager: SensorCapabilityManager? = null
     private var visionProvider: VisionProvider? = null
     private var audioProvider: AudioProvider? = null
+    private var ttsProvider: TtsProvider? = null
     @Volatile private var agentRunning = false
     private val lastLogSeq = java.util.concurrent.atomic.AtomicInteger()
     private val lastLogSeqSeedDone = java.util.concurrent.atomic.AtomicBoolean()
@@ -76,6 +78,8 @@ class ShugoCoreService : Service() {
         capabilityManager = SensorCapabilityManager(this)
         visionProvider = VisionProvider(this)
         audioProvider = AudioProvider(this)
+        ttsProvider = TtsProvider(this)
+        ttsProvider?.start()
         createNotificationChannel()
     }
 
@@ -154,6 +158,11 @@ class ShugoCoreService : Service() {
                         null
                     }
                 }
+                // v1.15 speech output: the Python `speak` action calls back
+                // into the Kotlin TTS provider (Chaquopy reverse callback);
+                // VAD onset barges in so the human always wins the channel.
+                pyAgent?.callAttr("register_speak_listener", SpeakBridge())
+                audioProvider?.onSpeechOnset = { ttsProvider?.stopAll() }
                 LogBus.log(LogBus.Category.AGENT,
                     "agent initialized (${caps?.soc ?: Build.MODEL})")
             }
@@ -642,6 +651,7 @@ class ShugoCoreService : Service() {
         HumanInteractionBus.setPublisher(null)
         visionProvider?.stop()
         audioProvider?.stop()
+        ttsProvider?.shutdown()
         Log.i(TAG, "Service destroyed")
         LogBus.log(LogBus.Category.AGENT, "node service destroyed")
         agentRunning = false
@@ -651,5 +661,31 @@ class ShugoCoreService : Service() {
         pyAgent?.callAttr("cleanup")
         pyAgent = null
         python = null
+    }
+
+    /** AGENT tab 'Test speech': drives one speak action through the real
+     * Python gate + execution path, ending in the Kotlin TTS provider. */
+    fun speakTest() {
+        executor.execute {
+            try {
+                pyAgent?.callAttr("speak_test", "I am here. Shugo can speak.")
+            } catch (e: Exception) {
+                LogBus.log(LogBus.Category.AGENT,
+                    "speak_test failed: ${e.message}", isError = true)
+            }
+        }
+    }
+
+    /** The speech-output executor Python calls for the internal speak
+     * action. Keep the method name in sync with shugocore_agent's
+     * _execute_speak (listener.speak(text)). */
+    inner class SpeakBridge {
+        fun speak(text: String): Boolean {
+            val ok = ttsProvider?.speak(text) ?: false
+            LogBus.log(LogBus.Category.AGENT,
+                "speak: \"${text.take(48)}\" -> " +
+                    if (ok) "SPEAKING" else "dropped", isError = !ok)
+            return ok
+        }
     }
 }

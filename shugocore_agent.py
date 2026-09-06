@@ -12,10 +12,12 @@ from typing import Any, Dict, List, Optional, Tuple
 # Human Interaction contract (v1.12). Defensive import: a construction
 # failure here must degrade to a reporting agent, never kill the bootstrap.
 try:
-    from human_interaction import InteractionBus, HumanObservation
+    from human_interaction import (AgentResponse, InteractionBus,
+                                   HumanObservation)
     _HAS_INTERACTION = True
 except Exception:  # pragma: no cover
     _HAS_INTERACTION = False
+from security import sanitize_text
 
 
 logger = logging.getLogger("shugocore_android")
@@ -106,7 +108,18 @@ class AndroidAgent:
         self.capability_registry = None
         self.consent_registry = None
         self.engine: Optional[Any] = None
+        # Speech-output provider (v1.15): the Kotlin TTS bridge attaches via
+        # register_speak_listener(); the internal speak action executes
+        # through it. The decision core never imports the provider.
+        self._speak_listener: Optional[Any] = None
         self._bootstrap()
+        if self.engine is not None:
+            try:
+                self.engine.execution_layer.register_handler(
+                    "speak", self._execute_speak)
+            except Exception as exc:
+                self.log("ERROR", f"speak handler registration failed: {exc}",
+                         level="ERROR")
         self.log("AGENT", f"agent ready (device={self.device_caps}, "
                           f"api={self.api_url}, "
                           f"engine={self.engine.__class__.__name__ if self.engine else 'None'})")
@@ -341,6 +354,53 @@ class AndroidAgent:
                     "message": str(e["message"])[:220],
                 })
             return _json.dumps(clean)
+
+    # -- v1.15 speech output -------------------------------------------------
+
+    def register_speak_listener(self, listener: Any) -> None:
+        """Attach the edge speech-output provider (the Kotlin TTS bridge).
+        The decision core stays provider-agnostic: it only ever proposes the
+        internal ``speak`` action; this listener is the executor."""
+        self._speak_listener = listener
+
+    def _execute_speak(self, decision: Dict[str, Any]) -> Dict[str, Any]:
+        """Executor for the internal speak action. Text is sanitized and
+        bounded here; the listener (Kotlin TTS) performs the actual output.
+        The AgentResponse lands on the interaction bus so the UI and telemetry
+        tell the truth about what the agent said."""
+        params = decision.get("params") or {}
+        text = sanitize_text(str(params.get("text") or ""), 200)
+        if not text:
+            return {"status": "refused", "reason": "empty speech content"}
+        listener = self._speak_listener
+        if listener is None:
+            return {"status": "no_output",
+                    "reason": ("no speech provider attached; actions are "
+                               "never simulated")}
+        try:
+            delivered = bool(listener.speak(text))
+        except Exception as exc:
+            self.log("ERROR", f"speak listener failed: {type(exc).__name__}",
+                     level="ERROR")
+            return {"status": "error", "message": type(exc).__name__}
+        if self.interaction is not None:
+            self.interaction.record_agent_response(AgentResponse(
+                type="speech", content=text, target="user"))
+        return {"status": "success", "spoken": text, "delivered": delivered}
+
+    def speak_test(self, text: Optional[str] = None) -> Dict[str, Any]:
+        """Operator control (AGENT tab 'Test speech'): drives one speak
+        action through the REAL policy gate + execution path."""
+        content = sanitize_text(
+            str(text or "I am here. Shugo can speak."), 200)
+        self.log("AGENT", f"speak_test: {content!r}")
+        if self.engine is None:
+            return {"status": "error", "message": "engine unavailable"}
+        decision = {"action_type": "speak",
+                    "params": {"text": content},
+                    "confidence": 1.0,
+                    "proposal_source": "operator_test"}
+        return self.engine._execute_gated(decision)
 
     def update_telemetry_json(self, data_json: Optional[str] = None) -> None:
         """Receive a ThermalMonitor snapshot as a JSON string. Using JSON

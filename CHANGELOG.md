@@ -4,6 +4,54 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.15.0] - 2026-09-06 — speech: the agent talks back (local TTS)
+
+### The first SpeechOutput provider
+
+- **New `runtime/TtsProvider.kt`** — the roadmap's closing side:
+  agent response → TTS → speaker → human. Honest liveness (`isSpeaking`
+  only while an utterance is truly on the speaker), a bounded queue
+  (max 3 pending — no runaway monologue), and **barge-in**: the audio
+  provider's VAD onset hook stops playback instantly, so the human always
+  wins the audio channel.
+- **The `speak` internal action** — new `SPEECH_OUTPUT_ACTION_TYPES` policy
+  class: addressing the local operator through the device speaker is not
+  egress, so it needs no consent or approval — but the text is sanitized
+  and bounded, the execution is journaled, and without an attached
+  provider the dispatcher answers `not_implemented` (actions are never
+  simulated).
+- **Chaquopy reverse callback** — the service registers a `SpeakBridge`
+  listener with the Python agent; `_execute_speak` sanitizes, calls the
+  bridge, and records the `AgentResponse` on the interaction bus. The
+  decision core stays provider-agnostic: it only proposes `speak`; the
+  Kotlin edge performs the output.
+
+### Truth rows and model schema
+
+- **AGENT tab `Speech` row** — what the agent last said (`last_spoken`
+  from the interaction bus), `—` until it has actually spoken.
+- **`Test speech` control** — drives one `speak` action through the REAL
+  policy gate + execution path into TTS: the full chain is verifiable
+  without waiting for the model to choose speech.
+- **Model schema grows automatically** — `available_action_types()` now
+  includes `speak` on speech-capable nodes, so the prompt offers it only
+  where a real executor exists (desktop builds without TTS never see it).
+
+### Proposal parser: scan past the prose echo (found live, on-device)
+
+- During verification the 1B model **spontaneously proposed `speak`** —
+  but the output led with a prose-echo object (`{"text": …}`) and the
+  parser returned that actionless stub immediately, never reaching the
+  real decision behind it. `_parse_proposal` now **remembers the first
+  actionless stub and keeps scanning**: a real action later in the text
+  wins; a stub-only output still yields a well-formed null proposal
+  (failure accounting unchanged); the unknown-action hard reject is
+  preserved so degenerate candidates can never mask an invalid proposal.
+- `"speak"` added to the engine's known action types via
+  `SPEECH_OUTPUT_ACTION_TYPES` — before this, the model's genuine speech
+  proposals would have been hard-rejected as unknown even if scanned.
+
+## [1.14.0] - 2026-09-06 — hearing: VAD-gated on-device speech
 ## [1.14.0] - 2026-09-06 — hearing: VAD-gated on-device speech
 
 ### The first AudioInput provider

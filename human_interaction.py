@@ -210,6 +210,10 @@ class InteractionBus:
         self._rejected = 0
         self._last_timestamp = 0.0
         self._seq = 0
+        # AgentResponse side of the contract (v1.15 speech output): what the
+        # agent last said to the human, and how many responses it emitted.
+        self._last_response: Optional[Dict[str, Any]] = None
+        self._response_count = 0
 
     # -- ingestion ------------------------------------------------------------
 
@@ -272,6 +276,24 @@ class InteractionBus:
         'rejected' means 'refused at the contract boundary'."""
         with self._lock:
             self._rejected += 1
+
+    def record_agent_response(self, response: Any) -> Tuple[bool, str]:
+        """Record one AgentResponse — the agent's output toward the human
+        (v1.15: the speak action). Same honesty rules as observations:
+        validated, sanitized, bounded, never raising."""
+        if not isinstance(response, AgentResponse):
+            with self._lock:
+                self._rejected += 1
+            return False, "not an AgentResponse"
+        ok, reason = response.validate()
+        if not ok:
+            with self._lock:
+                self._rejected += 1
+            return False, reason
+        with self._lock:
+            self._last_response = response.to_dict()
+            self._response_count += 1
+        return True, "ok"
 
     def add_listener(self, listener: Callable[[Dict[str, Any]], None]) -> None:
         with self._lock:
@@ -350,4 +372,12 @@ class InteractionBus:
                     if last_speech is not None
                     and last_speech.get("payload", {}).get("transcript")
                     else None),
+                # Speech output truth: what the agent last said (None until
+                # a speak action has actually executed).
+                "last_spoken": (
+                    self._last_response.get("content")
+                    if self._last_response is not None
+                    and self._last_response.get("type") == "speech"
+                    else None),
+                "agent_responses": self._response_count,
             }

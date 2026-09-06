@@ -39,6 +39,11 @@ class ServerPane(
     private val modelLine: TextView
     private val progress: ProgressBar
     private val backupUrl: EditText
+    private val probeParse: TextView
+    private val probeClass: TextView
+    private val probeLatency: TextView
+    private val probeModel: TextView
+    private val probeRaw: TextView
 
     init {
         orientation = VERTICAL
@@ -117,6 +122,23 @@ class ServerPane(
         }
         col.addView(backupUrl)
 
+        // -- MODEL TEST ---------------------------------------------------------
+        col.addView(Ui.section(context, "Model test"))
+        probeParse = col.addKv("Parse")
+        probeClass = col.addKv("Class")
+        probeLatency = col.addKv("Latency")
+        probeModel = col.addKv("Model")
+        probeRaw = TextView(context).apply {
+            textSize = 11f
+            typeface = android.graphics.Typeface.MONOSPACE
+            setTextColor(Ui.DIM)
+            setPadding(0, Ui.dp(context, 2), 0, 0)
+        }
+        col.addView(probeRaw)
+        col.addView(Ui.button(context, "Run model test").apply {
+            setOnClickListener { host.onModelProbeClicked() }
+        })
+
         // -- Controls -----------------------------------------------------------
         col.addView(Ui.section(context, "Controls"))
         val row = LinearLayout(context).apply { orientation = HORIZONTAL }
@@ -172,6 +194,31 @@ class ServerPane(
         latency.text = if (running) "${Ui.num(stats, "last_latency_ms")} ms" else "—"
         requests.text = Ui.num(stats, "requests").toString()
         tokens.text = Ui.num(stats, "tokens").toString()
+
+        // MODEL TEST panel: honest failure classes, never collapsed.
+        val probe = Ui.sub(snap, "model_probe")
+        if (probe == null || Ui.str(probe, "error_class", "").isEmpty()) {
+            probeParse.text = "—"; probeClass.text = "—"
+            probeLatency.text = "—"; probeModel.text = "—"; probeRaw.text = ""
+        } else {
+            val parsed = Ui.bool(probe, "parse_valid")
+            val noResponse = Ui.str(probe, "error_class") == "no_response"
+            probeParse.text = when {
+                parsed -> "VALID"
+                noResponse -> "—"   // nothing came back: nothing to parse
+                else -> "INVALID"
+            }
+            probeParse.setTextColor(when {
+                parsed -> Ui.OK
+                noResponse -> Ui.DIM
+                else -> Ui.BAD
+            })
+            probeClass.text = Ui.str(probe, "error_class")
+            probeClass.setTextColor(if (Ui.bool(probe, "ok")) Ui.OK else Ui.WARN)
+            probeLatency.text = "${Ui.num(probe, "latency_ms")} ms"
+            probeModel.text = Ui.str(probe, "model").ifEmpty { "—" }
+            probeRaw.text = Ui.str(probe, "raw")
+        }
 
         refreshModelText()
     }

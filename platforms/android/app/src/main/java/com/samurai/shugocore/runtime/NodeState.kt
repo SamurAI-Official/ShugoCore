@@ -36,4 +36,5 @@ interface ControlPlaneHost {
     fun onAgentCapToggled(capId: String, enabled: Boolean)
     fun onNetworkToggled(key: String, enabled: Boolean)
     fun onBackupUrlChanged(url: String)
+    fun onModelProbeClicked()
 }

@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 SIDE_EFFECTING_ACTION_TYPES = {"api_call", "database_update", "hardware_interaction"}
 # External reads: allowlisted egress + rate limiting, no consent required.
 EXTERNAL_READ_ACTION_TYPES = {"news_api", "search_api"}
+# Internal, non-side-effecting actions: always safe, no consent or approval
+# required (they write only to the agent's own memory).
+OBSERVATION_ACTION_TYPES = {"record_observation"}
 # Robotics actions: physical side effects, require consent AND approval.
 ROBOTICS_ACTION_TYPES = {"robot_navigate", "robot_manipulate", "robot_gripper"}
 # Safety-critical robotics actions: bypass consent/approval gates.
@@ -46,7 +49,8 @@ KNOWN_ACTION_TYPES = (SIDE_EFFECTING_ACTION_TYPES | EXTERNAL_READ_ACTION_TYPES
                       | ROBOTICS_ACTION_TYPES | ROBOTICS_SAFETY_ACTION_TYPES
                       | ROBOTICS_READ_ACTION_TYPES | MOBILE_ACTION_TYPES
                       | MOBILE_READ_ACTION_TYPES | NETWORK_ACTION_TYPES
-                      | NETWORK_READ_ACTION_TYPES | {"multi_step_process"})
+                      | NETWORK_READ_ACTION_TYPES | OBSERVATION_ACTION_TYPES
+                      | {"multi_step_process"})
 
 
 

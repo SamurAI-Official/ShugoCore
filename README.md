@@ -3,8 +3,8 @@
 > A continuous orchestration layer for synthetic functional agency.
 
 [![PyPI](https://img.shields.io/pypi/v/shugocore)](https://pypi.org/project/shugocore/)
-![Release](https://img.shields.io/badge/release-v1.10.0-blue)
-![Tests](https://img.shields.io/badge/tests-498%20passing-brightgreen)
+![Release](https://img.shields.io/badge/release-v1.11.0-blue)
+![Tests](https://img.shields.io/badge/tests-504%20passing-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%E2%80%933.12-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android%20%28Termux%2FChaquopy%29-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -218,7 +218,10 @@ indicators.
   READY / API READY / AGENT READY`), live request/token/latency counters, a
   GGUF model catalog with download/select, and a **backup-server fallback**:
   stopping the local stack while a desktop backup URL is configured re-points
-  the agent at the backup and keeps it running.
+  the agent at the backup and keeps it running. A **MODEL TEST** panel runs
+  one controlled decision round-trip and shows Parse VALID/INVALID, the
+  failure class (no response / invalid protocol / valid protocol), latency
+  and the truncated raw response.
 - **AGENT** — subsystem statuses, the current cycle with the last
   decision / action / evaluation taken from the Tier 1 head, the
   OBSERVE→GATE→DECIDE→EXECUTE→EVALUATE→RECORD→CONSOLIDATE pipeline with only
@@ -240,8 +243,13 @@ contract** — `SUCCESS`, `NO_ACTION` (a model that answers but proposes
 nothing executable is a healthy, recorded cycle, not an error),
 `POLICY_BLOCK`, `GOVERNOR_BLOCK`, `TASK_FAILURE`, `BACKEND_FAILURE` (the
 model ensemble was unreachable), `IN_FLIGHT`, `ENGINE_FAILURE` — and the
-stage trail shows only the stages that actually ran. The Kotlin↔Python
-boundary speaks JSON (`get_status_json`, `recent_logs_json`,
+stage trail shows only the stages that actually ran. The decision prompt
+itself is **generated from the engine's real action schema**
+(`available_action_types()`), so the model can only ever be offered actions
+policy and execution actually support — including the always-safe
+`record_observation` internal action, which is also the rule-based
+fallback's target after three consecutive unproductive model cycles. The
+Kotlin↔Python boundary speaks JSON (`get_status_json`, `recent_logs_json`,
 `update_capabilities_json`, …) so no state is lost to crossing the runtime
 edge.
 
@@ -529,7 +537,7 @@ for fact in candidates:
 ## Testing
 
 ```bash
-python -m unittest discover -s tests -v     # 498 tests, no native deps
+python -m unittest discover -s tests -v     # 504 tests, no native deps
 ```
 
 Beyond security and integration regression tests (v1.2.0), the suite includes

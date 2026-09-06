@@ -30,6 +30,7 @@ from policy import (
     MOBILE_READ_ACTION_TYPES,
     NETWORK_ACTION_TYPES,
     NETWORK_READ_ACTION_TYPES,
+    OBSERVATION_ACTION_TYPES,
     ROBOTICS_ACTION_TYPES,
     ROBOTICS_READ_ACTION_TYPES,
     ROBOTICS_SAFETY_ACTION_TYPES,
@@ -77,7 +78,8 @@ class ExecutionLayer:
                    | ROBOTICS_ACTION_TYPES | ROBOTICS_SAFETY_ACTION_TYPES
                    | ROBOTICS_READ_ACTION_TYPES
                    | MOBILE_ACTION_TYPES | MOBILE_READ_ACTION_TYPES
-                   | NETWORK_ACTION_TYPES | NETWORK_READ_ACTION_TYPES)
+                   | NETWORK_ACTION_TYPES | NETWORK_READ_ACTION_TYPES
+                   | OBSERVATION_ACTION_TYPES)
         if action_type not in allowed:
             raise ValueError(f"handlers are only allowed for allowed types "
                              f"{sorted(allowed)}")
@@ -129,6 +131,14 @@ class ExecutionLayer:
                 return {"status": "refused",
                         "reason": ("multi_step_process must be expanded and "
                                    "individually gated by the decision engine")}
+            if action_type == "record_observation":
+                handler = self._handlers.get("record_observation")
+                if handler is None:
+                    return {"status": "not_implemented",
+                            "reason": ("no handler registered for "
+                                       "'record_observation'; actions are "
+                                       "never simulated")}
+                return handler(decision)
             return {"status": "error", "message": "Unknown action type"}
         except Exception as exc:  # sanitized: never leak internals to callers
             logger.error(f"Execution failed: {exc}")

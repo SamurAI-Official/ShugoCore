@@ -37,6 +37,7 @@ from memory_system import CoreIdentity, MemoryManager, SemanticMemory
 from model_backends import create_backend, validate_model_name
 from model_manager import ModelManager
 from policy import (
+    OBSERVATION_ACTION_TYPES,
     SIDE_EFFECTING_ACTION_TYPES,
     ApprovalBroker,
     CapabilityRegistry,
@@ -169,6 +170,7 @@ def _proposal_json_candidates(text: str):
 _KNOWN_ACTION_TYPES = {
     "api_call", "database_update", "hardware_interaction",
     "news_api", "search_api", "multi_step_process",
+    "record_observation",
 }
 if _HAS_ROBOTICS:
     _KNOWN_ACTION_TYPES |= (ROBOTICS_ACTION_TYPES
@@ -226,6 +228,7 @@ class DecisionEngine:
                  robotics_handler: Optional[Any] = None,
                  mobile_handler: Optional[Any] = None,
                  shogonet_handler: Optional[Any] = None,
+                 memory: Optional[Any] = None,
                  log_dir: Optional[str] = None):
         self.models = models
         self.logger = logging.getLogger(__name__)
@@ -305,6 +308,8 @@ class DecisionEngine:
             for action_type in (NETWORK_ACTION_TYPES | NETWORK_READ_ACTION_TYPES):
                 self.execution_layer.register_handler(
                     action_type, self.shogonet_handler.handle)
+        self.execution_layer.register_handler(
+            "record_observation", self._record_observation_action)
         self.model_manager = ModelManager(models)
         self.reinforcement_learning = ReinforcementLearning(self.model_manager)
         self.task_manager = TaskManager()
@@ -324,12 +329,26 @@ class DecisionEngine:
         if semantic is None:
             pg_mem = _get_pg_memory()
             semantic = pg_mem(memory_db_path) if pg_mem else SemanticMemory(db_path=memory_db_path)
-        self.memory = MemoryManager(
-            agent_id="decision_engine",
-            semantic=semantic,
-            core=core,
-            episodic_journal_path=episodic_journal_path,
-        )
+        # A caller-supplied MemoryManager (e.g. the Android agent shell's) is
+        # shared, NOT replaced: the agent's observations and the engine's
+        # decision/execution events must land in ONE Tier 1 so the control
+        # plane's cycle enrichment and the episodic journal see the full
+        # picture. When shared, the caller owns the consolidation worker
+        # (auto_start=False on Android; _run_consolidation drives it).
+        if memory is not None:
+            self.memory = memory
+            # Keep the Tier 3 consent checker bound to THIS engine's consent
+            # registry even when the MemoryManager is caller-owned.
+            shared_core = getattr(self.memory, "core", None)
+            if shared_core is not None and hasattr(shared_core, "set_consent_checker"):
+                shared_core.set_consent_checker(self.consents.has_grant)
+        else:
+            self.memory = MemoryManager(
+                agent_id="decision_engine",
+                semantic=semantic,
+                core=core,
+                episodic_journal_path=episodic_journal_path,
+            )
 
         # Wire deterministic fallbacks into the executor and the memory
         # worker watchdog (both are collaborator-created, so attach now).
@@ -361,6 +380,25 @@ class DecisionEngine:
         """Selects models based on task type or other criteria."""
         return self.model_manager.select_models(task)
 
+    def _record_observation_action(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Executor for the internal record_observation action: writes the
+        model's (or the fallback's) note into Tier 1. Non-side-effecting by
+        construction — it touches nothing outside the agent's own memory."""
+        params = payload.get("params") or {}
+        note = sanitize_text(str(params.get("text") or params.get("reason")
+                                 or "observation"), 200)
+        self.memory.record_event("observation_recorded", {"text": note})
+        return {"status": "success", "recorded": True, "text": note}
+
+    def available_action_types(self) -> List[str]:
+        """The action schema the model may propose: exactly what this engine
+        can execute. The decision prompt is generated from this, so the
+        model-facing protocol cannot drift from the real executor set — the
+        Android tree (without robotics/mobile/network handlers) exposes its
+        true subset automatically."""
+        return sorted({"record_observation", "multi_step_process"}
+                      | set(self.execution_layer._handlers.keys()))
+
     def make_decision(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """Makes a decision from structured model proposals + memory context."""
         selected_models = self.select_models(task)
@@ -380,7 +418,8 @@ class DecisionEngine:
                 continue
             try:
                 output = self.subconscious.get_model_output(
-                    model_id, task, backend=self._backend_for(model))
+                    model_id, task, backend=self._backend_for(model),
+                    action_schema=self.available_action_types())
             except Exception as exc:
                 self.logger.error(f"Model {model_id} failed: {type(exc).__name__}")
                 output = ""
@@ -391,33 +430,39 @@ class DecisionEngine:
                     self.model_manager.get_model_performance(model_id)
                 proposals.append((model_id, proposal, score))
 
-        if proposals:
-            proposals.sort(key=lambda entry: entry[1].get("confidence", 0.0) * entry[2],
-                           reverse=True)
-            source_id, best, _ = proposals[0]
+        executable = [entry for entry in proposals
+                      if entry[1].get("action_type") is not None]
+        if executable:
+            executable.sort(key=lambda entry: entry[1].get("confidence", 0.0) * entry[2],
+                            reverse=True)
+            source_id, best, _ = executable[0]
             decision: Dict[str, Any] = {
                 "action_type": best.get("action_type"),
                 "params": best.get("params") or {},
                 "confidence": best.get("confidence", 0.0),
                 "proposal_source": source_id,
             }
-            self._model_failures = 0  # reset on success
+            # Reset only on an EXECUTABLE proposal: a well-formed
+            # {"action_type": null} is the model saying "nothing to do" —
+            # healthy once, but a model that ONLY ever says null must still
+            # reach the rule-based fallback, so it never resets the counter.
+            self._model_failures = 0
         else:
             self._model_failures += 1
             if self._model_failures >= 3:
-                # Rule-based fallback: the on-device model (0.5B Q4) repeatedly
-                # regurgitates input context instead of emitting valid decision
-                # JSON. After N consecutive parse failures, emit a safe "observe"
-                # action so the agent loop keeps cycling and journaling instead
-                # of stalling on no_viable_action. Low confidence signals that
-                # this is heuristic, not a real model proposal.
+                # Rule-based fallback: the on-device model repeatedly fails to
+                # propose an executable action (garbage, truncation, or a
+                # perpetual null). Emit the one action that is always safe and
+                # always executable so the loop stays productive and honest.
+                # Low confidence signals that this is heuristic, not a real
+                # model proposal.
                 self.logger.warning(
-                    f"Model failed to propose a valid action "
+                    f"Model failed to propose an executable action "
                     f"({self._model_failures}x consecutive); "
                     f"using rule-based fallback")
                 decision = {
-                    "action_type": "multi_step_process",
-                    "params": {"action": "observe",
+                    "action_type": "record_observation",
+                    "params": {"text": "routine observation (rule-based fallback)",
                                "reason": "model_fallback",
                                "failures": self._model_failures},
                     "confidence": 0.1,
@@ -425,7 +470,9 @@ class DecisionEngine:
                 }
             else:
                 decision = {"action_type": None, "params": {},
-                            "confidence": 0.0, "proposal_source": None}
+                            "confidence": 0.0,
+                            "proposal_source": ("null_proposal" if proposals
+                                                else None)}
 
         decision["model_outputs"] = model_outputs
         decision["aggregated_output"] = sum(score for _, _, score in proposals)
@@ -605,6 +652,8 @@ class DecisionEngine:
             detail = "no viable action proposed by the model ensemble"
             if classes:
                 detail += f"; call_errors={','.join(classes)}"
+            if decision.get("proposal_source") == "null_proposal":
+                detail += "; model returned a well-formed null proposal"
             self.memory.record_event(
                 "no_viable_action",
                 {"task_type": sanitize_text(task.get("type", "unknown"), 64),

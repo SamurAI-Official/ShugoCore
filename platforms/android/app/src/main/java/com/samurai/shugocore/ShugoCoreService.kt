@@ -424,6 +424,47 @@ class ShugoCoreService : Service() {
         }
     }
 
+    /** MODEL TEST result (primitives only), rendered on the SERVER tab. */
+    @Volatile private var modelProbe: Map<String, Any> = emptyMap()
+
+    /** MODEL TEST: one controlled decision round-trip through the real
+     *  backend; the result is stored and shown in the node snapshot. */
+    fun runModelProbe(onDone: ((String) -> Unit)? = null) {
+        val agent = pyAgent
+        if (agent == null) {
+            modelProbe = mapOf("ok" to false, "error_class" to "no_response",
+                               "raw" to "agent not ready")
+            onDone?.let { cb -> handler.post { cb("agent not ready") } }
+            return
+        }
+        executor.execute {
+            var message: String
+            try {
+                val json = agent.callAttr("probe_model_json")?.toString() ?: "{}"
+                val obj = org.json.JSONObject(json)
+                val map = LinkedHashMap<String, Any>()
+                for (key in listOf("ok", "error_class", "parse_valid", "action_type",
+                                   "confidence", "latency_ms", "chars", "model", "raw")) {
+                    when (val v = obj.opt(key)) {
+                        null -> map[key] = if (key == "ok" || key == "parse_valid") false else ""
+                        is Boolean, is Int, is Long, is Double, is String -> map[key] = v
+                        else -> map[key] = v.toString()
+                    }
+                }
+                modelProbe = map
+                message = if (obj.optBoolean("ok")) "probe ok"
+                          else "probe: ${obj.optString("error_class")}"
+            } catch (e: Exception) {
+                Log.w(TAG, "probe_model failed: ${e.message}")
+                modelProbe = mapOf("ok" to false, "error_class" to "no_response",
+                                   "raw" to (e.message ?: "probe failed"))
+                message = "probe failed"
+            }
+            LogBus.log(LogBus.Category.MODEL, "MODEL TEST: $message")
+            onDone?.let { cb -> handler.post { cb(message) } }
+        }
+    }
+
     /** Full node snapshot for the control-plane UI (cheap, main-thread safe). */
     fun getNodeSnapshot(): Map<String, Any> {
         val thermal = thermalMonitor?.getThermalInfo()
@@ -444,6 +485,7 @@ class ShugoCoreService : Service() {
                 "cpu_temp" to (thermal?.cpuTemp ?: -1f),
                 "state" to (thermal?.state?.name ?: "UNKNOWN")),
             "capabilities" to capabilitySnapshotMaps(),
+            "model_probe" to modelProbe,
         )
     }
 

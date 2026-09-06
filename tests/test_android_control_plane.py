@@ -306,6 +306,64 @@ class TestAndroidControlPlane(unittest.TestCase):
         result = agent.get_status()["last_cycle_result"]
         self.assertEqual(result["outcome"], "BACKEND_FAILURE")
 
+    # -- action schema + null-proposal accounting (Phase 3) --------------------
+
+    def test_null_proposals_count_toward_fallback(self):
+        """A well-formed {"action_type": null} must NOT reset the failure
+        counter: a model that only ever says null must still reach the
+        rule-based fallback instead of looping NO_ACTION forever."""
+        agent = self._make()
+        engine = agent.engine
+        engine.subconscious.get_model_output = mock.MagicMock(return_value=(
+            '{"action_type": null, "params": {}, "confidence": 0.0}'))
+        for i in range(1, 4):
+            engine.make_decision({"type": "t", "content": "x"})
+            self.assertEqual(engine._model_failures, i)
+        decision = engine.make_decision({"type": "t", "content": "x"})
+        self.assertEqual(decision["action_type"], "record_observation")
+        self.assertEqual(decision["proposal_source"], "rule_fallback")
+
+    def test_record_observation_executes_without_consent(self):
+        """The internal observation action is non-side-effecting: it passes
+        the gate with NO consent grant and lands a real event in Tier 1."""
+        agent = self._make()
+        engine = agent.engine
+        engine.subconscious.get_model_output = mock.MagicMock(return_value=(
+            '{"action_type": "record_observation", '
+            '"params": {"text": "hello from the model"}, "confidence": 0.9}'))
+        result = engine.execute_task({"type": "t", "content": "x"})
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(result["recorded"])
+        self.assertFalse(engine.consents.has_grant("record_observation"))
+        events = [e["type"] for e in agent.memory.tier1.recent(10)]
+        self.assertIn("observation_recorded", events)
+        self.assertIn("tool_execution", events)
+
+    def test_no_viable_detail_reports_null_proposal(self):
+        agent = self._make()
+        engine = agent.engine
+        engine.subconscious.get_model_output = mock.MagicMock(return_value=(
+            '{"action_type": null, "params": {}, "confidence": 0.0}'))
+        engine.execute_task({"type": "t", "content": "x"})
+        events = [e for e in agent.memory.tier1.recent(5)
+                  if e["type"] == "no_viable_action"]
+        self.assertTrue(events)
+        self.assertIn("null proposal", events[-1]["payload"]["detail"])
+
+    def test_decision_prompt_generated_from_action_schema(self):
+        """The model-facing protocol is generated from the engine's real
+        executor set — it can never drift from what policy/execution support."""
+        agent = self._make()
+        schema = agent.engine.available_action_types()
+        self.assertIn("record_observation", schema)
+        self.assertIn("multi_step_process", schema)
+        self.assertNotIn("robot_navigate", schema)  # no handler registered
+        from subconscious import _build_decision_prompt
+        prompt = _build_decision_prompt("TASK", schema)
+        self.assertIn("record_observation", prompt)
+        self.assertIn("multi_step_process", prompt)
+        self.assertNotIn("robot_navigate", prompt)
+
     # -- log buffer --------------------------------------------------------------
 
     def test_recent_logs_seq_monotonic(self):

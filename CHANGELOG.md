@@ -4,6 +4,51 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.11.0] - 2026-09-05 — model protocol unification + structural fixes
+
+### Model protocol (decision prompt ↔ real executor set)
+
+- **The decision prompt is now GENERATED from the engine's real action
+  schema** (`DecisionEngine.available_action_types()`), ending the three-list
+  drift the model-facing protocol had suffered: the prompt can no longer
+  advertise actions the policy/execution layers cannot honor.
+- **New internal action `record_observation`** (non-side-effecting: writes to
+  the agent's own Tier 1 only — no consent, no approval, no egress). It gives
+  the model an always-executable action and demonstrates the full
+  OBSERVE→GATE→DECIDE→EXECUTE→EVALUATE→RECORD cycle on-device.
+- **Null-proposal accounting fixed**: a well-formed `{"action_type": null}`
+  no longer resets the consecutive-failure counter (previously a model that
+  only ever said null could loop NO_ACTION forever, never reaching the
+  fallback). Only *executable* proposals reset it; null proposals count as
+  failures and the journal detail says so.
+- **Rule-based fallback now emits `record_observation`** (previously
+  `multi_step_process` with no steps, which could only refuse): after 3
+  consecutive failures the loop becomes productive again with a real
+  execution, evaluation and record.
+
+### Observability
+
+- **MODEL TEST panel on the SERVER tab**: one controlled decision round-trip
+  through the real backend with Parse VALID/INVALID, failure class
+  (no_response / invalid_protocol / valid_protocol / valid_protocol_null),
+  latency, model, and the truncated raw response — the three failure classes
+  can no longer collapse into one visible outcome.
+- **Detail row on the AGENT tab** fed by `last_cycle_result.detail`.
+
+### Structural
+
+- **One shared MemoryManager**: the Android agent shell now passes its
+  MemoryManager into the DecisionEngine instead of letting the engine build
+  a second one. Agent observations and engine decisions/executions land in
+  ONE Tier 1 (the control plane's cycle enrichment can finally see engine
+  events), `android_observation` events reach the episodic journal, and the
+  Tier 3 consent checker is rebound to the engine's consent registry.
+- **`tests/test_android_tree_sync.py`**: byte-identity guard — every shared
+  root↔bundled module must be identical, failing the suite on single-sided
+  edits (the drift class that once shipped a stale DecisionEngine).
+- CHANGELOG normalized: strictly descending releases, duplicate `[1.4.0]`
+  header merged.
+
 ## [1.10.0] - 2026-09-05 — validation-ladder phases 0–1
 
 ### Phase 0 — Agent pane truth
@@ -343,76 +388,6 @@ HTTP responses. The full chain now runs real tokens:
 - Version metadata aligned at 1.8.0 across `version.py`, `pyproject.toml`,
   and `build.gradle`.
 
-## [1.4.0] - 2026-09-03
-## [1.4.0] - 2026-09-03
-
-### Added — fleet-shared Tier 2 memory (PostgreSQL + pgvector)
-
-- **`pg_memory.py`** — `PgSemanticMemory`, a drop-in PostgreSQL + pgvector
-  backend for Tier 2 semantic memory, enabling the persistence half of the
-  Shogunet memory mesh: several agents (or planning nodes) pointing at the
-  same DSN see one consistent knowledge base. API parity with the SQLite
-  `SemanticMemory` (store_fact / search / reinforce / decay / prune /
-  get_fact / extract_entities / facts_about / related_entities /
-  entity_names), so it plugs directly into
-  `DecisionEngine(semantic_memory=...)` and `MemoryManager(semantic=...)`.
-- **`open_semantic_memory()` factory** — single storage knob for operators:
-  a `postgres://` or `postgresql://` DSN selects `PgSemanticMemory`; any
-  other value preserves the historical local SQLite behavior.
-  `DecisionEngine` routes `memory_db_path` through it, so switching a fleet
-  to shared memory is a one-line config change.
-- **Embedding parity** — the pg backend embeds with the same deterministic
-  hashing embedding as the SQLite backend, so facts written by one agent on
-  one backend are retrievable with identical similarity scores by another
-  agent on the other backend.
-- **Search pushed down to pgvector** — cosine distance (`<=>`) is computed
-  server-side (`similarity = 1 - distance`), with an optional HNSW index
-  recipe for fleet scale documented in the module docstring.
-- **Fail-closed, no silent stub** — construction raises with actionable
-  instructions if psycopg2 is missing (`pip install 'shugocore[postgres]'`)
-  or the pgvector extension is unavailable (`CREATE EXTENSION vector;`).
-  A fleet-shared memory that quietly failed to persist would violate the
-  Tier 2 invariants, so none exists.
-- **`postgres` optional dependency** — `pip install 'shugocore[postgres]'`
-  installs psycopg2-binary; no new required dependencies for existing users.
-
-### Hardened — fleet memory boundary
-
-- Table identifiers (`table_prefix`) are strictly validated
-  (`^[a-z][a-z0-9_]{0,40}$`) before interpolation into DDL/DML.
-- Tier 2 only: the pg store never touches Tier 0/1 (per-agent) or Tier 3
-  (read-only identity), preserving the memory invariants (N0-N1) across the
-  fleet.
-
-## [1.5.0] - 2026-09-03
-
-### Added — robot simulation framework for public test data
-
-- **`simulation/` module** — Physics-based robot simulation framework with
-  pluggable backends (MuJoCo, stub fallback) for generating public benchmark data.
-- **`MuJoCoSimulation`** — Full MuJoCo physics backend (`pip install 'shugocore[simulation]'`).
-  Loads MJCF/URDF models, provides joint control, IMU sensing, and deterministic
-  seeded simulation. Falls back to `StubSimulation` when MuJoCo is not installed.
-- **`StubSimulation`** — Deterministic in-memory simulation for testing without
-  physics dependencies. Integrates joint commands into positions with simple
-  kinematics.
-- **Robot model loaders** — Support for multiple open-source robot platforms:
-  - `BerkeleyHumanoidLite` — 24-DOF humanoid from UC Berkeley (MIT license)
-  - `Reachy2` — Humanoid by Pollen Robotics (Apache-2.0 license)
-  - `UnitreeG1` — Compact humanoid by Unitree Robotics (BSD-3-Clause license)
-- **Standardized test scenarios** — Reproducible benchmark scenarios producing
-  public JSONL test data:
-  - `WalkToTarget` — Navigation efficiency and path planning
-  - `BalanceTest` — Stability under perturbations
-  - `EmergencyStop` — Safety response measurement
-- **`run_benchmark()`** — Execute full benchmark suite on any robot, output
-  results to JSONL for public dataset publication.
-- **`SimulationResult`** — Standardized result format with serialization for
-  public test data distribution.
-- **`simulation` optional dependency** — `pip install 'shugocore[simulation]'`
-  installs `mujoco>=3.0` and `numpy>=1.24`; no new required dependencies.
-  installs `mujoco>=3.0` and `numpy>=1.24`; no new required dependencies.
-
 ## [1.7.0] - 2026-09-03
 
 ### Added — Android native layer
@@ -462,6 +437,75 @@ HTTP responses. The full chain now runs real tokens:
   during the continuous loop. Dream stats exposed via `status()`.
 - **Tests** — 16 new tests covering dream consolidation, insight extraction,
   identity mutation clamping, and write-gate enforcement.
+
+## [1.5.0] - 2026-09-03
+
+### Added — robot simulation framework for public test data
+
+- **`simulation/` module** — Physics-based robot simulation framework with
+  pluggable backends (MuJoCo, stub fallback) for generating public benchmark data.
+- **`MuJoCoSimulation`** — Full MuJoCo physics backend (`pip install 'shugocore[simulation]'`).
+  Loads MJCF/URDF models, provides joint control, IMU sensing, and deterministic
+  seeded simulation. Falls back to `StubSimulation` when MuJoCo is not installed.
+- **`StubSimulation`** — Deterministic in-memory simulation for testing without
+  physics dependencies. Integrates joint commands into positions with simple
+  kinematics.
+- **Robot model loaders** — Support for multiple open-source robot platforms:
+  - `BerkeleyHumanoidLite` — 24-DOF humanoid from UC Berkeley (MIT license)
+  - `Reachy2` — Humanoid by Pollen Robotics (Apache-2.0 license)
+  - `UnitreeG1` — Compact humanoid by Unitree Robotics (BSD-3-Clause license)
+- **Standardized test scenarios** — Reproducible benchmark scenarios producing
+  public JSONL test data:
+  - `WalkToTarget` — Navigation efficiency and path planning
+  - `BalanceTest` — Stability under perturbations
+  - `EmergencyStop` — Safety response measurement
+- **`run_benchmark()`** — Execute full benchmark suite on any robot, output
+  results to JSONL for public dataset publication.
+- **`SimulationResult`** — Standardized result format with serialization for
+  public test data distribution.
+- **`simulation` optional dependency** — `pip install 'shugocore[simulation]'`
+  installs `mujoco>=3.0` and `numpy>=1.24`; no new required dependencies.
+  installs `mujoco>=3.0` and `numpy>=1.24`; no new required dependencies.
+
+## [1.4.0] - 2026-09-03
+
+### Added — fleet-shared Tier 2 memory (PostgreSQL + pgvector)
+
+- **`pg_memory.py`** — `PgSemanticMemory`, a drop-in PostgreSQL + pgvector
+  backend for Tier 2 semantic memory, enabling the persistence half of the
+  Shogunet memory mesh: several agents (or planning nodes) pointing at the
+  same DSN see one consistent knowledge base. API parity with the SQLite
+  `SemanticMemory` (store_fact / search / reinforce / decay / prune /
+  get_fact / extract_entities / facts_about / related_entities /
+  entity_names), so it plugs directly into
+  `DecisionEngine(semantic_memory=...)` and `MemoryManager(semantic=...)`.
+- **`open_semantic_memory()` factory** — single storage knob for operators:
+  a `postgres://` or `postgresql://` DSN selects `PgSemanticMemory`; any
+  other value preserves the historical local SQLite behavior.
+  `DecisionEngine` routes `memory_db_path` through it, so switching a fleet
+  to shared memory is a one-line config change.
+- **Embedding parity** — the pg backend embeds with the same deterministic
+  hashing embedding as the SQLite backend, so facts written by one agent on
+  one backend are retrievable with identical similarity scores by another
+  agent on the other backend.
+- **Search pushed down to pgvector** — cosine distance (`<=>`) is computed
+  server-side (`similarity = 1 - distance`), with an optional HNSW index
+  recipe for fleet scale documented in the module docstring.
+- **Fail-closed, no silent stub** — construction raises with actionable
+  instructions if psycopg2 is missing (`pip install 'shugocore[postgres]'`)
+  or the pgvector extension is unavailable (`CREATE EXTENSION vector;`).
+  A fleet-shared memory that quietly failed to persist would violate the
+  Tier 2 invariants, so none exists.
+- **`postgres` optional dependency** — `pip install 'shugocore[postgres]'`
+  installs psycopg2-binary; no new required dependencies for existing users.
+
+### Hardened — fleet memory boundary
+
+- Table identifiers (`table_prefix`) are strictly validated
+  (`^[a-z][a-z0-9_]{0,40}$`) before interpolation into DDL/DML.
+- Tier 2 only: the pg store never touches Tier 0/1 (per-agent) or Tier 3
+  (read-only identity), preserving the memory invariants (N0-N1) across the
+  fleet.
 
 ## [1.3.0] - 2026-09-03
 

@@ -24,6 +24,7 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
     private val lastDecision: TextView
     private val lastAction: TextView
     private val lastEvaluation: TextView
+    private val detail: TextView
     private val pipelineDots = mutableMapOf<String, TextView>()
     private val pipelineLabels = mutableMapOf<String, TextView>()
     private val tier0: TextView
@@ -64,6 +65,7 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
         lastDecision = col.addKv("Last decision")
         lastAction = col.addKv("Last action")
         lastEvaluation = col.addKv("Last evaluation")
+        detail = col.addKv("Detail")
 
         // -- Pipeline ---------------------------------------------------------------
         col.addView(Ui.section(context, "Pipeline"))
@@ -152,6 +154,8 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
         lastAction.text = Ui.str(agent, "last_action")
         lastEvaluation.text = Ui.str(agent, "last_evaluation")
         lastEvaluation.setTextColor(Ui.colorFor(Ui.str(agent, "last_evaluation", "")))
+        // Cycle outcome contract detail (why the outcome happened).
+        detail.text = Ui.str(Ui.sub(agent, "last_cycle_result"), "detail").ifEmpty { "—" }
 
         val stages = Ui.list(agent, "pipeline_stages").map { it.toString() }
         val current = stages.lastOrNull()

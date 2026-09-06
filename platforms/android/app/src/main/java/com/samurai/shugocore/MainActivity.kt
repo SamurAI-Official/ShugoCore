@@ -231,6 +231,11 @@ class MainActivity : AppCompatActivity(), ControlPlaneHost {
         prefs().edit().putString("desktop_api_url", url).apply()
     }
 
+    override fun onModelProbeClicked() {
+        LogBus.log(LogBus.Category.MODEL, "MODEL TEST: request sent")
+        service()?.runModelProbe { msg -> serverPane.status(msg) }
+    }
+
     private fun startNodeService() {
         Intent(this, ShugoCoreService::class.java).also {
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {

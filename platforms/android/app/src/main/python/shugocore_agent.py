@@ -145,7 +145,8 @@ class AndroidAgent:
                             if self.memory_db_path else None)
                 self.memory = MemoryManager(agent_id=f"android-{self.device_caps}",
                                             auto_start=False,
-                                            semantic=semantic)
+                                            semantic=semantic,
+                                            episodic_journal_path=self.episodic_journal_path)
             except Exception as exc:
                 self.init_error = f"memory init: {exc}"
                 self.log("ERROR", f"memory init failed: {exc}", level="ERROR")
@@ -209,6 +210,11 @@ class AndroidAgent:
             # data dir so logging / audit don't fail with EROFS.
             if self.data_dir:
                 kwargs["log_dir"] = self.data_dir
+            # Share the agent's MemoryManager: observations (agent) and
+            # decisions/executions (engine) must land in ONE Tier 1 ring so
+            # the control plane's enrichment and the journal are complete.
+            if self.memory is not None:
+                kwargs["memory"] = self.memory
             return DecisionEngine(**kwargs)
         except Exception as exc:
             logger.error("Failed to initialize engine: %s", exc, exc_info=True)
@@ -229,6 +235,65 @@ class AndroidAgent:
         except Exception as exc:
             self.log("SENSOR", f"capability declaration rejected: {exc}", level="ERROR")
             return {"acked": [], "error": str(exc)}
+
+    def probe_model(self) -> Dict[str, Any]:
+        """MODEL TEST: one controlled decision-prompt round-trip with full
+        visibility. Distinguishes the three failure classes:
+          A) no_response      — the model ensemble was unreachable / silent
+          B) invalid_protocol — a response came back but did not parse
+          C) valid_protocol   — parsed (action_type may still be null)"""
+        started = time.time()
+        probe: Dict[str, Any] = {"ok": False, "error_class": "no_response",
+                                 "raw": "", "parse_valid": False,
+                                 "action_type": "", "confidence": 0.0,
+                                 "latency_ms": 0, "chars": 0, "model": ""}
+        engine = self.engine
+        if engine is None:
+            probe["raw"] = "no engine constructed"
+            return probe
+        sub = getattr(engine, "subconscious", None)
+        if sub is None:
+            probe["raw"] = "engine has no subconscious"
+            return probe
+        try:
+            models = engine.select_models({"type": "model_probe"}) or []
+            if not models:
+                probe["raw"] = "no models selected"
+                return probe
+            model = models[0]
+            probe["model"] = str(model.get("id", ""))
+            output = sub.get_model_output(
+                probe["model"],
+                {"type": "model_probe", "content": "routine agent observation"},
+                backend=engine._backend_for(model),
+                action_schema=engine.available_action_types())
+            probe["latency_ms"] = int((time.time() - started) * 1000)
+            probe["chars"] = len(output or "")
+            if not output:
+                probe["raw"] = "(empty response)"
+                return probe                          # class A: no response
+            probe["raw"] = str(output)[:400]
+            parsed = engine._parse_proposal(output)
+            if parsed is None:
+                probe["error_class"] = "invalid_protocol"   # class B
+                return probe
+            probe["parse_valid"] = True                          # class C
+            probe["ok"] = True
+            probe["error_class"] = ("valid_protocol_null"
+                                    if parsed.get("action_type") is None
+                                    else "valid_protocol")
+            probe["action_type"] = str(parsed.get("action_type") or "null")
+            probe["confidence"] = float(parsed.get("confidence") or 0.0)
+            return probe
+        except Exception as exc:
+            probe["latency_ms"] = int((time.time() - started) * 1000)
+            probe["error_class"] = "no_response"
+            probe["raw"] = f"{type(exc).__name__}: {exc}"[:200]
+            return probe
+
+    def probe_model_json(self) -> Dict[str, Any]:
+        """JSON form of probe_model (primitive-only values cross Chaquopy)."""
+        return self.probe_model()
 
     def log(self, category: str, message: str, level: str = "INFO") -> None:
         """Append to the bounded log buffer the Android LOG tab polls."""

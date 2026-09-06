@@ -43,6 +43,25 @@ _DECISION_PROMPT = (
 )
 
 
+def _build_decision_prompt(task_json: str, action_schema) -> str:
+    """Generated decision prompt: the action-type list comes from the
+    engine's real executor set (available_action_types), so the model-facing
+    protocol can never drift from what policy/execution actually support."""
+    types = ", ".join(sorted(action_schema)) + ", or null"
+    return (
+        "You are the decision module of an autonomous agent. Respond ONLY with a "
+        "single-line JSON object with keys: \"action_type\" (one of "
+        f"{types}), \"params\" (object), \"confidence\" "
+        "(number between 0.0 and 1.0), and \"text\" (short explanation). "
+        "\"record_observation\" is always safe and always available: it records "
+        "a short observation (put your note in params.text). Choose null only "
+        "if there is truly nothing worth recording. Keep the entire JSON "
+        "object on one line with no line breaks, and do not add any text "
+        "outside the JSON.\n"
+        "Task: {task_json}"
+    )
+
+
 class SubconsciousModel:
     """Generates model outputs via pluggable backends (Ollama HTTP default)."""
 
@@ -109,7 +128,8 @@ class SubconsciousModel:
             return ""
 
     def get_model_output(self, model_name: str, input_data: Any,
-                         backend: Optional[BaseBackend] = None) -> str:
+                         backend: Optional[BaseBackend] = None,
+                         action_schema: Optional[List[str]] = None) -> str:
         """
         Query a model with a structured-decision prompt. Returns the raw text
         output ('' on failure), parsed by the decision engine into a proposal.
@@ -128,9 +148,11 @@ class SubconsciousModel:
             return ""
         task_payload = (input_data if isinstance(input_data, dict)
                         else {"content": str(input_data)})
-        prompt = _DECISION_PROMPT.format(
-            task_json=canonical_json(sanitize_text(canonical_json(task_payload), 2000))
-        )
+        task_json = canonical_json(sanitize_text(canonical_json(task_payload), 2000))
+        if action_schema:
+            prompt = _build_decision_prompt(task_json, action_schema)
+        else:
+            prompt = _DECISION_PROMPT.format(task_json=task_json)
         if not validate_model_name(model_name):
             logger.error(f"Rejected invalid model name: {model_name!r}")
             return ""

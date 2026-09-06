@@ -37,11 +37,13 @@ class VisionProvider(private val context: Context) {
 
     companion object {
         private const val ANALYZE_INTERVAL_MS = 1_000L
+        private const val ANALYZE_INTERVAL_ATTENTION_MS = 200L  // v1.20: higher rate for gaze tracking
         private const val ABSENT_AFTER_MS = 20_000L
         private const val HEARTBEAT_MS = 45_000L
         private const val MAX_FACES = 3
         private const val ANALYSIS_WIDTH = 320  // even: FaceDetector requires it
         private const val MIN_FACE_CONFIDENCE = 0.35f
+        private const val GAZE_YAW_THRESHOLD = 20  // v1.20: degrees off-center for "gaze toward camera"
     }
 
     /** A permanently-RESUMED owner: the camera lives as long as the service. */
@@ -58,6 +60,9 @@ class VisionProvider(private val context: Context) {
 
     @Volatile var isRunning: Boolean = false
         private set
+
+    /** v1.20: when true, camera runs at higher frame rate for gaze tracking. */
+    @Volatile var attentionMode: Boolean = false
 
     private var lastAnalyzeMs = 0L
     private var lastFaceMs = 0L
@@ -136,7 +141,8 @@ class VisionProvider(private val context: Context) {
     private fun analyze(proxy: ImageProxy) {
         try {
             val now = System.currentTimeMillis()
-            if (now - lastAnalyzeMs < ANALYZE_INTERVAL_MS) return  // ~1 fps
+            val interval = if (attentionMode) ANALYZE_INTERVAL_ATTENTION_MS else ANALYZE_INTERVAL_MS
+            if (now - lastAnalyzeMs < interval) return
             lastAnalyzeMs = now
             val bitmap = frameToRgb565(proxy, ANALYSIS_WIDTH) ?: return
             PerceptionState.lastCameraFrameMs = now
@@ -150,19 +156,34 @@ class VisionProvider(private val context: Context) {
             }
             PerceptionState.lastFaceCount = faceCount
 
+            // v1.20: gaze extraction from FaceDetector pose (yaw toward camera).
+            var gazeTowardCamera = false
+            if (faceCount > 0) {
+                for (i in 0 until found) {
+                    val f = faces[i] ?: continue
+                    if (f.confidence() < MIN_FACE_CONFIDENCE) continue
+                    val yaw = f.pose(android.media.FaceDetector.Face.EULER_Y)
+                    gazeTowardCamera = kotlin.math.abs(yaw) < GAZE_YAW_THRESHOLD
+                    break  // use the first confident face
+                }
+            }
+            PerceptionState.gazeTowardCamera = gazeTowardCamera
+            PerceptionState.visualPresence = PerceptionSignal(
+                faceCount, now, source = "front_camera")
+
             val detected = faceCount > 0
             if (detected) {
                 lastFaceMs = now
                 if (!personPresent) {
                     personPresent = true
-                    post(true, faceCount, heartbeat = false)
+                    post(true, faceCount, gazeTowardCamera, heartbeat = false)
                 } else if (now - lastHeartbeatMs > HEARTBEAT_MS) {
                     lastHeartbeatMs = now
-                    post(true, faceCount, heartbeat = true)
+                    post(true, faceCount, gazeTowardCamera, heartbeat = true)
                 }
             } else if (personPresent && now - lastFaceMs > ABSENT_AFTER_MS) {
                 personPresent = false
-                post(false, 0, heartbeat = false)
+                post(false, 0, false, heartbeat = false)
             }
         } catch (e: Exception) {
             LogBus.log(LogBus.Category.SENSOR,
@@ -172,15 +193,17 @@ class VisionProvider(private val context: Context) {
         }
     }
 
-    private fun post(personPresent: Boolean, faceCount: Int, heartbeat: Boolean) {
+    private fun post(personPresent: Boolean, faceCount: Int,
+                     gazeTowardCamera: Boolean = false, heartbeat: Boolean = false) {
         val payload = JSONObject()
             .put("person_present", personPresent)
             .put("face_count", faceCount)
+            .put("gaze_direction", if (gazeTowardCamera) "toward_camera" else "away")
         if (heartbeat) payload.put("heartbeat", true)
         HumanInteractionBus.post("visual", "front_camera", payload)
         LogBus.log(LogBus.Category.SENSOR,
             "vision: person ${if (personPresent) "PRESENT" else "ABSENT"} " +
-                "(faces=$faceCount)")
+                "(faces=$faceCount, gaze=${if (gazeTowardCamera) "camera" else "away"})")
     }
 
     /** CameraX YUV -> upright, downscaled, even-width RGB_565 bitmap. */

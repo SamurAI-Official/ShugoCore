@@ -53,6 +53,10 @@ object PerceptionState {
     @Volatile var visualPresence: PerceptionSignal<Int> =
         PerceptionSignal(-1, 0L)
 
+    /** v1.20 attention signals: gaze direction and speech directedness. */
+    @Volatile var gazeTowardCamera: Boolean = false
+    @Volatile var speechDirectedAtAgent: Boolean = false
+
     // -- v1.18 legacy compat (migration targets; callers migrate to the
     //    signal names above as the codebase is updated) -----------------------
 

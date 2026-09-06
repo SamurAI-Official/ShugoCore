@@ -119,6 +119,14 @@ class ShugoCoreService : Service() {
                             } catch (e: Exception) { Log.w(TAG, "telemetry push failed: ${e.message}") }
                         }
                         pyAgent?.callAttr("tick")
+                        // v1.20: set camera attention mode from the attention state.
+                        try {
+                            val attJson = pyAgent?.callAttr("get_attention_state_json")?.toString()
+                            if (attJson != null) {
+                                val att = org.json.JSONObject(attJson)
+                                visionProvider?.attentionMode = att.optBoolean("active", false)
+                            }
+                        } catch (_: Exception) {}
                     }
                 }
             } catch (e: Exception) {

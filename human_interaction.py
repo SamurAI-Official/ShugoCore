@@ -561,6 +561,24 @@ class InteractionBus:
                 # the exact observation that triggered it.
                 "conversation_id": self._conversation_id,
                 "current_turn_id": self._current_turn_id,
+                # v1.20 intent extraction: lightweight subject/verb from the
+                # most recent human utterance (soft signal for the model).
+                "intent_subject": (
+                    conversation[-1]["text"].strip().lower().split()[-1]
+                    if conversation
+                    and conversation[-1].get("role") == "human"
+                    and conversation[-1].get("text")
+                    and len(conversation[-1]["text"].strip().split()) >= 3
+                    else None),
+                "intent_verb": (
+                    (lambda w: w[1] if w[0] in ("can", "please", "i", "shugo") else w[0])(
+                        conversation[-1]["text"].strip().lower().split()
+                    )
+                    if conversation
+                    and conversation[-1].get("role") == "human"
+                    and conversation[-1].get("text")
+                    and len(conversation[-1]["text"].strip().split()) >= 3
+                    else None),
                 "user_context": {
                     "person_present": person_present,
                     "speech_recent": speech_recent,

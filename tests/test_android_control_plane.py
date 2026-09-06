@@ -139,7 +139,7 @@ class TestAndroidControlPlane(unittest.TestCase):
         self.assertIn("tier2_facts", status)
         self.assertEqual(status["tier3"], "READ ONLY")
         self.assertEqual(status["pipeline_all"], list(PIPELINE_STAGES))
-        self.assertEqual(len(PIPELINE_STAGES), 7)
+        self.assertEqual(len(PIPELINE_STAGES), 8)
         self.assertTrue(status["engine_ready"])
 
     def test_legacy_status_keys_preserved(self):

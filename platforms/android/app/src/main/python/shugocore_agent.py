@@ -17,6 +17,13 @@ try:
     _HAS_INTERACTION = True
 except Exception:  # pragma: no cover
     _HAS_INTERACTION = False
+
+# v1.20 attention verification layer (provider-side, optional).
+try:
+    from attention_layer import AttentionLayer, AttentionState
+    _HAS_ATTENTION = True
+except Exception:
+    _HAS_ATTENTION = False
 from security import sanitize_text
 
 
@@ -25,7 +32,7 @@ logger = logging.getLogger("shugocore_android")
 # The orchestration loop stages surfaced on the AGENT tab. Stage tracking is
 # honest: a stage is only reported as run when the code path for it actually
 # executed during the tick.
-PIPELINE_STAGES = ("OBSERVE", "GATE", "DECIDE",
+PIPELINE_STAGES = ("OBSERVE", "VERIFY_ATTENTION", "GATE", "DECIDE",
                    "EXECUTE", "EVALUATE", "RECORD", "CONSOLIDATE")
 
 # -- cycle outcome contract (v1.10) -------------------------------------------
@@ -93,7 +100,10 @@ class AndroidAgent:
         # contract: observations flow in here; the engine only ever sees
         # them as task `context` data (import-guard enforced in tests).
         self.interaction = InteractionBus() if _HAS_INTERACTION else None
-        # Last-tick pipeline / outcome state for the AGENT tab.
+        # v1.20 attention verification layer (provider-side).
+        self.attention = AttentionLayer() if _HAS_ATTENTION else None
+        # Last-tick decision source for cycle-truth observability.
+        self._decision_source: str = "none"
         self._last_stages: List[str] = []
         self._last_decision = "—"
         self._last_action = "—"
@@ -622,6 +632,7 @@ class AndroidAgent:
         trail: Tuple[str, ...] = ("OBSERVE",)
         detail = "cycle did not complete"
         executed = False
+        self._decision_source = "none"
         try:
             observation = self._get_observation()
             self.last_observation = observation
@@ -674,6 +685,21 @@ class AndroidAgent:
                         istats = self.interaction.stats()
                         context["conversation_id"] = istats.get("conversation_id")
                         context["turn_id"] = istats.get("current_turn_id")
+                    # v1.20: inject attention verdict into task context
+                    if self.attention is not None:
+                                        if self.interaction is not None:
+                                                            human = observation.get("human", {})
+                                                            if human.get("speech_recent"):
+                                                                                t = (human.get("user_context", {}).get("last_transcript") or "")
+                                                                                self.attention.stamp_speech(t)
+                                                            lv = next((e for e in reversed(getattr(self.interaction, "_buffer", [])) if e.get("type") == "visual"), None)
+                                                            if lv:
+                                                                                fc = lv.get("payload", {}).get("face_count", 0)
+                                                                                self.attention.stamp_face(fc if isinstance(fc, (int, float)) else 0)
+                                                            self.attention.stamp_tts(observation.get("tts_speaking", False))
+                                        att_state, att_conf = self.attention.evaluate()
+                                        context["attention_state"] = str(att_state.value) if hasattr(att_state, "value") else str(att_state)
+                                        context["attention_confidence"] = round(att_conf, 2)
                     engine_result = self._execute_engine_task(
                         {"id": f"android-tick-{self.tick_count}",
                          "type": "maintain_agent_loop", "context": context})
@@ -711,7 +737,8 @@ class AndroidAgent:
             detail = f"{type(exc).__name__}: {exc}"[:120]
         self._last_stages = list(trail)
         self._last_cycle_result = {"outcome": outcome, "stages": list(trail),
-                                   "detail": detail, "executed": executed}
+                                   "detail": detail, "executed": executed,
+                                   "decision_source": self._decision_source}
         self._last_decision = decision
         self._last_action = action
         self._last_evaluation = outcome.lower()
@@ -917,11 +944,28 @@ class AndroidAgent:
                 if self.interaction is not None else None),
             "recent_logs": self._log_buffer_snapshot(),
             "last_log_seq": self._log_seq,
+            # v1.20: cycle-truth observability — what drove the last output.
+            "decision_source": self._decision_source,
+            "attention": (self.attention.snapshot()
+                          if self.attention is not None else None),
             "policy": {"fail_closed": True, "audit": audit_active,
                        "consent_required": True,
                        "agent_caps": dict(self.agent_caps),
                        "network": dict(self.network_policy)},
         }
+
+    def get_attention_state_json(self) -> str:
+        """v1.20: lightweight attention state for the Kotlin service to set
+        camera attention mode. Returns JSON with 'active' (bool) and
+        'state' (string)."""
+        import json
+        if self.attention is None:
+            return json.dumps({"active": False, "state": "unavailable"})
+        snap = self.attention.snapshot()
+        return json.dumps({
+            "active": snap.get("state") in ("attending", "unknown"),
+            "state": snap.get("state", "unknown"),
+        })
 
     def get_status_json(self) -> str:
         """JSON form of get_status — safe to cross the Chaquopy boundary

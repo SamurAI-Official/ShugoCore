@@ -3,8 +3,8 @@
 > A continuous orchestration layer for synthetic functional agency.
 
 [![PyPI](https://img.shields.io/pypi/v/shugocore)](https://pypi.org/project/shugocore/)
-![Release](https://img.shields.io/badge/release-v1.19.0-blue)
-![Tests](https://img.shields.io/badge/tests-589%20passing-brightgreen)
+![Release](https://img.shields.io/badge/release-v1.20.0-blue)
+![Tests](https://img.shields.io/badge/tests-603%20passing-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%E2%80%933.12-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android%20%28Termux%2FChaquopy%29-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)

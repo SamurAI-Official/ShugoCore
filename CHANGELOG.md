@@ -4,6 +4,32 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.20.0] - 2026-09-06 — attention verification layer, camera hardening, ShugoNet transport
+
+### Attention verification layer (new)
+
+- **`AttentionLayer`** (`attention_layer.py`): state machine with 4 states (UNKNOWN / ABSENT / ATTENDING / DIVERTED) that fuses face detection, gaze direction, speech directedness, and TTS state into a single verdict. Configurable freshness windows per signal. Thread-safe, provider-side (never imported by the decision core).
+- **`ConsentRegistry.has_grant_for_attended_action()`** — consent-gated actions (speak, robot motion) now require attention to be ATTENDING or UNKNOWN (fail-open for uncertainty, fail-closed for ABSENT/DIVERTED).
+- **`_gate_decision`** augmented with attention state from the task context.
+- **`VERIFY_ATTENTION`** pipeline stage added between OBSERVE and GATE.
+- **`decision_source`** in `get_status()` — tracks whether the last cycle was model-driven, no_action, policy_block, or rule_fallback.
+- **`get_attention_state_json()`** — lightweight JSON endpoint for the Kotlin service to set camera attention mode.
+
+### Camera stays active for gaze tracking (`VisionProvider.kt`)
+
+- **Gaze extraction** from `FaceDetector.Face.pose(EULER_Y)` — stamps `PerceptionState.gazeTowardCamera` when yaw < 20° off-center. Gaze direction included in `HumanInteractionBus` visual observations.
+- **Dynamic throttle** — `attentionMode` flag switches between 1 fps (normal) and 200 ms (attention mode) for higher gaze-tracking frame rate.
+- **`PerceptionState.gazeTowardCamera`** and `speechDirectedAtAgent` signals added.
+
+### ShugoNet TCP/JSON transport (`agent_runtime.py` — new)
+
+- **`ShugonetAgentRuntime`** — minimal TCP/JSON transport implementing the `send()`, `query()`, `sync()`, `list_agents()`, `status()` contract expected by `ShugonetExecutionHandler`. NDJSON framing over TCP with background server thread for inbound connections.
+- **CLI entry point** — `python3 agent_runtime.py --port 9000 --agent-id shugo-peer --peer peer2 host port`.
+- **14 new tests** — 603 total, all passing.
+
+### Intent extraction
+
+- `human_context()` in `human_interaction.py` now includes `intent_subject` and `intent_verb` fields — lightweight heuristic from the most recent human conversation turn.
 ## [1.19.0] - 2026-09-06 — causal trace, multimodal fusion, unified perception, robot look (+ hardening)
 
 ### Hardening (v1.18 bugs fixed)

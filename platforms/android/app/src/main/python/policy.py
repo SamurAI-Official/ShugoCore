@@ -338,6 +338,27 @@ class ConsentRegistry:
             return any(entry["expires_at"] is None or entry["expires_at"] > now
                        for entry in entries)
 
+    def has_grant_for_attended_action(self, action_type: str,
+                                       attention_state: Optional[str] = None) -> Tuple[bool, Optional[str]]:
+        """v1.20: consent check augmented with attention verification.
+
+        Returns (allowed, reason). Consent-gated actions (speak, robot
+        motion, etc.) are only allowed when:
+          - At least one unexpired grant exists for the type, AND
+          - The attention state is ATTENDING or UNKNOWN (fail-open for
+            uncertainty; fail-closed for ABSENT/DIVERTED).
+
+        When attention_state is None (no attention layer wired), falls
+        back to the standard has_grant check (unchanged behavior).
+        """
+        if attention_state is None:
+            return self.has_grant(action_type), None
+        if attention_state not in ("attending", "unknown"):
+            return False, f"human attention is '{attention_state}' (need 'attending' or 'unknown')"
+        if not self.has_grant(action_type):
+            return False, f"no external consent grant for '{action_type}'"
+        return True, None
+
     def grants(self) -> Dict[str, List[Dict[str, Any]]]:
         """Read-only snapshot of all grants."""
         with self._lock:

@@ -729,7 +729,8 @@ class DecisionEngine:
             wrapped["stages"] = list(trail) + ["RECORD"]
             return wrapped
 
-        allowed, reason = self._gate_decision(decision)
+        allowed, reason = self._gate_decision(
+            decision, task.get("context", {}).get("attention_state"))
         if not allowed:
             self._record_block("decision", decision, reason or "gated")
             self.governor.step(AgentState.IDLE)
@@ -761,10 +762,13 @@ class DecisionEngine:
         wrapped["stages"] = list(trail) + ["RECORD"]
         return wrapped
 
-    def _gate_decision(self, decision: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    def _gate_decision(self, decision: Dict[str, Any],
+                       task_attention_state: Optional[str] = None) -> Tuple[bool, Optional[str]]:
         """
         Action-level gate: Tier 3 invariants on the decision, external consent
-        for side-effecting actions, human approval (fail-closed).
+        for side-effecting actions, human approval (fail-closed). When
+        ``task_attention_state`` is provided, consent-gated actions additionally
+        require attention to be ``attending`` or ``unknown`` (v1.20).
         """
         allowed, reason = self.memory.check_policy(decision)
         if not allowed:
@@ -773,12 +777,16 @@ class DecisionEngine:
         action_type = decision.get("action_type")
         if action_type in _CONSENT_GATED_ACTION_TYPES:
             # SAFE_STATE (critical fallback): read-only mode blocks side effects.
-            # Use .mode (latched) not .state (transient): the governor has
-            # already advanced past SAFE_STATE into EXECUTING by this point.
             if self.governor.mode is AgentState.SAFE_STATE:
                 return False, ("execution is in SAFE_STATE (read-only); "
                                "side-effecting action blocked")
-            if not self.consents.has_grant(str(action_type)):
+            # v1.20: attention-augmented consent check
+            if task_attention_state is not None:
+                ok, reason = self.consents.has_grant_for_attended_action(
+                    str(action_type), task_attention_state)
+                if not ok:
+                    return False, reason
+            elif not self.consents.has_grant(str(action_type)):
                 return False, (f"no external consent grant for side-effecting "
                                f"action '{action_type}'")
             verdict = self.approvals.request_approval({

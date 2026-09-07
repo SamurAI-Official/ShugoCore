@@ -19,12 +19,14 @@ class SensorPublisherService : Service() {
         private const val TAG = "SensorPub"
         private const val CHANNEL_ID = "shugocore_sensor_pub"
         private const val STREAM_INTERVAL_MS = 1_000L
+        const val EXTRA_TRANSPORT = "transport"
+        const val EXTRA_PRIMARY_ID = "primary_id"
         var isRunning = false; private set
-        var transport: BluetoothTransport? = null
-        var primaryDeviceId: String? = null
     }
     private val executor = Executors.newSingleThreadScheduledExecutor()
     private var streamTask: ScheduledFuture<*>? = null
+    private var transport: BluetoothTransport? = null
+    private var primaryDeviceId: String? = null
     override fun onCreate() {
         super.onCreate(); createNotificationChannel()
         val n = Notification.Builder(this, CHANNEL_ID)
@@ -36,6 +38,8 @@ class SensorPublisherService : Service() {
         Log.i(TAG, "sensor publisher started")
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        transport = intent?.getSerializableExtra(EXTRA_TRANSPORT) as? BluetoothTransport
+        primaryDeviceId = intent?.getStringExtra(EXTRA_PRIMARY_ID)
         startStreaming(); return START_STICKY
     }
     override fun onBind(intent: Intent?): IBinder? = null

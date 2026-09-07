@@ -110,7 +110,13 @@ class BackendEntry:
             if self.consecutive_errors == 0:
                 return True
             if self.consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
-                return (time.time() - self.last_error_ts) >= _UNHEALTHY_COOLDOWN_S
+                # Check cooldown: if enough time has passed, allow a retry
+                # AND reset the counter so a single new error doesn't
+                # instantly re-tripping the unhealthy state.
+                if (time.time() - self.last_error_ts) >= _UNHEALTHY_COOLDOWN_S:
+                    self.consecutive_errors = 0
+                    return True
+                return False
             return True
 
     def serves_tier(self, tier: TaskTier) -> bool:

@@ -81,7 +81,9 @@ class BluetoothTransport(private val context: Context, private val serviceUuid: 
                 val peer = ConnectedPeer(id, socket); connectedSockets[id] = peer
                 peer.startReader(); listener?.onDeviceConnected(id)
             }
-        } catch (e: Exception) { if (e !is java.io.InterruptedIOException) Log.e(TAG, "accept error", e) }
+        } catch (e: java.io.IOException) {
+            if (e !is java.io.InterruptedIOException) Log.e(TAG, "accept error", e)
+        }
     }
     inner class ConnectedPeer(val deviceId: String, private val socket: BluetoothSocket) {
         private val reader = Thread(this::readLoop, "bt-mesh-read-$deviceId").apply { isDaemon = true }

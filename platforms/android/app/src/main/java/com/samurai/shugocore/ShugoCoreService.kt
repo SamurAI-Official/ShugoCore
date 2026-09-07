@@ -13,6 +13,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import android.bluetooth.BluetoothAdapter
 import com.samurai.shugocore.inference.*
 import com.samurai.shugocore.runtime.AudioProvider
 import com.samurai.shugocore.runtime.TtsProvider
@@ -595,6 +596,16 @@ class ShugoCoreService : Service() {
                       "observations" to HumanInteractionBus.acceptedCount())
             },
             "companion_mode" to companionMode,
+            "mesh_peers" to getMeshPeers().map { peer ->
+                mapOf(
+                    "device_id" to peer.deviceId,
+                    "name" to peer.name,
+                    "camera" to peer.capabilities.contains("camera"),
+                    "mic" to peer.capabilities.contains("microphone"),
+                    "online" to peer.online,
+                )
+            },
+            "mesh_peer_count" to getMeshPeers().size,
         )
     }
 
@@ -714,14 +725,19 @@ class ShugoCoreService : Service() {
         try {
             // Stop the full agent when in peripheral mode
             setAgentRunning(false) {}
-            // Start the sensor publisher service
-            val intent = Intent(this, SensorPublisherService::class.java)
+            // Start the sensor publisher service with the mesh transport
+            val intent = Intent(this, SensorPublisherService::class.java).apply {
+                // Pass the Bluetooth adapter address as the primary target
+                putExtra(SensorPublisherService.EXTRA_PRIMARY_ID,
+                    BluetoothAdapter.getDefaultAdapter()?.address ?: "unknown")
+                putExtra(SensorPublisherService.EXTRA_TRANSPORT, "bluetooth")
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(intent)
             } else {
                 startService(intent)
             }
-            // Connect to primary via Bluetooth discovery
+            // Start discovery so the primary can find us
             meshManager?.startDiscovery()
             LogBus.log(LogBus.Category.AGENT, "peripheral mode started")
         } catch (e: Exception) {

@@ -49,7 +49,11 @@ class DeviceMeshManager(private val context: Context) {
             }
         })
         val ok = transport.startServer()
-        if (ok) startDiscovery()
+        if (ok) {
+            startDiscovery()
+        } else {
+            Log.e(TAG, "server start failed — discovery not started")
+        }
         return ok
     }
     fun stop() { stopDiscovery(); transport.stop(); peers.clear() }

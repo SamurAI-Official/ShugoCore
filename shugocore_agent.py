@@ -777,19 +777,19 @@ class AndroidAgent:
                         context["turn_id"] = istats.get("current_turn_id")
                     # v1.20: inject attention verdict into task context
                     if self.attention is not None:
-                                        if self.interaction is not None:
-                                                            human = observation.get("human", {})
-                                                            if human.get("speech_recent"):
-                                                                                t = (human.get("user_context", {}).get("last_transcript") or "")
-                                                                                self.attention.stamp_speech(t)
-                                                            lv = next((e for e in reversed(getattr(self.interaction, "_buffer", [])) if e.get("type") == "visual"), None)
-                                                            if lv:
-                                                                                fc = lv.get("payload", {}).get("face_count", 0)
-                                                                                self.attention.stamp_face(fc if isinstance(fc, (int, float)) else 0)
-                                                            self.attention.stamp_tts(observation.get("tts_speaking", False))
-                                        att_state, att_conf = self.attention.evaluate()
-                                        context["attention_state"] = str(att_state.value) if hasattr(att_state, "value") else str(att_state)
-                                        context["attention_confidence"] = round(att_conf, 2)
+                        if self.interaction is not None:
+                            human = observation.get("human", {})
+                            if human.get("speech_recent"):
+                                t = (human.get("user_context", {}).get("last_transcript") or "")
+                                self.attention.stamp_speech(t)
+                            lv = next((e for e in reversed(getattr(self.interaction, "_buffer", [])) if e.get("type") == "visual"), None)
+                            if lv:
+                                fc = lv.get("payload", {}).get("face_count", 0)
+                                self.attention.stamp_face(fc if isinstance(fc, (int, float)) else 0)
+                            self.attention.stamp_tts(observation.get("tts_speaking", False))
+                        att_state, att_conf = self.attention.evaluate()
+                        context["attention_state"] = str(att_state.value) if hasattr(att_state, "value") else str(att_state)
+                        context["attention_confidence"] = round(att_conf, 2)
                     # v1.20: inject conversation history into context
                     if self.interaction is not None:
                         turns = self.interaction.export_conversation_turns()

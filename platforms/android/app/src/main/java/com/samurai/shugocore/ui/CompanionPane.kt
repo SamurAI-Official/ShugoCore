@@ -112,7 +112,7 @@ class CompanionPane(context: Context, private val host: ControlPlaneHost) :
             val caps = if (peer.capabilities.contains("camera")) "📷" else ""
             val mic = if (peer.capabilities.contains("microphone")) "🎤" else ""
             val label = TextView(context).apply {
-                text = "${peer.name} $caps$mic"; textSize = 13f; setTextColor(Ui.TEXT)
+                text = "${peer.name} [${peer.role}] $caps$mic"; textSize = 13f; setTextColor(Ui.TEXT)
                 layoutParams = LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f)
             }
             val disconnectBtn = Button(context).apply {

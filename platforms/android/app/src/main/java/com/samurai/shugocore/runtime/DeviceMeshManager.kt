@@ -16,6 +16,7 @@ import java.util.concurrent.ConcurrentHashMap
 data class MeshPeer(
     val deviceId: String,
     var name: String,
+    var role: String = "primary",
     var capabilities: Set<String> = emptySet(),
     var lastSeenMs: Long = 0L,
     var online: Boolean = true,
@@ -33,6 +34,7 @@ class DeviceMeshManager(private val context: Context) {
     private val transport = BluetoothTransport(context, MESH_SERVICE_UUID)
     private val peers = ConcurrentHashMap<String, MeshPeer>()
     private val bluetoothAdapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
+    var role: String = "primary"
 
     fun start(): Boolean {
         transport.setListener(object : BluetoothTransport.Listener {
@@ -66,9 +68,10 @@ class DeviceMeshManager(private val context: Context) {
         }
     }
 
-    fun announceSelf() {
+    fun announceSelf(role: String = this.role) {
         val msg = JSONObject().apply {
             put("type", "device_announce")
+            put("role", role)
             put("device_id", bluetoothAdapter?.address ?: "unknown")
             put("device_name", android.os.Build.MODEL)
             put("capabilities", JSONObject().apply {
@@ -88,6 +91,7 @@ class DeviceMeshManager(private val context: Context) {
         when (type) {
             "device_announce" -> {
                 peer.name = json.optString("device_name", deviceId)
+                peer.role = json.optString("role", "primary")
                 val caps = json.optJSONObject("capabilities")
                 if (caps != null) {
                     peer.capabilities = caps.keys().asSequence().filter { caps.optBoolean(it) }.toSet()
@@ -106,6 +110,12 @@ class DeviceMeshManager(private val context: Context) {
             "heartbeat" -> {}
         }
         onPeerMessage?.invoke(deviceId, json)
+    }
+
+    fun autoConnectPaired() {
+        for (device in getPairedDevices()) {
+            if (!peers.containsKey(device.address)) connectToPeer(device)
+        }
     }
 
     fun connectToPeer(device: BluetoothDevice) {

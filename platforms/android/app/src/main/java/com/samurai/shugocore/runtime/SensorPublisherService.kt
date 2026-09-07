@@ -53,7 +53,6 @@ class SensorPublisherService : Service() {
     }
     private fun startStreaming() {
         streamTask = executor.scheduleAtFixedRate({
-            val p = primaryDeviceId ?: return@scheduleAtFixedRate
             val bt = transport ?: return@scheduleAtFixedRate
             val msg = JSONObject().apply {
                 put("type", "sensor/camera")
@@ -63,14 +62,14 @@ class SensorPublisherService : Service() {
                     put("face_count", -1); put("person_present", false)
                 })
             }
-            bt.sendMessage(p, msg)
+            bt.broadcastMessage(msg)
             val mic = JSONObject().apply {
                 put("type", "sensor/mic")
                 put("device_id", Build.MODEL)
                 put("status", "idle")
                 put("payload", JSONObject().apply { put("voice_active", false) })
             }
-            bt.sendMessage(p, mic)
+            bt.broadcastMessage(mic)
         }, 0, STREAM_INTERVAL_MS, TimeUnit.MILLISECONDS)
     }
     private fun createNotificationChannel() {

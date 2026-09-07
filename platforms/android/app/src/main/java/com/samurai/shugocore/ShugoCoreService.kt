@@ -97,6 +97,8 @@ class ShugoCoreService : Service() {
         try {
             meshManager = DeviceMeshManager(this)
             meshManager?.start()
+            meshManager?.autoConnectPaired()
+            meshManager?.role = if (companionMode) "peripheral" else "primary"
             Log.i(TAG, "Device mesh manager started")
         } catch (e: Exception) {
             Log.e(TAG, "Device mesh start failed: ${e.message}")
@@ -600,6 +602,8 @@ class ShugoCoreService : Service() {
                 mapOf(
                     "device_id" to peer.deviceId,
                     "name" to peer.name,
+                    "role" to peer.role,
+                    "sensor_status" to peer.sensorStatus.toMap(),
                     "camera" to peer.capabilities.contains("camera"),
                     "mic" to peer.capabilities.contains("microphone"),
                     "online" to peer.online,

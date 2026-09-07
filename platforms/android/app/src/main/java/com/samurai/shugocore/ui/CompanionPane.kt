@@ -54,7 +54,6 @@ class CompanionPane(context: Context, private val host: ControlPlaneHost) :
         pairedList = LinearLayout(context).apply { orientation = VERTICAL }
         col.addView(pairedList)
 
-        col.addView(pairedList)
 
         col.addView(Ui.section(context, "Connected peers"))
         connectedLabel = TextView(context).apply {

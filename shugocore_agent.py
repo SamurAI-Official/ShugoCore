@@ -199,6 +199,8 @@ class AndroidAgent:
             if self.engine is None and not self.engine_error:
                 self.engine_error = "engine initialization returned None"
             self._write_diagnostics()
+            # v1.20: start ShugoNet runtime for cross-device transport.
+            self._start_shugonet()
             if self.init_error:
                 self.log("ERROR", f"agent degraded: {self.init_error}", level="ERROR")
         finally:
@@ -220,6 +222,29 @@ class AndroidAgent:
                 with open(str(Path(self.data_dir) / "agent_error.txt"), "w") as fh:
                     fh.write(self.init_error)
         except Exception:
+            pass
+    def _start_shugonet(self) -> None:
+        """v1.20: start the ShugoNet TCP/JSON transport runtime and register
+        network handlers with the execution layer. Best-effort: failures
+        degrade gracefully (log a warning, no crash)."""
+        self.shugonet_runtime = None
+        try:
+            from agent_runtime import ShugonetAgentRuntime
+            from shugonet_bridge import register_network_handlers
+            self.shugonet_runtime = ShugonetAgentRuntime(
+                agent_id=f"shugo-{self.device_caps or 'android'}",
+                host="0.0.0.0", port=9000)
+            self.shugonet_runtime.start()
+            if self.engine is not None:
+                register_network_handlers(
+                    self.engine.execution_layer, self.shugonet_runtime)
+            self.log("AGENT", f"shugonet runtime started on port 9000")
+            import sys as _sys
+            print("SHUGONET: runtime started on port 9000", file=_sys.stderr, flush=True)
+        except Exception as exc:
+            self.log("AGENT", f"shugonet start skipped: {exc}", level="WARN")
+            import sys as _sys
+            print(f"SHUGONET: start failed: {exc}", file=_sys.stderr, flush=True)
             pass
 
     def _initialize_engine(self) -> Optional[Any]:
@@ -983,6 +1008,12 @@ class AndroidAgent:
             self._run_consolidation()
         except Exception as exc:
             logger.error("Cleanup error: %s", exc)
+        # v1.20: stop ShugoNet runtime.
+        try:
+            if getattr(self, "shugonet_runtime", None) is not None:
+                self.shugonet_runtime.stop()
+        except Exception:
+            pass
         logger.info("Agent cleaned up")
 
 

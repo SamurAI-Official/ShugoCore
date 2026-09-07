@@ -19,6 +19,8 @@ class SensorsPane(context: Context, private val host: ControlPlaneHost) :
     private val capRows = mutableMapOf<String, Row>()
     private val ackValues = mutableMapOf<String, TextView>()
     private val ackSection: TextView
+    private val meshPeersLabel: TextView
+    private val meshPeersList: LinearLayout
 
     init {
         orientation = VERTICAL
@@ -57,6 +59,21 @@ class SensorsPane(context: Context, private val host: ControlPlaneHost) :
                 "because Android granted a permission."
         }
         col.addView(ackSection)
+
+        // v1.22: device mesh peers section
+        col.addView(Ui.section(context, "Mesh peers"))
+        val meshCount = TextView(context).apply {
+            textSize = 14f; setTextColor(Ui.DIM)
+            text = "No connected devices"
+        }
+        col.addView(meshCount)
+        meshPeersLabel = meshCount
+
+        // v1.22: dynamic mesh peer list
+        meshPeersList = LinearLayout(context).apply {
+            orientation = VERTICAL
+        }
+        col.addView(meshPeersList)
     }
 
     fun bind(snap: Map<*, *>?) {
@@ -106,6 +123,37 @@ class SensorsPane(context: Context, private val host: ControlPlaneHost) :
                 else -> "pending"
             }
             value.setTextColor(if (decl?.get("agent_ack") == true) Ui.OK else Ui.DIM)
+        }
+
+        // v1.22: bind mesh peers
+        val meshAgent = agent ?: Ui.sub(snap, "agent_status")
+        val meshCount = (meshAgent?.get("mesh_peer_count") as? Number)?.toInt() ?: 0
+        val meshPeers = meshAgent?.get("mesh_peers") as? List<*> ?: emptyList<Any>()
+        meshPeersLabel.text = when {
+            meshCount > 0 -> "Connected: $meshCount device(s)"
+            else -> "No connected devices"
+        }
+        meshPeersList.removeAllViews()
+        for (peer in meshPeers) {
+            val p = peer as? Map<*, *> ?: continue
+            val id = p["device_id"]?.toString() ?: "unknown"
+            val hasCamera = p["camera"] == true
+            val hasMic = p["mic"] == true
+            val row = LinearLayout(context).apply {
+                orientation = HORIZONTAL
+                setPadding(0, 0, 0, Ui.dp(context, 4))
+            }
+            val dot = TextView(context).apply {
+                text = "●"; textSize = 12f
+                setTextColor(if (hasCamera || hasMic) Ui.OK else Ui.DIM)
+                setPadding(0, 0, Ui.dp(context, 8), 0)
+            }
+            val label = TextView(context).apply {
+                text = "$id ${if (hasCamera) "📷" else ""}${if (hasMic) "🎤" else ""}"
+                textSize = 13f; setTextColor(Ui.TEXT)
+            }
+            row.addView(dot); row.addView(label)
+            meshPeersList.addView(row)
         }
     }
 }

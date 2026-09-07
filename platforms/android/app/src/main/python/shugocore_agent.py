@@ -988,6 +988,31 @@ class AndroidAgent:
                     except Exception:
                         pass
             observation["human"] = hctx
+        # v1.22: device mesh peer observations from connected peripherals.
+        # The Kotlin service pushes mesh peer JSON into telemetry.
+        mesh = t.get("mesh_peers", None)
+        if mesh is not None:
+            try:
+                if isinstance(mesh, str):
+                    import json as _json
+                    mesh = _json.loads(mesh)
+                if isinstance(mesh, list):
+                    observation["mesh_peers"] = mesh
+                    observation["mesh_peer_count"] = len(mesh)
+                    for peer in mesh:
+                        # Inject remote camera observations into the bus
+                        if peer.get("camera") and self.interaction is not None:
+                            from human_interaction import HumanObservation
+                            obs, _ = HumanObservation.from_dict({
+                                "type": "visual",
+                                "source": f"remote:{peer.get('device_id', 'unknown')}",
+                                "payload": {"person_present": True, "face_count": 1},
+                                "privacy_scope": "local",
+                            })
+                            if obs is not None:
+                                self.interaction.publish(obs)
+            except Exception:
+                pass
         return observation
 
     def _get_battery(self) -> int:
@@ -1128,6 +1153,10 @@ class AndroidAgent:
             "delegation": (self.delegation.status()
                            if self.delegation is not None else None),
             "lan_api_url": self.lan_api_url or "",
+            # v1.22: device mesh — connected peripheral devices and their
+            # sensor status (from the last observation).
+            "mesh_peer_count": self.last_observation.get("mesh_peer_count", 0),
+            "mesh_peers": self.last_observation.get("mesh_peers", []),
             "policy": {"fail_closed": True, "audit": audit_active,
                        "consent_required": True,
                        "agent_caps": dict(self.agent_caps),

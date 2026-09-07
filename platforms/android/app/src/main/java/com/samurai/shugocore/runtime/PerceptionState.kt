@@ -68,4 +68,24 @@ object PerceptionState {
     @Volatile var ttsSpeaking: Boolean = false
     @Volatile var taskInFlight: Boolean = false
     @Volatile var ttsLastEndMs: Long = 0L
+
+    // -- v1.22 device mesh signals ---
+    @Volatile var meshPeerCount: Int = 0
+    @Volatile var meshPeersJson: String = "[]"
+
+    /** Stamp a remote camera observation from a mesh peer. */
+    fun stampRemoteCamera(deviceId: String, payload: org.json.JSONObject) {
+        val now = System.currentTimeMillis()
+        val fc = payload.optInt("face_count", -1)
+        PerceptionState.visualPresence = PerceptionSignal(
+            if (fc >= 0) fc else null, now, source = "remote:$deviceId")
+    }
+
+    /** Stamp a remote microphone observation from a mesh peer. */
+    fun stampRemoteMic(deviceId: String, payload: org.json.JSONObject) {
+        val now = System.currentTimeMillis()
+        val act = payload.optBoolean("voice_active", false)
+        PerceptionState.micActive = act
+        PerceptionState.lastMicActivityMs = now
+    }
 }

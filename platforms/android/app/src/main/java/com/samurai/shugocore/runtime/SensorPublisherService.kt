@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import org.json.JSONObject
+import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -19,9 +20,9 @@ class SensorPublisherService : Service() {
         private const val TAG = "SensorPub"
         private const val CHANNEL_ID = "shugocore_sensor_pub"
         private const val STREAM_INTERVAL_MS = 1_000L
-        const val EXTRA_TRANSPORT = "transport"
         const val EXTRA_PRIMARY_ID = "primary_id"
         var isRunning = false; private set
+        val MESH_SERVICE_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
     }
     private val executor = Executors.newSingleThreadScheduledExecutor()
     private var streamTask: ScheduledFuture<*>? = null
@@ -38,8 +39,11 @@ class SensorPublisherService : Service() {
         Log.i(TAG, "sensor publisher started")
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        transport = intent?.getSerializableExtra(EXTRA_TRANSPORT) as? BluetoothTransport
         primaryDeviceId = intent?.getStringExtra(EXTRA_PRIMARY_ID)
+        // Create our own transport and start the RFCOMM server so the primary can connect
+        transport = BluetoothTransport(this, MESH_SERVICE_UUID)
+        transport?.startServer()
+        Log.i(TAG, "peripheral RFCOMM server started on $MESH_SERVICE_UUID")
         startStreaming(); return START_STICKY
     }
     override fun onBind(intent: Intent?): IBinder? = null

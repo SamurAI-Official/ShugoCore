@@ -726,19 +726,12 @@ class ShugoCoreService : Service() {
             // Stop the full agent when in peripheral mode
             setAgentRunning(false) {}
             // Start the sensor publisher service with the mesh transport
-            val intent = Intent(this, SensorPublisherService::class.java).apply {
-                // Pass the Bluetooth adapter address as the primary target
-                putExtra(SensorPublisherService.EXTRA_PRIMARY_ID,
-                    BluetoothAdapter.getDefaultAdapter()?.address ?: "unknown")
-                putExtra(SensorPublisherService.EXTRA_TRANSPORT, "bluetooth")
-            }
+            val intent = Intent(this, SensorPublisherService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(intent)
             } else {
                 startService(intent)
             }
-            // Start discovery so the primary can find us
-            meshManager?.startDiscovery()
             LogBus.log(LogBus.Category.AGENT, "peripheral mode started")
         } catch (e: Exception) {
             Log.e(TAG, "peripheral mode start failed", e)
@@ -748,22 +741,13 @@ class ShugoCoreService : Service() {
     private fun stopPeripheralMode() {
         try {
             stopService(Intent(this, SensorPublisherService::class.java))
-            meshManager?.stopDiscovery()
         } catch (e: Exception) {
             Log.e(TAG, "peripheral mode stop failed", e)
         }
     }
 
-    fun startMeshDiscovery() {
-        meshManager?.startDiscovery()
-    }
-
-    fun stopMeshDiscovery() {
-        meshManager?.stopDiscovery()
-    }
-
-    fun getDiscoveredDevices(): List<android.bluetooth.BluetoothDevice> {
-        return meshManager?.discoveredDevices?.toList() ?: emptyList()
+    fun getPairedDevices(): List<android.bluetooth.BluetoothDevice> {
+        return meshManager?.getPairedDevices() ?: emptyList()
     }
 
     fun getMeshPeers(): List<com.samurai.shugocore.runtime.MeshPeer> {

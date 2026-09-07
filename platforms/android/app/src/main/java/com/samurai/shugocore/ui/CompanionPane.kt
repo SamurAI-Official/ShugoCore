@@ -13,12 +13,10 @@ class CompanionPane(context: Context, private val host: ControlPlaneHost) :
 
     private val modeText: TextView
     private val modeToggle: Button
-    private val discoveredList: LinearLayout
     private val connectedList: LinearLayout
-    private val discoveredLabel: TextView
     private val connectedLabel: TextView
-    private val scanButton: Button
-    private var isScanning = false
+    private val pairedList: LinearLayout
+    private val pairedLabel: TextView
 
     init {
         orientation = VERTICAL
@@ -40,35 +38,23 @@ class CompanionPane(context: Context, private val host: ControlPlaneHost) :
         modeRow.addView(modeText); modeRow.addView(modeToggle)
         col.addView(modeRow)
 
-        col.addView(Ui.section(context, "Discovery"))
-        val scanRow = LinearLayout(context).apply { orientation = HORIZONTAL }
-        scanButton = Button(context).apply {
-            text = "Start scan"; textSize = 12f; isAllCaps = false
-            setOnClickListener {
-                if (isScanning) {
-                    host.service()?.stopMeshDiscovery()
-                    isScanning = false; scanButton.text = "Start scan"
-                } else {
-                    host.service()?.startMeshDiscovery()
-                    isScanning = true; scanButton.text = "Stop scan"
-                }
-            }
-        }
-        scanRow.addView(scanButton)
+        col.addView(Ui.section(context, "Paired devices"))
         val hint = TextView(context).apply {
             textSize = 12f; setTextColor(Ui.DIM)
-            text = "  Ensure Bluetooth is enabled on both devices"
-            layoutParams = LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f)
+            text = "Pair devices via Android Settings → Bluetooth, then tap Connect"
+            setPadding(0, 0, 0, Ui.dp(context, 4))
         }
-        scanRow.addView(hint); col.addView(scanRow)
+        col.addView(hint)
 
-        discoveredLabel = TextView(context).apply {
-            textSize = 13f; setTextColor(Ui.DIM); text = "No devices discovered"
+        pairedLabel = TextView(context).apply {
+            textSize = 13f; setTextColor(Ui.DIM); text = "No paired devices"
             setPadding(0, Ui.dp(context, 4), 0, Ui.dp(context, 4))
         }
-        col.addView(discoveredLabel)
-        discoveredList = LinearLayout(context).apply { orientation = VERTICAL }
-        col.addView(discoveredList)
+        col.addView(pairedLabel)
+        pairedList = LinearLayout(context).apply { orientation = VERTICAL }
+        col.addView(pairedList)
+
+        col.addView(pairedList)
 
         col.addView(Ui.section(context, "Connected peers"))
         connectedLabel = TextView(context).apply {
@@ -87,11 +73,11 @@ class CompanionPane(context: Context, private val host: ControlPlaneHost) :
         modeToggle.text = if (companionMode) "Switch to primary" else "Switch to peripheral"
 
         val svc = host.service()
-        val discovered = svc?.getDiscoveredDevices() ?: emptyList()
-        discoveredLabel.text = if (discovered.isEmpty()) "No devices discovered"
-            else "Found ${discovered.size} device(s):"
-        discoveredList.removeAllViews()
-        for (device in discovered) {
+        val paired = svc?.getPairedDevices() ?: emptyList()
+        pairedLabel.text = if (paired.isEmpty()) "No paired devices"
+            else "Paired: ${paired.size} device(s):"
+        pairedList.removeAllViews()
+        for (device in paired) {
             val row = LinearLayout(context).apply {
                 orientation = HORIZONTAL; setPadding(0, 0, 0, Ui.dp(context, 4))
             }
@@ -109,7 +95,7 @@ class CompanionPane(context: Context, private val host: ControlPlaneHost) :
                 setOnClickListener { svc?.connectToMeshPeer(device) }
             }
             row.addView(dot); row.addView(label); row.addView(connectBtn)
-            discoveredList.addView(row)
+            pairedList.addView(row)
         }
 
         val peers = svc?.getMeshPeers() ?: emptyList()

@@ -42,16 +42,20 @@ class BluetoothTransport(private val context: Context, private val serviceUuid: 
             return true
         } catch (e: Exception) { Log.e(TAG, "start failed", e); return false }
     }
-    fun connectToDevice(device: BluetoothDevice): Boolean {
+    fun connectToDevice(device: BluetoothDevice) {
         val id = device.address
-        if (connectedSockets.containsKey(id)) return true
-        try {
-            val socket = device.createRfcommSocketToServiceRecord(serviceUuid)
-            socket.connect()
-            val peer = ConnectedPeer(id, socket); connectedSockets[id] = peer
-            peer.startReader(); listener?.onDeviceConnected(id)
-            Log.i(TAG, "Connected to $id"); return true
-        } catch (e: Exception) { Log.e(TAG, "connect failed to $id", e); return false }
+        if (connectedSockets.containsKey(id)) return
+        // v1.26 fix: socket.connect() is blocking (5-10 s).
+        // Run on a background thread to avoid the foreground-service ANR.
+        Thread {
+            try {
+                val socket = device.createRfcommSocketToServiceRecord(serviceUuid)
+                socket.connect()
+                val peer = ConnectedPeer(id, socket); connectedSockets[id] = peer
+                peer.startReader(); listener?.onDeviceConnected(id)
+                Log.i(TAG, "Connected to $id")
+            } catch (e: Exception) { Log.e(TAG, "connect failed to $id", e) }
+        }.start()
     }
     fun sendMessage(deviceId: String, json: JSONObject): Boolean {
         return connectedSockets[deviceId]?.send(json) ?: false

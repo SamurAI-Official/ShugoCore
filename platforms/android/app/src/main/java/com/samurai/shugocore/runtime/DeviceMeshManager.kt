@@ -113,9 +113,11 @@ class DeviceMeshManager(private val context: Context) {
     }
 
     fun autoConnectPaired() {
-        for (device in getPairedDevices()) {
-            if (!peers.containsKey(device.address)) connectToPeer(device)
-        }
+        Thread {
+            for (device in getPairedDevices()) {
+                if (!peers.containsKey(device.address)) connectToPeer(device)
+            }
+        }.start()
     }
 
     fun connectToPeer(device: BluetoothDevice) {

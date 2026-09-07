@@ -364,12 +364,33 @@ class DecisionEngine:
         self.autonomy = Autonomy(self)
         self._backend_cache: Dict[str, Any] = {}  # per-model backend adapters
 
-    def _backend_for(self, model: Dict[str, Any]) -> Optional[Any]:
-        """Resolve (and cache) the per-model backend adapter, if configured."""
+    def _backend_for(self, model: Dict[str, Any],
+                     delegation_url: Optional[str] = None) -> Optional[Any]:
+        """Resolve (and cache) the per-model backend adapter, if configured.
+
+        When *delegation_url* is provided (v1.21 delegation manager), it
+        overrides the backend's base URL for this call.  The cached adapter
+        is returned with its base_url temporarily replaced — the caller
+        must create a new backend if a different URL is needed later.
+        """
         config = model.get("backend")
         if not isinstance(config, dict):
             return None  # use the subconscious's global backend
         model_id = str(model.get("id", ""))
+        if delegation_url and model_id not in self._backend_cache:
+            # v1.21: create the backend with the delegated URL instead of
+            # the configured one.  This is a one-shot — the cache entry uses
+            # the original config for future calls without delegation.
+            try:
+                cfg_override = dict(config)
+                cfg_override["base_url"] = delegation_url
+                bk = create_backend(cfg_override)
+                self._backend_cache[model_id] = bk
+                return bk
+            except Exception as exc:
+                self.logger.error(f"Delegated backend for {model_id} failed: {exc}")
+                self._backend_cache[model_id] = None
+                return None
         if model_id not in self._backend_cache:
             try:
                 self._backend_cache[model_id] = create_backend(config)
@@ -422,8 +443,11 @@ class DecisionEngine:
                 self.logger.error(f"Skipping model with invalid id: {model_id!r}")
                 continue
             try:
+                # v1.21: delegation URL from the agent shell's network
+                # delegation manager overrides this model's backend.
+                del_url = task.get("context", {}).get("delegation_url")
                 output = self.subconscious.get_model_output(
-                    model_id, task, backend=self._backend_for(model),
+                    model_id, task, backend=self._backend_for(model, delegation_url=del_url),
                     action_schema=self.available_action_types())
             except Exception as exc:
                 self.logger.error(f"Model {model_id} failed: {type(exc).__name__}")

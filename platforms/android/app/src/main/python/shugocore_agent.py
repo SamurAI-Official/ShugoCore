@@ -92,6 +92,12 @@ class AndroidAgent:
         self.agent_caps: Dict[str, bool] = {}
         self.network_policy: Dict[str, bool] = {"internet": False, "lan": True,
                                                 "localhost": True}
+        # v1.21: LAN server URL (optional — the MacBook Ollama or another
+        # local-network backend). When configured, the delegation manager routes
+        # tasks by tier (LIGHT → localhost, STANDARD → localhost→LAN, etc.).
+        self.lan_api_url: Optional[str] = None
+        # v1.21: Network delegation manager — routes by scope, tier, and health.
+        self.delegation = None  # set in _bootstrap() after import
         # Bounded seq-numbered log buffer the Kotlin UI polls (LogBus source).
         self._log_seq = 0
         self._log_buffer: deque = deque(maxlen=_LOG_BUFFER_MAX)
@@ -203,6 +209,23 @@ class AndroidAgent:
             self._write_diagnostics()
             # v1.20: start ShugoNet runtime for cross-device transport.
             self._start_shugonet()
+            # v1.21: initialise the network delegation manager and register
+            # known backends.  Best-effort: failures degrade gracefully.
+            try:
+                from delegation import BackendScope, DelegationManager, TaskTier
+                self.delegation = DelegationManager()
+                self.delegation.register(BackendScope.LOCALHOST, self.api_url,
+                                         backend_type="android",
+                                         task_tiers=frozenset({TaskTier.LIGHT,
+                                                               TaskTier.STANDARD}))
+                if self.lan_api_url:
+                    self.delegation.register(BackendScope.LAN, self.lan_api_url,
+                                             backend_type="ollama",
+                                             task_tiers=frozenset({TaskTier.STANDARD,
+                                                                   TaskTier.HEAVY}))
+                self.log("AGENT", "delegation manager ready")
+            except Exception as exc:
+                self.log("AGENT", f"delegation init skipped: {exc}", level="WARN")
             if self.init_error:
                 self.log("ERROR", f"agent degraded: {self.init_error}", level="ERROR")
         finally:
@@ -565,6 +588,41 @@ class AndroidAgent:
                 if isinstance(cfg, dict) and cfg.get("type") == "android":
                     cfg["api_url"] = url
         self.log("MODEL", f"backend re-pointed {old} -> {url}")
+        # v1.21: also update the delegation manager's LOCALHOST entry.
+        if self.delegation is not None:
+            try:
+                from delegation import BackendScope
+                self.delegation.register(BackendScope.LOCALHOST, url,
+                                         backend_type="android")
+            except Exception:
+                pass
+
+    def set_lan_url(self, url: Optional[str]) -> None:
+        """v1.21: configure the LAN backend URL (e.g. MacBook Ollama).
+
+        Registers or updates the LAN-scope entry in the delegation manager.
+        Pass ``None`` or empty string to remove the LAN entry.
+        """
+        url = str(url or "").rstrip("/") if url else None
+        old = getattr(self, "lan_api_url", None)
+        self.lan_api_url = url
+        if self.delegation is None:
+            return
+        try:
+            from delegation import BackendScope, TaskTier
+            if url:
+                self.delegation.register(BackendScope.LAN, url,
+                                         backend_type="ollama",
+                                         task_tiers=frozenset({TaskTier.STANDARD,
+                                                               TaskTier.HEAVY}))
+                self.log("MODEL", f"LAN backend set: {url} (was {old})")
+            else:
+                # Unregister LAN backend if URL was cleared.
+                if old:
+                    self.delegation.unregister(BackendScope.LAN, old)
+                self.log("MODEL", "LAN backend cleared")
+        except Exception as exc:
+            self.log("MODEL", f"LAN backend update skipped: {exc}", level="WARN")
 
     def update_capabilities(self, declarations: Any) -> Dict[str, Any]:
         """Receive explicit capability declarations from the Android shell.
@@ -743,6 +801,25 @@ class AndroidAgent:
                                 text = t.get("text", "")[:120]
                                 lines.append(f"{role}: {text}")
                             context["conversation_summary"] = "\n".join(lines)
+                    # v1.21: delegate to the best backend for this task.
+                    # The delegation manager routes by task tier, network
+                    # policy, and health.  The selected URL is injected into
+                    # the task context so the decision engine's _backend_for()
+                    # can use it for model inference.
+                    if self.delegation is not None:
+                        try:
+                            del_url, del_scope = self.delegation.select_backend(
+                                "maintain_agent_loop",
+                                self.network_policy,
+                                consent_has_delegate_internet=(
+                                    self.agent_caps.get("delegate_internet", False)
+                                    if hasattr(self, "agent_caps") else False),
+                            )
+                            if del_url:
+                                context["delegation_url"] = del_url
+                                context["delegation_scope"] = del_scope or "localhost"
+                        except Exception:
+                            pass
                     engine_result = self._execute_engine_task(
                         {"id": f"android-tick-{self.tick_count}",
                          "type": "maintain_agent_loop", "context": context})
@@ -1047,6 +1124,10 @@ class AndroidAgent:
             "decision_source": self._decision_source,
             "attention": (self.attention.snapshot()
                           if self.attention is not None else None),
+            # v1.21: network delegation — active scope, URL, and backends.
+            "delegation": (self.delegation.status()
+                           if self.delegation is not None else None),
+            "lan_api_url": self.lan_api_url or "",
             "policy": {"fail_closed": True, "audit": audit_active,
                        "consent_required": True,
                        "agent_caps": dict(self.agent_caps),

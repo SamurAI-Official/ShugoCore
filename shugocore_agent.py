@@ -725,6 +725,17 @@ class AndroidAgent:
                                         att_state, att_conf = self.attention.evaluate()
                                         context["attention_state"] = str(att_state.value) if hasattr(att_state, "value") else str(att_state)
                                         context["attention_confidence"] = round(att_conf, 2)
+                    # v1.20: inject conversation history into context
+                    if self.interaction is not None:
+                        turns = self.interaction.export_conversation_turns()
+                        if turns:
+                            context["conversation_history"] = turns
+                            lines = []
+                            for t in turns[-8:]:
+                                role = t.get("role", "?").upper()[:5]
+                                text = t.get("text", "")[:120]
+                                lines.append(f"{role}: {text}")
+                            context["conversation_summary"] = "\n".join(lines)
                     engine_result = self._execute_engine_task(
                         {"id": f"android-tick-{self.tick_count}",
                          "type": "maintain_agent_loop", "context": context})
@@ -744,6 +755,9 @@ class AndroidAgent:
                          decision) = self._classify_engine_result(engine_result)
                         if outcome == "SUCCESS":
                             action = "executed"
+                        # v1.20: store conversation turns in Tier-2 memory
+                        if self.memory is not None and self.interaction is not None:
+                            self._store_conversation_memory()
                         decision, action = self._enrich_from_memory(decision, action)
             else:
                 outcome = "ENGINE_FAILURE"
@@ -902,6 +916,37 @@ class AndroidAgent:
             self.log("MEMORY", "consolidation pass complete")
         except Exception as exc:
             logger.error("Consolidation error: %s", exc)
+
+    def _store_conversation_memory(self) -> None:
+        """v1.20: persist recent conversation turns into Tier-2 semantic
+        memory so the agent can recall past conversations. Each turn is
+        stored as a ``conversation_turn`` fact with the speaker role and
+        text, linked to entities extracted from the text."""
+        try:
+            turns = self.interaction.export_conversation_turns()
+            if not turns:
+                return
+            # Store the last human turn and the last agent turn as facts
+            stored = 0
+            for turn in turns[-4:]:  # last 2 exchanges max
+                role = turn.get("role", "?")
+                text = turn.get("text", "")
+                if not text:
+                    continue
+                content = f"[{role.upper()}] {text}"
+                rid = turn.get("response_id") or turn.get("ts", "")
+                self.memory.tier2.store_fact(
+                    content=content[:500],
+                    kind="conversation_turn",
+                    salience=0.6,
+                    metadata={"role": role, "response_id": rid,
+                              "conversation_id": str(turn.get("ts", ""))},
+                )
+                stored += 1
+            if stored > 0:
+                self.log("MEMORY", f"stored {stored} conversation turn(s) in Tier-2")
+        except Exception as exc:
+            logger.debug("Conversation memory store skipped: %s", exc)
 
     def sensor_test_cycle(self, steps: int = 5) -> Dict[str, Any]:
         """Bounded OBSERVE->tick cycle; returns a structured report."""

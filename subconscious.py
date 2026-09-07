@@ -51,16 +51,30 @@ def _build_decision_prompt(task_json: str, action_schema) -> str:
     names = set(action_schema)
     speech_line = ""
     if "speak" in names or "ask_user" in names:
-        # v1.18 voice dialect: persona + the one-complete-sentence rule;
-        # the small model needs it stated explicitly to finish sentences.
         speech_line = (
             "You are Shugo, a calm and friendly local assistant; you speak "
             "in first person. If you choose 'speak' or 'ask_user', put your "
             "words in params and say exactly ONE warm, complete sentence - "
             "never a fragment, never a list. ")
+    # v1.20: extract conversation summary from task context if present
+    conv_line = ""
+    try:
+        import json as _json
+        task_dict = _json.loads(task_json)
+        ctx = task_dict.get("context", {})
+        if ctx.get("conversation_summary"):
+            conv_line = "Recent conversation:\n" + ctx["conversation_summary"] + "\n\n"
+        if ctx.get("human", {}).get("user_context", {}).get("entity_facts"):
+            facts = ctx["human"]["user_context"]["entity_facts"]
+            conv_line += "Relevant facts from memory:\n"
+            for f in facts[:3]:
+                conv_line += "  - " + f.get("content", "")[:120] + "\n"
+            conv_line += "\n"
+    except Exception:
+        pass
     return (
         "You are the decision module of an autonomous agent. "
-        + speech_line + "Respond ONLY with a "
+        + speech_line + conv_line + "Respond ONLY with a "
         "single-line JSON object with keys: \"action_type\" (one of "
         f"{types}), \"params\" (object), \"confidence\" "
         "(number between 0.0 and 1.0), and \"text\" (short explanation). "

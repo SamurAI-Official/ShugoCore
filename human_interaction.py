@@ -450,6 +450,16 @@ class InteractionBus:
             self._conversation_events.clear()
         return events
 
+    # v1.20 conversation memory: export completed turns for Tier-2 storage.
+    # Each turn is a dict with role, text, timestamp, and causal IDs so the
+    # memory layer can link entities and facts to the exact conversation.
+    def export_conversation_turns(self) -> List[Dict[str, Any]]:
+        """Return a snapshot of recent conversation turns suitable for
+        Tier-2 memory storage. Returns the last N turns; safe to call
+        repeatedly (no drain)."""
+        with self._lock:
+            return [dict(t) for t in list(self._conversation)]
+
     def pipeline_health(self, model_ready: Optional[bool] = None,
                         tts_attached: Optional[bool] = None,
                         memory_ok: Optional[bool] = None) -> Dict[str, Any]:

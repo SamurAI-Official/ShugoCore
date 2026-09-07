@@ -22,6 +22,7 @@ import com.samurai.shugocore.runtime.PerceptionState
 import com.samurai.shugocore.runtime.ServerStats
 import com.samurai.shugocore.runtime.SensorCapabilityManager
 import com.samurai.shugocore.runtime.DeviceMeshManager
+import com.samurai.shugocore.runtime.SensorPublisherService
 import com.samurai.shugocore.runtime.VisionProvider
 import com.chaquo.python.Python
 import com.chaquo.python.PyObject
@@ -593,6 +594,7 @@ class ShugoCoreService : Service() {
                       "last_age_s" to (if (ageMs >= 0) ageMs / 1000 else -1L),
                       "observations" to HumanInteractionBus.acceptedCount())
             },
+            "companion_mode" to companionMode,
         )
     }
 
@@ -690,6 +692,74 @@ class ShugoCoreService : Service() {
                 "Recommend ${c.modelBudget} @ ${c.recommendedQuant}, ${c.ramGb}GB RAM, GPU=${CapabilityDetector.getGpuLayers(c.soc)} layers"
             } ?: "Capability detection unavailable"
         } catch (e: Exception) { "Capability detection failed: ${e.message}" }
+    }
+
+    // -- v1.23 companion mode -----------------------------------------------
+
+    @Volatile var companionMode: Boolean = false
+        private set
+
+    fun toggleCompanionMode() {
+        companionMode = !companionMode
+        if (companionMode) {
+            startPeripheralMode()
+        } else {
+            stopPeripheralMode()
+        }
+        LogBus.log(LogBus.Category.AGENT,
+            "companion mode: ${if (companionMode) "PERIPHERAL" else "PRIMARY"}")
+    }
+
+    private fun startPeripheralMode() {
+        try {
+            // Stop the full agent when in peripheral mode
+            setAgentRunning(false) {}
+            // Start the sensor publisher service
+            val intent = Intent(this, SensorPublisherService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+            // Connect to primary via Bluetooth discovery
+            meshManager?.startDiscovery()
+            LogBus.log(LogBus.Category.AGENT, "peripheral mode started")
+        } catch (e: Exception) {
+            Log.e(TAG, "peripheral mode start failed", e)
+        }
+    }
+
+    private fun stopPeripheralMode() {
+        try {
+            stopService(Intent(this, SensorPublisherService::class.java))
+            meshManager?.stopDiscovery()
+        } catch (e: Exception) {
+            Log.e(TAG, "peripheral mode stop failed", e)
+        }
+    }
+
+    fun startMeshDiscovery() {
+        meshManager?.startDiscovery()
+    }
+
+    fun stopMeshDiscovery() {
+        meshManager?.stopDiscovery()
+    }
+
+    fun getDiscoveredDevices(): List<android.bluetooth.BluetoothDevice> {
+        return meshManager?.discoveredDevices?.toList() ?: emptyList()
+    }
+
+    fun getMeshPeers(): List<com.samurai.shugocore.runtime.MeshPeer> {
+        return meshManager?.getPeers() ?: emptyList()
+    }
+
+    fun connectToMeshPeer(device: android.bluetooth.BluetoothDevice) {
+        meshManager?.connectToPeer(device)
+    }
+
+    fun disconnectMeshPeer(deviceId: String) {
+        meshManager?.disconnectPeer(deviceId)
     }
 
     /**

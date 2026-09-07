@@ -38,4 +38,5 @@ interface ControlPlaneHost {
     fun onNetworkToggled(key: String, enabled: Boolean)
     fun onBackupUrlChanged(url: String)
     fun onModelProbeClicked()
+    fun onCompanionModeToggle()
 }

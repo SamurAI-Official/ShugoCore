@@ -11,6 +11,7 @@ import android.util.Log
 import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 
 data class MeshPeer(
     val deviceId: String,
@@ -33,6 +34,8 @@ class DeviceMeshManager(private val context: Context) {
     private val peers = ConcurrentHashMap<String, MeshPeer>()
     private val bluetoothAdapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
     private var discoveryRegistered = false
+    /** Devices discovered during Bluetooth scan (not yet connected). */
+    val discoveredDevices = CopyOnWriteArrayList<BluetoothDevice>()
     fun start(): Boolean {
         transport.setListener(object : BluetoothTransport.Listener {
             override fun onMessageReceived(msg: BluetoothMessage) = handleMessage(msg.deviceId, msg.json)
@@ -95,8 +98,9 @@ class DeviceMeshManager(private val context: Context) {
         }
         onPeerMessage?.invoke(deviceId, json)
     }
-    private fun startDiscovery() {
+    fun startDiscovery() {
         try {
+            discoveredDevices.clear()
             val filter = IntentFilter(BluetoothDevice.ACTION_FOUND).apply {
                 addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
             }
@@ -105,16 +109,25 @@ class DeviceMeshManager(private val context: Context) {
             bluetoothAdapter?.startDiscovery()
         } catch (e: Exception) { Log.e(TAG, "discovery", e) }
     }
-    private fun stopDiscovery() {
+    fun stopDiscovery() {
         try { if (discoveryRegistered) context.unregisterReceiver(discoveryReceiver) } catch (_: Exception) {}
         bluetoothAdapter?.cancelDiscovery()
+    }
+    fun connectToPeer(device: BluetoothDevice) {
+        transport.connectToDevice(device)
+    }
+    fun disconnectPeer(deviceId: String) {
+        transport.disconnectDevice(deviceId)
+        peers.remove(deviceId)
     }
     private val discoveryReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context, intent: Intent) {
             when (intent.action) {
                 BluetoothDevice.ACTION_FOUND -> {
                     val d = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
-                    if (!peers.containsKey(d.address)) transport.connectToDevice(d)
+                    if (!peers.containsKey(d.address) && !discoveredDevices.any { it.address == d.address }) {
+                        discoveredDevices.add(d)
+                    }
                 }
                 BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> bluetoothAdapter?.startDiscovery()
             }

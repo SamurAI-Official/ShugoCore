@@ -34,6 +34,7 @@ import com.samurai.shugocore.ui.NodeStatusHeader
 import com.samurai.shugocore.ui.SecurityPane
 import com.samurai.shugocore.ui.SensorsPane
 import com.samurai.shugocore.ui.ServerPane
+import com.samurai.shugocore.ui.CompanionPane
 import com.samurai.shugocore.ui.TabBar
 
 class MainActivity : AppCompatActivity(), ControlPlaneHost {
@@ -45,6 +46,7 @@ class MainActivity : AppCompatActivity(), ControlPlaneHost {
     private lateinit var sensorsPane: SensorsPane
     private lateinit var securityPane: SecurityPane
     private lateinit var logPane: LogPane
+    private lateinit var companionPane: CompanionPane
     private var currentTab = 0
 
     private lateinit var modelDownloader: ModelDownloader
@@ -108,9 +110,10 @@ class MainActivity : AppCompatActivity(), ControlPlaneHost {
         sensorsPane = SensorsPane(this, this)
         securityPane = SecurityPane(this, this)
         logPane = LogPane(this)
+        companionPane = CompanionPane(this, this)
 
-        val tabs = listOf("SERVER", "AGENT", "SENSORS", "SECURITY", "LOG")
-        val panes = listOf(serverPane, agentPane, sensorsPane, securityPane, logPane)
+        val tabs = listOf("SERVER", "AGENT", "SENSORS", "SECURITY", "LOG", "COMPANION")
+        val panes = listOf(serverPane, agentPane, sensorsPane, securityPane, logPane, companionPane)
         root.addView(TabBar(this, tabs) { index ->
             currentTab = index
             container.removeAllViews()
@@ -247,6 +250,12 @@ class MainActivity : AppCompatActivity(), ControlPlaneHost {
         service()?.runModelProbe { msg -> serverPane.status(msg) }
     }
 
+    override fun onCompanionModeToggle() {
+        val svc = service()
+        if (svc == null) return
+        svc.toggleCompanionMode()
+    }
+
     private var lastHumanPingMs = 0L
 
     /**
@@ -284,7 +293,8 @@ class MainActivity : AppCompatActivity(), ControlPlaneHost {
             1 -> agentPane.bind(snap)
             2 -> sensorsPane.bind(snap)
             3 -> securityPane.bind(snap)
-            // LOG tab (4) refreshes itself via its LogBus listener
+            4 -> { /* LOG tab refreshes itself */ }
+            5 -> companionPane.bind(snap)
         }
     }
 }

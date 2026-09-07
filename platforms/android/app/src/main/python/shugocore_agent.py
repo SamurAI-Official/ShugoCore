@@ -104,6 +104,8 @@ class AndroidAgent:
         self.attention = AttentionLayer() if _HAS_ATTENTION else None
         # Last-tick decision source for cycle-truth observability.
         self._decision_source: str = "none"
+        # v1.20: dedup cursor for conversation memory storage.
+        self._last_stored_turn_count: int = 0
         self._last_stages: List[str] = []
         self._last_decision = "—"
         self._last_action = "—"
@@ -925,33 +927,38 @@ class AndroidAgent:
             logger.error("Consolidation error: %s", exc)
 
     def _store_conversation_memory(self) -> None:
-        """v1.20: persist recent conversation turns into Tier-2 semantic
-        memory so the agent can recall past conversations. Each turn is
-        stored as a ``conversation_turn`` fact with the speaker role and
-        text, linked to entities extracted from the text."""
+        """v1.20: persist NEW conversation turns into Tier-2 semantic memory.
+        Uses a cursor (_last_stored_turn_count) to avoid storing the same
+        turn across multiple ticks — only stores turns that have been added
+        since the last call."""
         try:
             turns = self.interaction.export_conversation_turns()
             if not turns:
                 return
-            # Store the last human turn and the last agent turn as facts
+            # Only store new turns since last call (dedup by index).
+            cursor = getattr(self, "_last_stored_turn_count", 0)
+            if len(turns) <= cursor:
+                return
             stored = 0
-            for turn in turns[-4:]:  # last 2 exchanges max
+            for turn in turns[cursor:]:  # only new turns
                 role = turn.get("role", "?")
                 text = turn.get("text", "")
                 if not text:
                     continue
                 content = f"[{role.upper()}] {text}"
-                rid = turn.get("response_id") or turn.get("ts", "")
+                conv_id = turn.get("conversation_id",
+                                   turn.get("response_id", ""))
                 self.memory.tier2.store_fact(
                     content=content[:500],
                     kind="conversation_turn",
                     salience=0.6,
-                    metadata={"role": role, "response_id": rid,
-                              "conversation_id": str(turn.get("ts", ""))},
+                    metadata={"role": role,
+                              "conversation_id": str(conv_id)},
                 )
                 stored += 1
+            self._last_stored_turn_count = len(turns)
             if stored > 0:
-                self.log("MEMORY", f"stored {stored} conversation turn(s) in Tier-2")
+                self.log("MEMORY", f"stored {stored} new conversation turn(s) in Tier-2")
         except Exception as exc:
             logger.debug("Conversation memory store skipped: %s", exc)
 
@@ -977,7 +984,8 @@ class AndroidAgent:
     def _recent_conversation_facts(memory: Any, limit: int = 5) -> List[Dict[str, Any]]:
         """v1.20: return recent conversation turns from Tier-2 memory."""
         try:
-            facts = memory.tier2.search("conversation", top_k=limit, min_salience=0.1)
+            # Query a larger pool so the kind filter doesn't miss results.
+            facts = memory.tier2.search("conversation", top_k=20, min_salience=0.1)
             # Filter to only conversation_turn kind
             conv_facts = [f for f in facts if f.get("kind") == "conversation_turn"]
             return [{"content": f["content"][:200], "salience": round(f.get("salience", 0), 2),

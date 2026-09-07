@@ -348,7 +348,8 @@ class InteractionBus:
                 self._pending_question = None
                 self._conversation.append({"role": "human",
                                            "text": transcript,
-                                           "ts": entry["timestamp"]})
+                                           "ts": entry["timestamp"],
+                                           "conversation_id": self._conversation_id})
             entry["seq"] = self._seq
             self._buffer.append(entry)
             self._counts[observation.type] = (
@@ -417,7 +418,8 @@ class InteractionBus:
                 self._conversation.append({"role": "agent",
                                            "text": response.content,
                                            "ts": self._clock(),
-                                           "response_id": rsp_id})
+                                           "response_id": rsp_id,
+                                           "conversation_id": self._conversation_id})
                 # The turn is complete — clear for the next one.
                 self._current_turn_id = None
                 if response.expects_answer:

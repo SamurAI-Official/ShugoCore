@@ -63,12 +63,12 @@ def _build_decision_prompt(task_json: str, action_schema) -> str:
         task_dict = _json.loads(task_json)
         ctx = task_dict.get("context", {})
         if ctx.get("conversation_summary"):
-            conv_line = "Recent conversation:\n" + ctx["conversation_summary"] + "\n\n"
+            conv_line = "Recent conversation:\n" + sanitize_text(ctx["conversation_summary"], 2000) + "\n\n"
         if ctx.get("human", {}).get("user_context", {}).get("entity_facts"):
             facts = ctx["human"]["user_context"]["entity_facts"]
             conv_line += "Relevant facts from memory:\n"
             for f in facts[:3]:
-                conv_line += "  - " + f.get("content", "")[:120] + "\n"
+                conv_line += "  - " + sanitize_text(str(f.get("content", "")), 200)[:120] + "\n"
             conv_line += "\n"
     except Exception:
         pass

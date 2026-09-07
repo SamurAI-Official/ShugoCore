@@ -6,9 +6,13 @@
 package com.samurai.shugocore.ui
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.samurai.shugocore.runtime.ControlPlaneHost
+import com.samurai.shugocore.runtime.PerceptionState
 import com.samurai.shugocore.runtime.SensorCapabilityManager
 
 class SensorsPane(context: Context, private val host: ControlPlaneHost) :
@@ -21,6 +25,13 @@ class SensorsPane(context: Context, private val host: ControlPlaneHost) :
     private val ackSection: TextView
     private val meshPeersLabel: TextView
     private val meshPeersList: LinearLayout
+
+    // -- v1.24 sensor verification ------------------------------------------
+    private val cameraPreview: ImageView
+    private val cameraInfo: TextView
+    private val micStatus: TextView
+    private val transcript: TextView
+    private val vadBar: TextView
 
     init {
         orientation = VERTICAL
@@ -74,6 +85,44 @@ class SensorsPane(context: Context, private val host: ControlPlaneHost) :
             orientation = VERTICAL
         }
         col.addView(meshPeersList)
+
+        // -- v1.24 sensor verification: live camera + microphone ------------
+        col.addView(Ui.section(context, "What Shugo sees"))
+        cameraPreview = ImageView(context).apply {
+            setImageBitmap(Bitmap.createBitmap(
+                Ui.dp(context, 160), Ui.dp(context, 120),
+                Bitmap.Config.RGB_565))
+            layoutParams = LinearLayout.LayoutParams(
+                Ui.dp(context, 160), Ui.dp(context, 120))
+        }
+        col.addView(cameraPreview)
+        cameraInfo = TextView(context).apply {
+            textSize = 13f; setTextColor(Ui.DIM)
+            text = "Waiting for camera…"
+            setPadding(0, Ui.dp(context, 2), 0, Ui.dp(context, 4))
+        }
+        col.addView(cameraInfo)
+
+        col.addView(Ui.section(context, "What Shugo hears"))
+        micStatus = TextView(context).apply {
+            textSize = 13f; setTextColor(Ui.DIM)
+            text = "Microphone inactive"
+            setPadding(0, Ui.dp(context, 2), 0, Ui.dp(context, 4))
+        }
+        col.addView(micStatus)
+        vadBar = TextView(context).apply {
+            textSize = 12f; setTextColor(Ui.WARN)
+            text = "Voice level: —"
+            setPadding(0, Ui.dp(context, 2), 0, Ui.dp(context, 4))
+        }
+        col.addView(vadBar)
+        transcript = TextView(context).apply {
+            textSize = 13f; typeface = android.graphics.Typeface.MONOSPACE
+            setTextColor(Ui.TEXT)
+            text = "No speech detected yet"
+            setPadding(0, Ui.dp(context, 2), 0, Ui.dp(context, 4))
+        }
+        col.addView(transcript)
     }
 
     fun bind(snap: Map<*, *>?) {
@@ -155,5 +204,59 @@ class SensorsPane(context: Context, private val host: ControlPlaneHost) :
             row.addView(dot); row.addView(label)
             meshPeersList.addView(row)
         }
+
+        // -- v1.24 sensor verification bind ---------------------------------
+        // Camera preview: render the latest JPEG frame if available.
+        val jpeg: ByteArray? = PerceptionState.lastPreviewJpeg
+        if (jpeg != null && jpeg.size > 0) {
+            try {
+                val bmp = android.graphics.BitmapFactory.decodeByteArray(
+                    jpeg, 0, jpeg.size)
+                if (bmp != null) cameraPreview.setImageBitmap(bmp)
+            } catch (_: Exception) { /* keep last frame on decode failure */ }
+        }
+        val faceCount: Int? = if (PerceptionState.visualPresence.fresh(5_000))
+            PerceptionState.visualPresence.value else null
+        cameraInfo.text = when {
+            faceCount != null && faceCount >= 0 ->
+                "face_count=$faceCount · gaze=${if (PerceptionState.gazeTowardCamera) "toward_camera" else "away"}"
+            else -> "no face detected (waiting)"
+        }
+        cameraInfo.setTextColor(
+            if (faceCount != null && faceCount > 0) Ui.OK else Ui.DIM)
+
+        // Microphone status from PerceptionState signals.
+        val micActive = PerceptionState.micActive
+        val voiceActive = PerceptionState.voiceDetected
+        val humanSpeech = PerceptionState.humanSpeech
+        micStatus.text = when {
+            humanSpeech -> "🎤 ● LISTENING (speech being transcribed)"
+            voiceActive -> "🎤 ● VOICE ACTIVITY"
+            micActive -> "🎤 ● Active (awaiting speech)"
+            else -> "🎤 ○ Mic inactive"
+        }
+        micStatus.setTextColor(when {
+            humanSpeech -> Ui.OK
+            voiceActive -> Ui.WARN
+            micActive -> Ui.OK
+            else -> Ui.DIM
+        })
+        // VAD meter: a fake "level" from how recently mic data arrived.
+        val micAge = System.currentTimeMillis() - PerceptionState.lastMicActivityMs
+        val level = when {
+            micAge < 1_000 -> if (voiceActive || humanSpeech) "████" else "██░░"
+            micAge < 3_000 -> "██░░"
+            micAge < 10_000 -> "█░░░"
+            else -> "░░░░"
+        }
+        vadBar.text = "Voice level: $level"
+        vadBar.setTextColor(
+            if (voiceActive || humanSpeech) Ui.OK else Ui.WARN)
+        // Last transcript.
+        val lastTrans = PerceptionState.lastTranscript ?: ""
+        transcript.text = if (lastTrans.isNotEmpty()) "\"$lastTrans\""
+            else "No speech detected yet"
+        transcript.setTextColor(
+            if (lastTrans.isNotEmpty()) Ui.TEXT else Ui.DIM)
     }
 }

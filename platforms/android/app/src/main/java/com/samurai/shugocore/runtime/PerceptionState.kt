@@ -69,6 +69,10 @@ object PerceptionState {
     @Volatile var taskInFlight: Boolean = false
     @Volatile var ttsLastEndMs: Long = 0L
 
+    // -- v1.24 sensor verification previews ---------------------------------
+    /** Latest camera frame as JPEG bytes (null until first frame). */
+    @Volatile var lastPreviewJpeg: ByteArray? = null
+
     // -- v1.22 device mesh signals ---
     @Volatile var meshPeerCount: Int = 0
     @Volatile var meshPeersJson: String = "[]"

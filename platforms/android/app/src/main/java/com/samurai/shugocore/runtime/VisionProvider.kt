@@ -147,6 +147,13 @@ class VisionProvider(private val context: Context) {
             val bitmap = frameToRgb565(proxy, ANALYSIS_WIDTH) ?: return
             PerceptionState.lastCameraFrameMs = now
 
+            // v1.24: store a JPEG preview of the camera frame for the UI.
+            try {
+                val jpegStream = java.io.ByteArrayOutputStream()
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 60, jpegStream)
+                PerceptionState.lastPreviewJpeg = jpegStream.toByteArray()
+            } catch (_: Exception) { /* preview is best-effort */ }
+
             val faces = arrayOfNulls<android.media.FaceDetector.Face>(MAX_FACES)
             val detector = android.media.FaceDetector(
                 bitmap.width, bitmap.height, MAX_FACES)

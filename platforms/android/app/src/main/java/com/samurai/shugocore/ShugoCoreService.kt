@@ -96,6 +96,12 @@ class ShugoCoreService : Service() {
         // v1.22: start Bluetooth device mesh for peripheral sensors.
         try {
             meshManager = DeviceMeshManager(this)
+            // v1.27: push live sensor-agent snapshots to the Python agent the
+            // instant a sensor message arrives — decouples mesh awareness from
+            // the 1 Hz tick so the agent's observation context is near-real-time.
+            meshManager?.onSensorAgentsChanged = { snapshot ->
+                pyAgent?.callAttr("update_mesh_peers", snapshot)
+            }
             meshManager?.start()
             meshManager?.autoConnectPaired()
             meshManager?.role = if (companionMode) "peripheral" else "primary"
@@ -128,8 +134,32 @@ class ShugoCoreService : Service() {
                             try {
                                 // Serialize to JSON so Chaquopy doesn't hand Python
                                 // a non-iterable LinkedHashMap proxy.
-                                val json = org.json.JSONObject(tm.getTelemetryMap()).toString()
-                                pyAgent?.callAttr("update_telemetry_json", json)
+                                val obj = org.json.JSONObject()
+                                for ((k, v) in tm.getTelemetryMap()) obj.put(k, v)
+                                // v1.27: fold the live mesh peer snapshot into the
+                                // telemetry so the Python agent's observation context
+                                // and get_status_json actually see connected
+                                // peripherals (mesh_peer_count, peer_observations).
+                                // Previously only thermal/device sensor values were
+                                // pushed, so mesh peers stayed invisible to the agent
+                                // even though the COMPANION UI (reading Kotlin's
+                                // getMeshPeers() directly) showed them as connected.
+                                val peers = getMeshPeers()
+                                val arr = org.json.JSONArray()
+                                for (peer in peers) {
+                                    arr.put(org.json.JSONObject()
+                                        .put("device_id", peer.deviceId)
+                                        .put("name", peer.name)
+                                        .put("role", peer.role)
+                                        .put("camera", peer.capabilities.contains("camera"))
+                                        .put("mic", peer.capabilities.contains("microphone"))
+                                        .put("online", peer.online)
+                                        .put("sensor_status",
+                                            org.json.JSONObject(peer.sensorStatus)))
+                                }
+                                obj.put("mesh_peer_count", peers.size)
+                                obj.put("mesh_peers", arr)
+                                pyAgent?.callAttr("update_telemetry_json", obj.toString())
                             } catch (e: Exception) { Log.w(TAG, "telemetry push failed: ${e.message}") }
                         }
                         pyAgent?.callAttr("tick")
@@ -571,7 +601,7 @@ class ShugoCoreService : Service() {
     }
 
     /** Full node snapshot for the control-plane UI (cheap, main-thread safe). */
-    fun getNodeSnapshot(): Map<String, Any> {
+    fun getNodeSnapshot(): Map<String, Any?> {
         val thermal = thermalMonitor?.getThermalInfo()
         return mapOf(
             "agent_status" to getAgentStatus(),
@@ -610,8 +640,27 @@ class ShugoCoreService : Service() {
                 )
             },
             "mesh_peer_count" to getMeshPeers().size,
+            // v1.27: richer peripheral-mode state so the UI can confirm a mode
+            // switch completed and show what the peripheral is streaming to.
+            "sensor_agent_state" to sensorAgentState(),
+            "sensor_agent_target" to sensorAgentTarget,
+            "last_sensor_push_ms" to SensorPublisherService.lastSensorPushMs,
         )
     }
+
+    /** v1.27: human-readable peripheral/primary state for the COMPANION pane. */
+    private fun sensorAgentState(): String {
+        if (!companionMode) return "primary"
+        val svcRunning = SensorPublisherService.isRunning
+        val hasPeer = getMeshPeers().any { it.online }
+        return when {
+            svcRunning && hasPeer -> "peripheral_streaming"
+            svcRunning -> "peripheral_connecting"
+            else -> "peripheral_disconnected"
+        }
+    }
+
+    @Volatile private var sensorAgentTarget: String? = null
 
     private fun capabilitySnapshotMaps(): List<Map<String, Any>> =
         capabilityManager?.snapshot()?.map { c ->
@@ -731,9 +780,22 @@ class ShugoCoreService : Service() {
             setAgentRunning(false) {}
             // Start the sensor publisher service with the mesh transport
             val intent = Intent(this, SensorPublisherService::class.java)
-            // Pass the primary device's BT address so the peripheral can connect as a client
-            val myBtAddr = BluetoothAdapter.getDefaultAdapter()?.address
-            intent.putExtra(SensorPublisherService.EXTRA_PRIMARY_ID, myBtAddr)
+            // The peripheral streams TO the primary. Use the first mesh peer the
+            // transport has already linked up with (its BT device id) as the
+            // primary to dial out to. If none is known yet we still start the
+            // service with no outbound id — SensorPublisherService runs its own
+            // RFCOMM server so the primary can connect in via autoConnectPaired().
+            // IMPORTANT: we must NOT pass this device's own BT address here —
+            // that made the peripheral try to RFCOMM-connect to itself, so the
+            // direct primary link never formed.
+            val primaryPeer = getMeshPeers().firstOrNull { it.online } ?: getMeshPeers().firstOrNull()
+            val primaryAddr = primaryPeer?.deviceId
+            if (primaryAddr != null) {
+                intent.putExtra(SensorPublisherService.EXTRA_PRIMARY_ID, primaryAddr)
+                sensorAgentTarget = primaryPeer?.name ?: primaryAddr
+            }
+            // v1.27: hint the service how fast to stream (primary may clamp this).
+            intent.putExtra(SensorPublisherService.EXTRA_STREAM_INTERVAL_MS, 200L)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(intent)
             } else {
@@ -741,7 +803,7 @@ class ShugoCoreService : Service() {
             }
             // Ensure the primary auto-connects to peripherals
             meshManager?.autoConnectPaired()
-            LogBus.log(LogBus.Category.AGENT, "peripheral mode started, primary addr=$myBtAddr")
+            LogBus.log(LogBus.Category.AGENT, "peripheral mode started, target=$sensorAgentTarget")
         } catch (e: Exception) {
             Log.e(TAG, "peripheral mode start failed", e)
         }
@@ -749,6 +811,7 @@ class ShugoCoreService : Service() {
 
     private fun stopPeripheralMode() {
         try {
+            sensorAgentTarget = null
             stopService(Intent(this, SensorPublisherService::class.java))
         } catch (e: Exception) {
             Log.e(TAG, "peripheral mode stop failed", e)

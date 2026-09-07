@@ -519,6 +519,57 @@ class AndroidAgent:
             except Exception:
                 pass
 
+    def update_mesh_peers(self, data_json: Optional[str] = None) -> None:
+        """v1.27: lightweight, synchronous push of the live mesh-peer snapshot
+        into telemetry. Called from the Kotlin mesh transport whenever a sensor
+        message arrives, so the agent's observation context reflects near-real-
+        time sensor-agent state WITHOUT waiting for the next 1 Hz tick (which
+        does expensive LLM work). Only mutates the mesh keys on telemetry; the
+        thermal/device-sensor keys set by update_telemetry_json are untouched."""
+        import json as _json
+        if not data_json:
+            return
+        try:
+            data = _json.loads(data_json) if isinstance(data_json, str) else data_json
+            if not isinstance(data, dict):
+                return
+            mesh = data.get("mesh_peers")
+            if mesh is None:
+                return
+            if isinstance(mesh, str):
+                mesh = _json.loads(mesh)
+            if not isinstance(mesh, list):
+                return
+            # Ensure telemetry is a dict (update_telemetry_json may not have run).
+            if not isinstance(self.telemetry, dict):
+                self.telemetry = {}
+            self.telemetry["mesh_peers"] = mesh
+            self.telemetry["mesh_peer_count"] = len(mesh)
+            # Also mirror into last_observation so get_status() surfaces the
+            # near-real-time mesh count on the AGENT/COMPANION UI without
+            # waiting for the next tick.
+            if isinstance(self.last_observation, dict):
+                self.last_observation["mesh_peers"] = mesh
+                self.last_observation["mesh_peer_count"] = len(mesh)
+            # Inject remote-camera observations into the human-interaction bus,
+            # mirroring _get_observation's mesh handling but in real time.
+            if self.interaction is not None:
+                from human_interaction import HumanObservation
+                for peer in mesh:
+                    if not isinstance(peer, dict):
+                        continue
+                    if peer.get("camera"):
+                        obs, _ = HumanObservation.from_dict({
+                            "type": "visual",
+                            "source": "remote:{}".format(peer.get("device_id", "unknown")),
+                            "payload": {"person_present": True, "face_count": 1},
+                            "privacy_scope": "local",
+                        })
+                        if obs is not None:
+                            self.interaction.publish(obs)
+        except Exception:
+            pass
+
     def publish_human_observation(
             self, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Ingest one HumanObservation from a provider (Kotlin edge, tests,

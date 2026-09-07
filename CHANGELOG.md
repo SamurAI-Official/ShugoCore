@@ -4,6 +4,24 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.27.0] - 2026-09-07 — peripheral-mode confirmation, sensor-agent state, mesh latency
+
+### Peripheral-mode confirmation (new)
+- **`CompanionPane.kt`** — reads `companion_mode` from the top-level node snapshot (not the Python `agent_status`, which is empty when the agent is stopped). The toggle now correctly reflects the active mode.
+- **Live status line** — the COMPANION pane now shows `"Streaming sensors to <name> — connected"`, `"Peripheral — connecting…"`, `"Peripheral — link down; will retry"`, or `"Primary agent — N sensor agent(s) connected"`.
+- **`ShugoCoreService.getNodeSnapshot()`** — exposes `sensor_agent_state`, `sensor_agent_target`, and `last_sensor_push_ms` so the UI can confirm a mode switch completed and show streaming freshness.
+
+### Sensor-agent state networking (new)
+- **`SensorPublisherService.kt`** — peripherals now broadcast `device_announce` (role + camera/mic/compute capabilities) on startup and `heartbeat` every 2 s so the primary knows sensor agents and their liveness.
+- **`DeviceMeshManager.kt`** — `getSensorAgents()` returns peripheral peers that are online and not stale; `pushSensorAgents()` serializes and pushes the live snapshot immediately on every inbound sensor/message.
+- **`ShugoCoreService.kt`** — `onSensorAgentsChanged` calls `pyAgent.update_mesh_peers()` synchronously, decoupling mesh awareness from the 1 Hz tick.
+- **`shugocore_agent.py`** — `update_mesh_peers()` mirrors mesh data into both `self.telemetry` and `self.last_observation` so `get_status()` surfaces near-real-time mesh state.
+
+### Latency reduction
+- **Stream interval** 1000 ms → 200 ms (5×) on `SensorPublisherService`, with adaptive thermal back-off (>70 °C → 500 ms).
+- **Merged sensor message** — camera + mic payloads sent in one `sensor/batch` message per interval (one serialize + one RFCOMM write instead of two).
+- **Real-time mesh push** — mesh peer state reaches the agent's observation context on message arrival, not on the next tick.
+
 ## [1.20.0] - 2026-09-06 — attention verification layer, camera hardening, ShugoNet transport
 
 ### Attention verification layer (new)

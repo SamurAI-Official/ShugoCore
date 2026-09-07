@@ -27,14 +27,28 @@ class DeviceMeshManager(private val context: Context) {
     companion object {
         private const val TAG = "DeviceMesh"
         val MESH_SERVICE_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
+        /** A peer is considered offline if no message arrives within this window. */
+        private const val STALE_THRESHOLD_MS = 5_000L
     }
     var onPeerConnected: ((String) -> Unit)? = null
     var onPeerDisconnected: ((String) -> Unit)? = null
     var onPeerMessage: ((String, JSONObject) -> Unit)? = null
+    /** v1.27: fired (with a JSON snapshot of live sensor agents) whenever a
+     *  sensor message arrives, so the primary can push mesh state to the agent
+     *  immediately instead of waiting for the next 1 Hz tick. */
+    var onSensorAgentsChanged: ((String) -> Unit)? = null
     private val transport = BluetoothTransport(context, MESH_SERVICE_UUID)
     private val peers = ConcurrentHashMap<String, MeshPeer>()
     private val bluetoothAdapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
     var role: String = "primary"
+
+    /** v1.27: live sensor agents only (role == "peripheral" and online+not-stale). */
+    fun getSensorAgents(): List<MeshPeer> = peers.values.filter {
+        it.role == "peripheral" && it.online && !isStale(it)
+    }
+
+    private fun isStale(peer: MeshPeer): Boolean =
+        System.currentTimeMillis() - peer.lastSeenMs > STALE_THRESHOLD_MS
 
     fun start(): Boolean {
         transport.setListener(object : BluetoothTransport.Listener {
@@ -103,15 +117,51 @@ class DeviceMeshManager(private val context: Context) {
             "sensor/camera" -> {
                 peer.sensorStatus["camera"] = json.optString("status")
                 json.optJSONObject("payload")?.let { PerceptionState.stampRemoteCamera(deviceId, it) }
+                pushSensorAgents()
             }
             "sensor/mic" -> {
                 peer.sensorStatus["mic"] = json.optString("status")
                 json.optJSONObject("payload")?.let { PerceptionState.stampRemoteMic(deviceId, it) }
+                pushSensorAgents()
+            }
+            "sensor/batch" -> {
+                // v1.27: merged camera+mic payload in one message.
+                json.optJSONObject("camera")?.let { cam ->
+                    peer.sensorStatus["camera"] = cam.optString("status")
+                    cam.optJSONObject("payload")?.let { PerceptionState.stampRemoteCamera(deviceId, it) }
+                }
+                json.optJSONObject("mic")?.let { mic ->
+                    peer.sensorStatus["mic"] = mic.optString("status")
+                    mic.optJSONObject("payload")?.let { PerceptionState.stampRemoteMic(deviceId, it) }
+                }
+                pushSensorAgents()
             }
             "sensor/compute" -> peer.sensorStatus["compute"] = json.optString("status")
-            "heartbeat" -> {}
+            "heartbeat" -> { pushSensorAgents() }
         }
         onPeerMessage?.invoke(deviceId, json)
+    }
+
+    /** v1.27: serialize live sensor agents + push to the agent immediately. */
+    private fun pushSensorAgents() {
+        val agents = getSensorAgents()
+        if (agents.isEmpty()) return
+        val arr = org.json.JSONArray()
+        for (peer in agents) {
+            arr.put(org.json.JSONObject()
+                .put("device_id", peer.deviceId)
+                .put("name", peer.name)
+                .put("role", peer.role)
+                .put("camera", peer.capabilities.contains("camera"))
+                .put("mic", peer.capabilities.contains("microphone"))
+                .put("online", peer.online)
+                .put("sensor_status", org.json.JSONObject(peer.sensorStatus)))
+        }
+        val snapshot = org.json.JSONObject()
+            .put("mesh_peer_count", agents.size)
+            .put("mesh_peers", arr)
+            .toString()
+        onSensorAgentsChanged?.invoke(snapshot)
     }
 
     fun autoConnectPaired() {

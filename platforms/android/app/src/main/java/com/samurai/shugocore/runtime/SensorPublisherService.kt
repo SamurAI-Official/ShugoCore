@@ -19,15 +19,25 @@ class SensorPublisherService : Service() {
     companion object {
         private const val TAG = "SensorPub"
         private const val CHANNEL_ID = "shugocore_sensor_pub"
-        private const val STREAM_INTERVAL_MS = 1_000L
+        /** v1.27: base streaming interval. Scaled up under thermal pressure. */
+        private const val STREAM_INTERVAL_MS = 200L
+        private const val STREAM_INTERVAL_MS_HOT = 500L
+        private const val HEARTBEAT_INTERVAL_MS = 2_000L
         const val EXTRA_PRIMARY_ID = "primary_id"
+        const val EXTRA_STREAM_INTERVAL_MS = "stream_interval_ms"
         var isRunning = false; private set
+        /** v1.27: exposed so the primary can show peripheral push freshness. */
+        @Volatile var lastSensorPushMs: Long = 0L
         val MESH_SERVICE_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
     }
     private val executor = Executors.newSingleThreadScheduledExecutor()
     private var streamTask: ScheduledFuture<*>? = null
+    private var heartbeatTask: ScheduledFuture<*>? = null
     private var transport: BluetoothTransport? = null
     private var primaryDeviceId: String? = null
+    private var streamIntervalMs: Long = STREAM_INTERVAL_MS
+    private var connected = false
+
     override fun onCreate() {
         super.onCreate(); createNotificationChannel()
         val n = Notification.Builder(this, CHANNEL_ID)
@@ -38,12 +48,20 @@ class SensorPublisherService : Service() {
         startForeground(2, n); isRunning = true
         Log.i(TAG, "sensor publisher started")
     }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         primaryDeviceId = intent?.getStringExtra(EXTRA_PRIMARY_ID)
-        // Create our own transport and start the RFCOMM server so the primary can connect
+        intent?.getLongExtra(EXTRA_STREAM_INTERVAL_MS, -1L)?.let {
+            if (it > 0) streamIntervalMs = it
+        }
+        // v1.27: scale interval down if the device is already warm.
+        streamIntervalMs = selectInterval(streamIntervalMs)
         transport = BluetoothTransport(this, MESH_SERVICE_UUID)
         transport?.startServer()
-        // Peripheral acts as a CLIENT: connect to the primary's BT address
+        // v1.27: announce ourselves as a sensor agent so the primary knows our
+        // role + capabilities immediately (previously the peripheral never sent
+        // device_announce, so the primary could not distinguish sensor agents).
+        announceSelf()
         primaryDeviceId?.let { addr ->
             try {
                 val btAdapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
@@ -59,33 +77,91 @@ class SensorPublisherService : Service() {
             }
         }
         Log.i(TAG, "peripheral RFCOMM server started on $MESH_SERVICE_UUID")
-        startStreaming(); return START_STICKY
+        startStreaming(); startHeartbeat(); return START_STICKY
     }
+
+    /** v1.27: pick a streaming interval based on thermal state (best-effort). */
+    private fun selectInterval(requested: Long): Long {
+        return try {
+            val temps = listOf(
+                "/sys/class/thermal/thermal_zone0/temp",
+                "/sys/class/thermal/thermal_zone10/temp",
+                "/sys/class/thermal/thermal_zone20/temp",
+            )
+            val temp = temps.asSequence()
+                .map { runCatching { java.io.File(it).readText().trim().toFloat() / 1000f }.getOrNull() }
+                .firstOrNull { it != null } ?: return requested
+            // >70°C → back off; else honour the requested (fast) rate.
+            if (temp > 70f) maxOf(requested, STREAM_INTERVAL_MS_HOT) else requested
+        } catch (e: Exception) {
+            requested
+        }
+    }
+
+    /** v1.27: announce this device as a peripheral sensor agent. */
+    private fun announceSelf() {
+        val msg = JSONObject().apply {
+            put("type", "device_announce")
+            put("role", "peripheral")
+            put("device_id", android.os.Build.MODEL)
+            put("device_name", android.os.Build.MODEL)
+            put("capabilities", JSONObject().apply {
+                put("camera",
+                    packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_CAMERA_ANY))
+                put("microphone",
+                    packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_MICROPHONE))
+                put("compute", true)
+            })
+        }
+        // post to the next loop tick so the transport server is fully up
+        executor.execute {
+            runCatching { transport?.broadcastMessage(msg) }
+                .onFailure { Log.w(TAG, "sensor announce failed: ${it.message}") }
+        }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
+
     override fun onDestroy() {
-        streamTask?.cancel(true); isRunning = false
+        streamTask?.cancel(true); heartbeatTask?.cancel(true); isRunning = false
         Log.i(TAG, "sensor publisher stopped"); super.onDestroy()
     }
     private fun startStreaming() {
         streamTask = executor.scheduleAtFixedRate({
             val bt = transport ?: return@scheduleAtFixedRate
+            // v1.27: merge camera + mic into one message per interval (one
+            // serialize + one RFCOMM write instead of two) and stamp the push
+            // time so the primary can show peripheral freshness.
             val msg = JSONObject().apply {
-                put("type", "sensor/camera")
-                put("device_id", Build.MODEL)
-                put("status", "active")
-                put("payload", JSONObject().apply {
-                    put("face_count", -1); put("person_present", false)
+                put("type", "sensor/batch")
+                put("device_id", android.os.Build.MODEL)
+                put("camera", JSONObject().apply {
+                    put("status", "active")
+                    put("payload", JSONObject().apply {
+                        put("face_count", -1); put("person_present", false)
+                    })
+                })
+                put("mic", JSONObject().apply {
+                    put("status", "idle")
+                    put("payload", JSONObject().apply { put("voice_active", false) })
                 })
             }
-            bt.broadcastMessage(msg)
-            val mic = JSONObject().apply {
-                put("type", "sensor/mic")
-                put("device_id", Build.MODEL)
-                put("status", "idle")
-                put("payload", JSONObject().apply { put("voice_active", false) })
+            val sentTo = bt.broadcastMessage(msg)
+            if (sentTo > 0) lastSensorPushMs = System.currentTimeMillis()
+        }, 0, streamIntervalMs, TimeUnit.MILLISECONDS)
+    }
+
+    /** v1.27: periodic heartbeat so the primary can detect a silent peripheral. */
+    private fun startHeartbeat() {
+        heartbeatTask = executor.scheduleAtFixedRate({
+            val bt = transport ?: return@scheduleAtFixedRate
+            val msg = JSONObject().apply {
+                put("type", "heartbeat")
+                put("device_id", android.os.Build.MODEL)
+                put("uptime_ms", android.os.SystemClock.elapsedRealtime())
             }
-            bt.broadcastMessage(mic)
-        }, 0, STREAM_INTERVAL_MS, TimeUnit.MILLISECONDS)
+            bt.broadcastMessage(msg)
+        }, HEARTBEAT_INTERVAL_MS, HEARTBEAT_INTERVAL_MS, TimeUnit.MILLISECONDS)
     }
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

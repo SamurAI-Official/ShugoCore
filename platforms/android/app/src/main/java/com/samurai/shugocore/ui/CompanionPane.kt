@@ -13,6 +13,7 @@ class CompanionPane(context: Context, private val host: ControlPlaneHost) :
 
     private val modeText: TextView
     private val modeToggle: Button
+    private val statusText: TextView
     private val connectedList: LinearLayout
     private val connectedLabel: TextView
     private val pairedList: LinearLayout
@@ -37,6 +38,14 @@ class CompanionPane(context: Context, private val host: ControlPlaneHost) :
         }
         modeRow.addView(modeText); modeRow.addView(modeToggle)
         col.addView(modeRow)
+
+        // v1.27: live status line — confirms a mode switch completed and shows
+        // what a peripheral is streaming to (or how many sensor agents a primary sees).
+        statusText = TextView(context).apply {
+            textSize = 11f; setTextColor(Ui.DIM); text = ""
+            setPadding(0, Ui.dp(context, 2), 0, Ui.dp(context, 6))
+        }
+        col.addView(statusText)
 
         col.addView(Ui.section(context, "Paired devices"))
         val hint = TextView(context).apply {
@@ -66,12 +75,28 @@ class CompanionPane(context: Context, private val host: ControlPlaneHost) :
     }
 
     fun bind(snap: Map<*, *>?) {
-        val agent = Ui.sub(snap, "agent_status")
-        val companionMode = agent?.get("companion_mode") as? Boolean ?: false
+        // v1.27: read companion_mode from the TOP-LEVEL snapshot (it is a Kotlin
+        // flag), NOT from agent_status (the Python status, which is empty when
+        // the agent is stopped — i.e. always in peripheral mode). This was the
+        // root cause of the toggle never appearing to take effect.
+        val companionMode = snap?.get("companion_mode") as? Boolean ?: false
         modeText.text = if (companionMode) "Peripheral mode" else "Primary agent"
         modeToggle.text = if (companionMode) "Switch to primary" else "Switch to peripheral"
 
         val svc = host.service()
+
+        // v1.27: live status line from the richer sensor-agent state.
+        val sensorState = snap?.get("sensor_agent_state") as? String
+        val sensorTarget = snap?.get("sensor_agent_target") as? String
+        val meshPeerCount = (snap?.get("mesh_peer_count") as? Number)?.toInt() ?: 0
+        statusText.text = when (sensorState) {
+            "peripheral_streaming" -> "Streaming sensors to ${sensorTarget ?: "primary"} — connected"
+            "peripheral_connecting" -> "Peripheral — connecting to ${sensorTarget ?: "primary"}…"
+            "peripheral_disconnected" -> "Peripheral — link down; will retry"
+            "primary" -> "Primary agent — $meshPeerCount sensor agent(s) connected"
+            else -> ""
+        }
+
         val paired = svc?.getPairedDevices() ?: emptyList()
         pairedLabel.text = if (paired.isEmpty()) "No paired devices"
             else "Paired: ${paired.size} device(s):"

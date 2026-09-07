@@ -523,6 +523,7 @@ class DecisionEngine:
         # it (observed live: model proposed `speak` after a text echo and
         # the stub early-return discarded it).
         null_stub: Optional[Dict[str, Any]] = None
+        all_valid: List[Dict[str, Any]] = []
 
         def _finish(data: Dict[str, Any],
                     action_type: Optional[str]) -> Dict[str, Any]:
@@ -567,7 +568,10 @@ class DecisionEngine:
                 # Normalize so the executor receives the words the model
                 # meant to say; sanitization/bounding stay in the handler.
                 finished["params"]["utterance"] = data["text"]
-            return finished
+            all_valid.append(finished)
+        if all_valid:
+            all_valid.sort(key=lambda p: p.get("confidence", 0.0), reverse=True)
+            return all_valid[0]
         return null_stub
 
     def aggregate_outputs(self, model_outputs: List[tuple]) -> Dict[str, Any]:

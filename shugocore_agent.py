@@ -230,14 +230,13 @@ class AndroidAgent:
         network handlers with the execution layer. Best-effort: failures
         degrade gracefully (log a warning, no crash)."""
         self.shugonet_runtime = None
+        # Check if already running (prevents duplicate starts on restart)
+        if getattr(self, "_shugonet_started", False):
+            self.log("AGENT", "shugonet runtime already running")
+            return
         try:
             from agent_runtime import ShugonetAgentRuntime
             from shugonet_bridge import register_network_handlers
-            # Check if already running (prevents duplicate starts on restart)
-            existing = getattr(self, "shugonet_runtime", None)
-            if existing is not None and getattr(existing, "_started", False):
-                self.log("AGENT", "shugonet runtime already running")
-                return
             self.shugonet_runtime = ShugonetAgentRuntime(
                 agent_id=f"shugo-{self.device_caps or 'android'}",
                 host="0.0.0.0", port=9000)
@@ -246,6 +245,7 @@ class AndroidAgent:
                 register_network_handlers(
                     self.engine.execution_layer, self.shugonet_runtime)
             self.log("AGENT", f"shugonet runtime started on port 9000")
+            self._shugonet_started = True
             import sys as _sys
             print("SHUGONET: runtime started on port 9000", file=_sys.stderr, flush=True)
         except Exception as exc:

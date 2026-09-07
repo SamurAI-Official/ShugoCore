@@ -231,6 +231,11 @@ class AndroidAgent:
         try:
             from agent_runtime import ShugonetAgentRuntime
             from shugonet_bridge import register_network_handlers
+            # Check if already running (prevents duplicate starts on restart)
+            existing = getattr(self, "shugonet_runtime", None)
+            if existing is not None and getattr(existing, "_started", False):
+                self.log("AGENT", "shugonet runtime already running")
+                return
             self.shugonet_runtime = ShugonetAgentRuntime(
                 agent_id=f"shugo-{self.device_caps or 'android'}",
                 host="0.0.0.0", port=9000)
@@ -755,10 +760,12 @@ class AndroidAgent:
                          decision) = self._classify_engine_result(engine_result)
                         if outcome == "SUCCESS":
                             action = "executed"
-                        # v1.20: store conversation turns in Tier-2 memory
-                        if self.memory is not None and self.interaction is not None:
-                            self._store_conversation_memory()
                         decision, action = self._enrich_from_memory(decision, action)
+            # v1.20: store conversation turns in Tier-2 memory regardless of
+            # outcome — NO_ACTION (null decision), POLICY_BLOCK, TASK_FAILURE,
+            # and SUCCESS all persist the conversation for future recall.
+            if self.memory is not None and self.interaction is not None:
+                self._store_conversation_memory()
             else:
                 outcome = "ENGINE_FAILURE"
                 detail = "no engine constructed"
@@ -966,6 +973,18 @@ class AndroidAgent:
         except Exception:
             return 0
 
+    @staticmethod
+    def _recent_conversation_facts(memory: Any, limit: int = 5) -> List[Dict[str, Any]]:
+        """v1.20: return recent conversation turns from Tier-2 memory."""
+        try:
+            facts = memory.tier2.search("conversation", top_k=limit, min_salience=0.1)
+            # Filter to only conversation_turn kind
+            conv_facts = [f for f in facts if f.get("kind") == "conversation_turn"]
+            return [{"content": f["content"][:200], "salience": round(f.get("salience", 0), 2),
+                     "created_at": f.get("created_at", "")} for f in conv_facts]
+        except Exception:
+            return []
+
     def get_status(self) -> Dict[str, Any]:
         mem = self.memory
         audit_active = (getattr(self.engine, "audit", None) is not None
@@ -988,6 +1007,8 @@ class AndroidAgent:
             "memory_usage_mb": self.last_observation.get("memory_usage_mb"),
             "tier0_entries": tier0,
             "tier2_facts": self._tier2_count(mem) if mem is not None else 0,
+            # v1.20: recent conversation turns stored in Tier-2 memory
+            "conversation_memory": self._recent_conversation_facts(mem) if mem is not None else [],
             "tier3": "READ ONLY",
             "pipeline_all": list(PIPELINE_STAGES),
             "pipeline_stages": list(self._last_stages),

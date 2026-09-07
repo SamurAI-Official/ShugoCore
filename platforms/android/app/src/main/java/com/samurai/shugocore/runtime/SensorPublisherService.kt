@@ -43,6 +43,21 @@ class SensorPublisherService : Service() {
         // Create our own transport and start the RFCOMM server so the primary can connect
         transport = BluetoothTransport(this, MESH_SERVICE_UUID)
         transport?.startServer()
+        // Peripheral acts as a CLIENT: connect to the primary's BT address
+        primaryDeviceId?.let { addr ->
+            try {
+                val btAdapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
+                val device = btAdapter?.getRemoteDevice(addr)
+                if (device != null) {
+                    transport?.connectToDevice(device)
+                    Log.i(TAG, "peripheral connecting to primary at $addr")
+                } else {
+                    Log.w(TAG, "primary device not found in paired list: $addr")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "failed to resolve primary device $addr", e)
+            }
+        }
         Log.i(TAG, "peripheral RFCOMM server started on $MESH_SERVICE_UUID")
         startStreaming(); return START_STICKY
     }

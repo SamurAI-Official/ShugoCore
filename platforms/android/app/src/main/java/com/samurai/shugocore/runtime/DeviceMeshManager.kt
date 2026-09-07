@@ -48,7 +48,9 @@ class DeviceMeshManager(private val context: Context) {
                 onPeerDisconnected?.invoke(id)
             }
         })
-        return transport.startServer()
+        val ok = transport.startServer()
+        if (ok) autoConnectPaired()
+        return ok
     }
 
     fun stop() { transport.stop(); peers.clear() }

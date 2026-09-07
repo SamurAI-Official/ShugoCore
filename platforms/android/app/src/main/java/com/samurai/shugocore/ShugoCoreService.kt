@@ -731,12 +731,17 @@ class ShugoCoreService : Service() {
             setAgentRunning(false) {}
             // Start the sensor publisher service with the mesh transport
             val intent = Intent(this, SensorPublisherService::class.java)
+            // Pass the primary device's BT address so the peripheral can connect as a client
+            val myBtAddr = BluetoothAdapter.getDefaultAdapter()?.address
+            intent.putExtra(SensorPublisherService.EXTRA_PRIMARY_ID, myBtAddr)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(intent)
             } else {
                 startService(intent)
             }
-            LogBus.log(LogBus.Category.AGENT, "peripheral mode started")
+            // Ensure the primary auto-connects to peripherals
+            meshManager?.autoConnectPaired()
+            LogBus.log(LogBus.Category.AGENT, "peripheral mode started, primary addr=$myBtAddr")
         } catch (e: Exception) {
             Log.e(TAG, "peripheral mode start failed", e)
         }

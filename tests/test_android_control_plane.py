@@ -12,6 +12,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shugocore_agent import PIPELINE_STAGES, create_agent  # noqa: E402
+from attention_layer import AttentionLayer  # noqa: E402
 
 
 _CLEAN_FILES = (
@@ -381,6 +382,132 @@ class TestAndroidControlPlane(unittest.TestCase):
         agent.update_policy(agent_caps={"camera": True}, internet=False)
         entries = agent.recent_logs(0)
         self.assertTrue(any(e["category"] == "POLICY" for e in entries))
+
+
+# -- v1.28 visual-audio binding (speech-source attribution) -------------
+
+class TestVisualAudioBinding(unittest.TestCase):
+    """The attention layer must distinguish speech produced by a
+    visible-and-attending person (an instruction) from audio with no visible
+    talker (TV / music / ambient) — the core 'is the person I see the one
+    talking?' question."""
+
+    def _layer(self, now=1000.0):
+        clock = mock.Mock(side_effect=lambda: now)
+        return AttentionLayer(clock=clock), clock
+
+    def test_no_signals_yields_none(self):
+        layer, _ = self._layer()
+        self.assertEqual(layer.speech_source()["source"], "none")
+
+    def test_face_silent_is_person_present_silent(self):
+        layer, _ = self._layer()
+        layer.stamp_face(1)
+        self.assertEqual(layer.speech_source()["source"],
+                         "person_present_silent")
+
+    def test_speech_no_face_is_unattributed(self):
+        layer, clock = self._layer()
+        layer.stamp_speech("hello there")
+        clock.side_effect = lambda: 1001.0
+        src = layer.speech_source()
+        self.assertEqual(src["source"], "unattributed_audio")
+        self.assertFalse(src["face_fresh"])
+
+    def test_face_plus_gaze_plus_speech_is_verified_person(self):
+        layer, clock = self._layer()
+        layer.stamp_face(1, gaze_toward_camera=True)
+        clock.side_effect = lambda: 1001.0
+        layer.stamp_speech("read the instruction")
+        src = layer.speech_source()
+        self.assertEqual(src["source"], "verified_person")
+        self.assertGreaterEqual(src["confidence"], 0.8)
+
+    def test_speech_with_face_but_gaze_away_is_unattributed(self):
+        layer, clock = self._layer()
+        layer.stamp_face(1, gaze_toward_camera=False)
+        clock.side_effect = lambda: 1001.0
+        layer.stamp_speech("tv dialogue")
+        src = layer.speech_source()
+        self.assertEqual(src["source"], "unattributed_audio")
+        self.assertTrue(src["face_fresh"])
+
+    def test_stale_speech_decays_to_none(self):
+        layer, clock = self._layer()
+        layer.stamp_speech("hello")
+        clock.side_effect = lambda: 1001.0 + 20.0  # 20 s later
+        self.assertEqual(layer.speech_source()["source"], "none")
+
+    def test_snapshot_exposes_speech_source(self):
+        layer, clock = self._layer()
+        layer.stamp_face(1, gaze_toward_camera=True)
+        clock.side_effect = lambda: 1001.0
+        layer.stamp_speech("hello shugo")
+        snap = layer.snapshot()
+        self.assertEqual(snap["speech_source"], "verified_person")
+        self.assertIn("speech_source_conf", snap)
+
+
+class TestRemoteBinding(unittest.TestCase):
+    """update_mesh_peers + observation fusion: a peripheral's carried
+    remote facts reach the agent's observation as remote_binding — and are
+    never assumed when absent."""
+
+    def setUp(self):
+        for name in _CLEAN_FILES:
+            try:
+                os.remove(name)
+            except FileNotFoundError:
+                pass
+
+    def tearDown(self):
+        for name in _CLEAN_FILES:
+            try:
+                os.remove(name)
+            except FileNotFoundError:
+                pass
+
+    def test_update_mesh_peers_merges_remote_binding(self):
+        agent = create_agent(device_caps="SM-X518U",
+                             api_url="http://127.0.0.1:11434")
+        try:
+            snap = ('{"mesh_peer_count":1,"mesh_peers":['
+                    '{"device_id":"A51","name":"A51","role":"peripheral",'
+                    '"camera":true,"remote_face_present":true,'
+                    '"remote_voice_active":true,'
+                    '"remote_speech_source":"verified_person"}]}')
+            agent.update_mesh_peers(snap)
+            obs = agent._get_observation()
+            self.assertEqual(obs.get("mesh_peer_count"), 1)
+            rb = obs.get("remote_binding")
+            self.assertIsNotNone(rb)
+            self.assertTrue(rb.get("face_present"))
+            self.assertTrue(rb.get("voice_active"))
+            self.assertEqual(rb.get("speech_source"), "verified_person")
+        finally:
+            agent.cleanup()
+
+    def test_no_mesh_means_no_remote_binding(self):
+        agent = create_agent(device_caps="Exynos-1380",
+                             api_url="http://127.0.0.1:11434")
+        try:
+            agent.telemetry = {}
+            obs = agent._get_observation()
+            self.assertNotIn("remote_binding", obs)
+        finally:
+            agent.cleanup()
+
+    def test_remote_face_without_voice_is_silent(self):
+        agent = create_agent(api_url="http://127.0.0.1:11434")
+        try:
+            snap = ('{"mesh_peer_count":1,"mesh_peers":[{"device_id":"A51",'
+                    '"camera":true,"remote_face_present":true,'
+                    '"remote_voice_active":false}]}')
+            agent.update_mesh_peers(snap)
+            rb = agent._get_observation().get("remote_binding")
+            self.assertEqual(rb.get("speech_source"), "person_present_silent")
+        finally:
+            agent.cleanup()
 
 
 if __name__ == "__main__":

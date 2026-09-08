@@ -12,6 +12,7 @@ import android.util.Log
 import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 
 data class MeshPeer(
     val deviceId: String,
@@ -67,7 +68,60 @@ class DeviceMeshManager(private val context: Context) {
         return ok
     }
 
-    fun stop() { transport.stop(); peers.clear() }
+    // -- v1.28: one-transport peripheral streaming --------------------------
+    // The peripheral does NOT run a second Bluetooth server (that created two
+    // RFCOMM listeners on the same UUID and the primary's connection landed on
+    // the wrong socket — discoverable as "peers stuck at role=primary" in the
+    // journal). Instead the SensorPublisherService feeds into the shared mesh
+    // manager's already-connected transport, so the announce and the
+    // sensor/batch messages cross on the exact same socket the primary is
+    // listening on.
+    private val streamExecutor = java.util.concurrent.Executors.newSingleThreadScheduledExecutor()
+    private var streamTask: java.util.concurrent.ScheduledFuture<*>? = null
+
+    fun startStreaming(intervalMs: Long) {
+        streamTask?.cancel(true)
+        streamTask = streamExecutor.scheduleAtFixedRate({
+            val (src, srcConf) = PerceptionState.computeSpeechSource()
+            val faceCount = PerceptionState.visualPresence.value ?: -1
+            val personPresent =
+                PerceptionState.visualPresence.fresh(8_000) && faceCount > 0
+            val gazeDir =
+                if (PerceptionState.gazeTowardCamera) "toward_camera" else "away"
+            val voiceActive =
+                PerceptionState.voiceDetected || PerceptionState.humanSpeech
+            val msg = JSONObject().apply {
+                put("type", "sensor/batch")
+                put("device_id", android.os.Build.MODEL)
+                put("camera", JSONObject().apply {
+                    put("status", if (personPresent) "active" else "idle")
+                    put("payload", JSONObject().apply {
+                        put("face_count", faceCount)
+                        put("person_present", personPresent)
+                        put("gaze_direction", gazeDir)
+                        put("speech_source", src)
+                        put("speech_source_confidence", srcConf)
+                    })
+                })
+                put("mic", JSONObject().apply {
+                    put("status", if (voiceActive) "active" else "idle")
+                    put("payload", JSONObject().apply {
+                        put("voice_active", voiceActive)
+                        put("speech_source", src)
+                        put("speech_source_confidence", srcConf)
+                    })
+                })
+            }
+            broadcastToPeers(msg)
+        }, 0, maxOf(intervalMs, 100L), TimeUnit.MILLISECONDS)
+        Log.i(TAG, "peripheral streaming started at ${intervalMs}ms")
+    }
+
+    fun stopStreaming() {
+        streamTask?.cancel(true); streamTask = null
+    }
+
+    fun stop() { stopStreaming(); transport.stop(); peers.clear() }
     fun getPeers(): List<MeshPeer> = peers.values.toList()
     fun getPeerCount(): Int = peers.count { it.value.online }
     fun getPeer(deviceId: String): MeshPeer? = peers[deviceId]
@@ -155,7 +209,14 @@ class DeviceMeshManager(private val context: Context) {
                 .put("camera", peer.capabilities.contains("camera"))
                 .put("mic", peer.capabilities.contains("microphone"))
                 .put("online", peer.online)
-                .put("sensor_status", org.json.JSONObject(peer.sensorStatus)))
+                .put("sensor_status", org.json.JSONObject(peer.sensorStatus))
+                // v1.28: real remote perception facts (carried — never
+                // assumed). The primary fuses these into its own binding.
+                .put("remote_face_present", PerceptionState.remoteFacePresent)
+                .put("remote_voice_active", PerceptionState.remoteVoiceActive)
+                .put("remote_gaze_toward_camera", PerceptionState.remoteGazeTowardCamera)
+                .put("remote_speech_source", PerceptionState.remoteSpeechSource)
+                .put("remote_speech_confidence", PerceptionState.remoteSpeechConfidence))
         }
         val snapshot = org.json.JSONObject()
             .put("mesh_peer_count", agents.size)

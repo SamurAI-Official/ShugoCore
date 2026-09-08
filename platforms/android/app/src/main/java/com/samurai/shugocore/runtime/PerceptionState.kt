@@ -77,12 +77,64 @@ object PerceptionState {
     @Volatile var meshPeerCount: Int = 0
     @Volatile var meshPeersJson: String = "[]"
 
+    // -- v1.28 visual-audio binding signals ---
+    /** Local speech-source verdict (computed from the same freshness windows
+     * the Python attention layer uses — face + gaze + speech overlap). */
+    @Volatile var speechSource: String = "none"
+    @Volatile var speechSourceConfidence: Float = 0f
+    /** Remote verdict from the most recent mesh sensor/batch payload. */
+    @Volatile var remoteSpeechSource: String = "none"
+    @Volatile var remoteSpeechConfidence: Float = 0f
+    /** Remote face/voice facts carried in the payload (not assumed). */
+    @Volatile var remoteFacePresent: Boolean = false
+    @Volatile var remoteVoiceActive: Boolean = false
+    @Volatile var remoteGazeTowardCamera: Boolean = false
+
+    /** Recompute the local speech-source verdict from the current signal
+     * snapshot. Mirrors AttentionLayer.speech_source() in v1.28 Python —
+     * used by the peripheral to stream a truthful attribution. */
+    fun computeSpeechSource(): Pair<String, Float> {
+        val vis = PerceptionState.visualPresence
+        val visFresh = vis.fresh(8_000)
+        val faceHere = visFresh && (vis.value ?: 0) > 0
+        val speechFresh = PerceptionState.humanSpeech ||
+            (System.currentTimeMillis() - PerceptionState.transcription.tsMs) < 15_000
+        val gaze = PerceptionState.gazeTowardCamera
+        val source: String
+        val conf: Float
+        if (!speechFresh) {
+            source = if (faceHere) "person_present_silent" else "none"
+            conf = if (faceHere) 0.9f else 1.0f
+        } else if (faceHere && gaze) {
+            source = "verified_person"
+            conf = 0.9f
+        } else {
+            source = "unattributed_audio"
+            conf = if (faceHere) 0.8f else 0.6f
+        }
+        PerceptionState.speechSource = source
+        PerceptionState.speechSourceConfidence = conf
+        return source to conf
+    }
+
     /** Stamp a remote camera observation from a mesh peer. */
     fun stampRemoteCamera(deviceId: String, payload: org.json.JSONObject) {
         val now = System.currentTimeMillis()
         val fc = payload.optInt("face_count", -1)
         PerceptionState.visualPresence = PerceptionSignal(
             if (fc >= 0) fc else null, now, source = "remote:$deviceId")
+        remoteFacePresent = fc > 0
+        payload.optString("gaze_direction").let { g ->
+            if (g == "toward_camera") remoteGazeTowardCamera = true
+            else if (g == "away") remoteGazeTowardCamera = false
+        }
+        payload.optString("speech_source").let { s ->
+            if (s.isNotEmpty() && s != "null") {
+                remoteSpeechSource = s
+                remoteSpeechConfidence =
+                    payload.optDouble("speech_source_confidence", 0.0).toFloat()
+            }
+        }
     }
 
     /** Stamp a remote microphone observation from a mesh peer. */
@@ -91,5 +143,13 @@ object PerceptionState {
         val act = payload.optBoolean("voice_active", false)
         PerceptionState.micActive = act
         PerceptionState.lastMicActivityMs = now
+        remoteVoiceActive = act
+        payload.optString("speech_source").let { s ->
+            if (s.isNotEmpty() && s != "null") {
+                remoteSpeechSource = s
+                remoteSpeechConfidence =
+                    payload.optDouble("speech_source_confidence", 0.0).toFloat()
+            }
+        }
     }
 }

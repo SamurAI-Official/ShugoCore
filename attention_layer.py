@@ -31,6 +31,28 @@ class AttentionState(str, Enum):
     ABSENT = "absent"         # Human not present (no face, no speech)
     ATTENDING = "attending"   # Human present AND attending to the agent
     DIVERTED = "diverted"     # Human present but NOT attending
+
+
+class SpeechSource(str, Enum):
+    """Attribution verdict for the most recent speech window.
+
+    Distinguishes "a person I can SEE is talking to me" from "audio with no
+    visible talker" (television, music, ambient noise, a voice from another
+    room) — the visual-audio binding (v1.28).
+
+      NONE                  no fresh speech evidence at all
+      PERSON_PRESENT_SILENT face fresh, but no speech in the window
+      VERIFIED_PERSON       speech fresh AND attributable to a visible,
+                            attending human (face fresh + gaze toward
+                            camera, or an explicit directed-speech stamp)
+      UNATTRIBUTED_AUDIO    speech fresh but no visible talker (or the
+                            visible person is not looking at the agent) —
+                            likely TV / music / ambient voice
+    """
+    NONE = "none"
+    PERSON_PRESENT_SILENT = "person_present_silent"
+    VERIFIED_PERSON = "verified_person"
+    UNATTRIBUTED_AUDIO = "unattributed_audio"
 # Default freshness windows (ms); configurable per instance.
 _DEFAULT_FACE_WINDOW_MS = 8000
 _DEFAULT_SPEECH_WINDOW_MS = 15000
@@ -181,6 +203,57 @@ class AttentionLayer:
             self._confidence = conf
             return self._state, self._confidence
 
+    def speech_source(self) -> Dict[str, Any]:
+        """Bind the most recent speech window to the visual channel.
+
+        Returns a verdict distinguishing a visible-and-attending talker from
+        unattributed audio (TV / music / ambient) — v1.28 visual-audio
+        binding. Uses the same freshness windows as ``evaluate()`` so the two
+        views never disagree about what counts as evidence.
+        """
+        now_s = self._clock()
+        with self._lock:
+            def _age(sig_ts: float) -> float:
+                return (now_s - sig_ts) * 1000.0
+
+            face_fresh = self._face_detected and _age(self._face_detected_ts) < self._face_window_ms
+            speech_fresh = self._speech_any and _age(self._speech_any_ts) < self._speech_window_ms
+            gaze_fresh = (
+                self._gaze_toward_camera is not None
+                and _age(self._gaze_toward_camera_ts) < self._gaze_window_ms
+            )
+            directed_fresh = (
+                self._speech_directed_at_agent is not None
+                and _age(self._speech_directed_ts) < self._directed_speech_window_ms
+            )
+
+            if not speech_fresh:
+                source = SpeechSource.PERSON_PRESENT_SILENT if face_fresh else SpeechSource.NONE
+                confidence = 0.9 if face_fresh else 1.0
+            else:
+                gaze_now = self._gaze_toward_camera if gaze_fresh else None
+                directed_now = self._speech_directed_at_agent if directed_fresh else None
+                talker_is_visible = face_fresh and (
+                    gaze_now is True or directed_now is True
+                )
+                if talker_is_visible:
+                    source = SpeechSource.VERIFIED_PERSON
+                    confidence = 0.9
+                else:
+                    # Speech is fresh but no visible/attending talker — the
+                    # audio is not bound to the person in frame (TV, music,
+                    # ambient voice, or a turn away from the camera).
+                    source = SpeechSource.UNATTRIBUTED_AUDIO
+                    confidence = 0.8 if face_fresh else 0.6
+
+            return {
+                "source": source.value,
+                "confidence": round(confidence, 2),
+                "face_fresh": face_fresh,
+                "speech_fresh": speech_fresh,
+                "gaze_toward_camera": self._gaze_toward_camera if gaze_fresh else None,
+            }
+
     def _transition_to(self, new_state: AttentionState) -> None:
         self._state = new_state
         self._state_changed_ts = self._clock()
@@ -225,6 +298,33 @@ class AttentionLayer:
     def snapshot(self) -> Dict[str, Any]:
         """Thread-safe state snapshot for logging / telemetry."""
         with self._lock:
+            now_s = self._clock()
+            def _age(sig_ts: float) -> float:
+                return (now_s - sig_ts) * 1000.0
+
+            face_fresh = (self._face_detected
+                          and _age(self._face_detected_ts) < self._face_window_ms)
+            speech_fresh = (self._speech_any
+                            and _age(self._speech_any_ts) < self._speech_window_ms)
+            gaze_fresh = (
+                self._gaze_toward_camera is not None
+                and _age(self._gaze_toward_camera_ts) < self._gaze_window_ms
+            )
+            directed_fresh = (
+                self._speech_directed_at_agent is not None
+                and _age(self._speech_directed_ts) < self._directed_speech_window_ms
+            )
+            speech_source = SpeechSource.NONE
+            if speech_fresh:
+                gaze_now = self._gaze_toward_camera if gaze_fresh else None
+                directed_now = self._speech_directed_at_agent if directed_fresh else None
+                if face_fresh and (gaze_now is True or directed_now is True):
+                    speech_source = SpeechSource.VERIFIED_PERSON
+                else:
+                    speech_source = SpeechSource.UNATTRIBUTED_AUDIO
+            elif face_fresh:
+                speech_source = SpeechSource.PERSON_PRESENT_SILENT
+
             return {
                 "state": self._state.value,
                 "confidence": round(self._confidence, 2),
@@ -234,4 +334,13 @@ class AttentionLayer:
                 "tts_speaking": self._tts_speaking,
                 "state_changed_ts": self._state_changed_ts,
                 "attending_speech_count": len(self._attending_speech_buffer),
+                "speech_source": speech_source.value,
+                "speech_source_conf": round(
+                    0.9 if speech_source == SpeechSource.VERIFIED_PERSON
+                    else (0.8 if speech_source == SpeechSource.UNATTRIBUTED_AUDIO
+                          else (0.9 if speech_source == SpeechSource.PERSON_PRESENT_SILENT
+                                else 1.0)), 2),
+                "face_fresh": face_fresh,
+                "speech_fresh": speech_fresh,
+                "gaze_fresh": gaze_fresh,
             }

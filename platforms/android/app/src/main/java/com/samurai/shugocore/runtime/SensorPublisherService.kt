@@ -132,18 +132,34 @@ class SensorPublisherService : Service() {
             // v1.27: merge camera + mic into one message per interval (one
             // serialize + one RFCOMM write instead of two) and stamp the push
             // time so the primary can show peripheral freshness.
+            // v1.28: stream REAL local perception signals (not placeholders)
+            // including the local visual-audio binding verdict, so the primary
+            // can attribute what IT cannot see with its own sensors.
+            val (src, srcConf) = PerceptionState.computeSpeechSource()
+            val faceCount = PerceptionState.visualPresence.value ?: -1
+            val personPresent = PerceptionState.visualPresence.fresh(8_000) && faceCount > 0
+            val gazeDir = if (PerceptionState.gazeTowardCamera) "toward_camera" else "away"
+            val voiceActive = PerceptionState.voiceDetected || PerceptionState.humanSpeech
             val msg = JSONObject().apply {
                 put("type", "sensor/batch")
                 put("device_id", android.os.Build.MODEL)
                 put("camera", JSONObject().apply {
-                    put("status", "active")
+                    put("status", if (personPresent) "active" else "idle")
                     put("payload", JSONObject().apply {
-                        put("face_count", -1); put("person_present", false)
+                        put("face_count", faceCount)
+                        put("person_present", personPresent)
+                        put("gaze_direction", gazeDir)
+                        put("speech_source", src)
+                        put("speech_source_confidence", srcConf)
                     })
                 })
                 put("mic", JSONObject().apply {
-                    put("status", "idle")
-                    put("payload", JSONObject().apply { put("voice_active", false) })
+                    put("status", if (voiceActive) "active" else "idle")
+                    put("payload", JSONObject().apply {
+                        put("voice_active", voiceActive)
+                        put("speech_source", src)
+                        put("speech_source_confidence", srcConf)
+                    })
                 })
             }
             val sentTo = bt.broadcastMessage(msg)

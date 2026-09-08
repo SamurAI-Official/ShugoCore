@@ -32,6 +32,8 @@ class SensorsPane(context: Context, private val host: ControlPlaneHost) :
     private val micStatus: TextView
     private val transcript: TextView
     private val vadBar: TextView
+    // v1.28: visual-audio binding verdict row.
+    private val speechSourceLabel: TextView
 
     init {
         orientation = VERTICAL
@@ -110,6 +112,14 @@ class SensorsPane(context: Context, private val host: ControlPlaneHost) :
             setPadding(0, Ui.dp(context, 2), 0, Ui.dp(context, 4))
         }
         col.addView(micStatus)
+        // v1.28: visual-audio binding verdict — "person talking to Shugo"
+        // vs TV / music / ambient noise.
+        speechSourceLabel = TextView(context).apply {
+            textSize = 13f; setTextColor(Ui.DIM)
+            text = "Speech source: —"
+            setPadding(0, Ui.dp(context, 2), 0, Ui.dp(context, 4))
+        }
+        col.addView(speechSourceLabel)
         vadBar = TextView(context).apply {
             textSize = 12f; setTextColor(Ui.WARN)
             text = "Voice level: —"
@@ -258,5 +268,26 @@ class SensorsPane(context: Context, private val host: ControlPlaneHost) :
             else "No speech detected yet"
         transcript.setTextColor(
             if (lastTrans.isNotEmpty()) Ui.TEXT else Ui.DIM)
+
+        // v1.28: visual-audio binding. Local verdict comes from the signal
+        // overlap computed right here; the remote verdict (a sensor agent's
+        // streaming attribution) rides in the status snapshot.
+        val (src, conf) = PerceptionState.computeSpeechSource()
+        val remoteSrc = (agent?.get("remote_binding") as? Map<*, *>)
+            ?.get("speech_source")?.toString()
+        val base = when (src) {
+            "verified_person" -> "Speech source: ● VERIFIED person talking (conf $conf)"
+            "unattributed_audio" -> "Speech source: △ audio, no visible talker (conf $conf)"
+            "person_present_silent" -> "Speech source: ○ person present, silent"
+            else -> "Speech source: — no speech evidence"
+        }
+        speechSourceLabel.text = if (remoteSrc != null &&
+            remoteSrc != "none" && remoteSrc != src)
+            "$base · remote: $remoteSrc" else base
+        speechSourceLabel.setTextColor(when (src) {
+            "verified_person" -> Ui.OK
+            "unattributed_audio" -> Ui.WARN
+            else -> Ui.DIM
+        })
     }
 }

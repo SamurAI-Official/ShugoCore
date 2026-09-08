@@ -519,6 +519,33 @@ class AndroidAgent:
             except Exception:
                 pass
 
+    def update_mesh_peers(self, snapshot_json: Optional[str] = None) -> None:
+        """v1.22: receive a live mesh peer snapshot (JSON string — Kotlin
+        fires this the instant a sensor message arrives, so the agent's
+        observation context is near-real-time). v1.28: the snapshot carries
+        the remote visual-audio binding facts (remote_face_present,
+        remote_voice_active, remote_speech_source) streamed by each
+        peripheral, so the primary can attribute sensor data it does not
+        capture locally."""
+        import json as _json
+        if not snapshot_json:
+            return
+        try:
+            data = _json.loads(snapshot_json)
+        except Exception:
+            return
+        try:
+            if not isinstance(self.telemetry, dict):
+                self.telemetry = {}
+            peers = data.get("mesh_peers")
+            if isinstance(peers, list):
+                # Keep the rich facts; preserve any other existing telemetry keys.
+                self.telemetry["mesh_peers"] = peers
+                self.telemetry["mesh_peer_count"] = data.get("mesh_peer_count",
+                                                              len(peers))
+        except Exception:
+            pass
+
     def publish_human_observation(
             self, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Ingest one HumanObservation from a provider (Kotlin edge, tests,
@@ -785,11 +812,58 @@ class AndroidAgent:
                             lv = next((e for e in reversed(getattr(self.interaction, "_buffer", [])) if e.get("type") == "visual"), None)
                             if lv:
                                 fc = lv.get("payload", {}).get("face_count", 0)
-                                self.attention.stamp_face(fc if isinstance(fc, (int, float)) else 0)
+                                gaze = lv.get("payload", {}).get("gaze_direction")
+                                gaze_bool = None
+                                if gaze == "toward_camera":
+                                    gaze_bool = True
+                                elif gaze == "away":
+                                    gaze_bool = False
+                                self.attention.stamp_face(
+                                    fc if isinstance(fc, (int, float)) else 0,
+                                    gaze_toward_camera=gaze_bool)
                             self.attention.stamp_tts(observation.get("tts_speaking", False))
                         att_state, att_conf = self.attention.evaluate()
                         context["attention_state"] = str(att_state.value) if hasattr(att_state, "value") else str(att_state)
                         context["attention_confidence"] = round(att_conf, 2)
+                        # v1.28 visual-audio binding: is the speech we heard
+                        # produced by the person we can SEE? Distinguishes
+                        # "person talking to Shugo" from "TV/music/ambient".
+                        src = None
+                        try:
+                            src = self.attention.speech_source()
+                        except Exception:
+                            src = None
+                        if src:
+                            context["speech_source"] = src.get("source", "none")
+                            context["speech_source_confidence"] = src.get("confidence", 0.0)
+                            observation.setdefault("human", {})["speech_source"] = src
+                            # Evidence journal records ONLY the attribution
+                            # verdict — never the words (the transcripts-stay
+                            # in-bus rule from v1.12 still holds). Journaled
+                            # only on a verdict transition (or first sighting)
+                            # so a quiet room does not flood the journal with
+                            # "none" rows every tick.
+                            verdict = src.get("source", "none")
+                            last = getattr(self, "_last_attribution_verdict", None)
+                            # Journal only *speech-carrying* verdicts on
+                            # transition — absence-of-speech rows ("none",
+                            # "person_present_silent") are not evidence of
+                            # attribution and would flood the journal.
+                            if (verdict in ("verified_person", "unattributed_audio")
+                                    and verdict != last):
+                                try:
+                                    self.memory.record_event("speech_attribution",
+                                        payload={
+                                            "source": verdict,
+                                            "confidence": src.get("confidence", 0.0),
+                                            "face_fresh": src.get("face_fresh", False),
+                                            "gaze_fresh": src.get("gaze_fresh", False),
+                                        },
+                                        metadata={"privacy_scope": "local",
+                                                  "feature": "visual_audio_binding"})
+                                    self._last_attribution_verdict = verdict
+                                except Exception:
+                                    pass
                     # v1.20: inject conversation history into context
                     if self.interaction is not None:
                         turns = self.interaction.export_conversation_turns()
@@ -820,6 +894,12 @@ class AndroidAgent:
                                 context["delegation_scope"] = del_scope or "localhost"
                         except Exception:
                             pass
+                    # v1.28: remote visual-audio binding from the mesh — the
+                    # primary's decision context sees what its peripherals
+                    # actually sensed (never assumed).
+                    rb = observation.get("remote_binding")
+                    if isinstance(rb, dict):
+                        context["remote_binding"] = rb
                     engine_result = self._execute_engine_task(
                         {"id": f"android-tick-{self.tick_count}",
                          "type": "maintain_agent_loop", "context": context})
@@ -999,18 +1079,49 @@ class AndroidAgent:
                 if isinstance(mesh, list):
                     observation["mesh_peers"] = mesh
                     observation["mesh_peer_count"] = len(mesh)
+                    # v1.28: fuse real remote perception facts (carried from
+                    # the peripheral — never assumed). Only a peer that
+                    # actually declares a face/voice contributes to the
+                    # visual-audio binding; a camera-capable peer streaming
+                    # no data contributes nothing.
+                    remote_faces = []
+                    remote_voice = False
+                    remote_sources = []
                     for peer in mesh:
-                        # Inject remote camera observations into the bus
                         if peer.get("camera") and self.interaction is not None:
+                            face_present = bool(peer.get("remote_face_present"))
+                            remote_faces.append(face_present)
+                            src = peer.get("remote_speech_source") or "none"
+                            remote_sources.append(src)
+                            if peer.get("remote_voice_active"):
+                                remote_voice = True
                             from human_interaction import HumanObservation
                             obs, _ = HumanObservation.from_dict({
                                 "type": "visual",
                                 "source": f"remote:{peer.get('device_id', 'unknown')}",
-                                "payload": {"person_present": True, "face_count": 1},
+                                "payload": {
+                                    "person_present": face_present,
+                                    "face_count": 1 if face_present else 0,
+                                },
                                 "privacy_scope": "local",
                             })
                             if obs is not None:
                                 self.interaction.publish(obs)
+                    any_remote_face = any(remote_faces)
+                    any_remote_voice = bool(remote_voice) if mesh else False
+                    # v1.28: surface remote attribution as evidence for the
+                    # decision context (metadata only — no transcripts).
+                    observation["remote_binding"] = {
+                        "face_present": any_remote_face,
+                        "voice_active": any_remote_voice,
+                        "speech_source": (
+                            "verified_person"
+                            if any_remote_face and any_remote_voice
+                            else ("unattributed_audio" if any_remote_voice
+                                  else ("person_present_silent" if any_remote_face
+                                        else "none"))),
+                        "peers": remote_sources,
+                    }
             except Exception:
                 pass
         return observation
@@ -1157,6 +1268,9 @@ class AndroidAgent:
             # sensor status (from the last observation).
             "mesh_peer_count": self.last_observation.get("mesh_peer_count", 0),
             "mesh_peers": self.last_observation.get("mesh_peers", []),
+            # v1.28: visual-audio binding — remote speech attribution carried
+            # from the mesh (face+voice fused; metadata only).
+            "remote_binding": self.last_observation.get("remote_binding"),
             "policy": {"fail_closed": True, "audit": audit_active,
                        "consent_required": True,
                        "agent_caps": dict(self.agent_caps),
@@ -1174,6 +1288,10 @@ class AndroidAgent:
         return json.dumps({
             "active": snap.get("state") in ("attending", "unknown"),
             "state": snap.get("state", "unknown"),
+            # v1.28: visual-audio binding verdict for the SENSORS tab.
+            "speech_source": snap.get("speech_source", "none"),
+            "speech_source_confidence": snap.get("speech_source_conf",
+                                                 0.0),
         })
 
     def get_status_json(self) -> str:

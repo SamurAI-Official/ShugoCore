@@ -155,7 +155,15 @@ class ShugoCoreService : Service() {
                                         .put("mic", peer.capabilities.contains("microphone"))
                                         .put("online", peer.online)
                                         .put("sensor_status",
-                                            org.json.JSONObject(peer.sensorStatus)))
+                                            org.json.JSONObject(peer.sensorStatus))
+                                        // v1.28: real remote perception facts
+                                        // (carried — the primary fuses these
+                                        // into its visual-audio binding).
+                                        .put("remote_face_present", PerceptionState.remoteFacePresent)
+                                        .put("remote_voice_active", PerceptionState.remoteVoiceActive)
+                                        .put("remote_gaze_toward_camera", PerceptionState.remoteGazeTowardCamera)
+                                        .put("remote_speech_source", PerceptionState.remoteSpeechSource)
+                                        .put("remote_speech_confidence", PerceptionState.remoteSpeechConfidence))
                                 }
                                 obj.put("mesh_peer_count", peers.size)
                                 obj.put("mesh_peers", arr)

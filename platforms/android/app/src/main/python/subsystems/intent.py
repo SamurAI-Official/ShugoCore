@@ -125,12 +125,29 @@ class IntentParser:
         """Extract entities from a command (time, target, etc.)."""
         entities: Dict[str, Any] = {}
 
-        # Time entities (timer, reminder)
+        # Time entities (timer, reminder) — digits ("5 minutes") and number
+        # words ("five minutes", "a minute") so debug/STT word forms work.
         time_match = re.search(
             r"(\d+)\s*(minute|min|second|sec|hour|hr)s?", text, re.IGNORECASE)
         if time_match:
             entities["duration_value"] = int(time_match.group(1))
             entities["duration_unit"] = time_match.group(2).lower()
+        else:
+            word_match = re.search(
+                r"\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|"
+                r"eleven|twelve|fifteen|twenty|thirty|a|an)\s+"
+                r"(minute|min|second|sec|hour|hr)s?\b", text, re.IGNORECASE)
+            if word_match:
+                word = word_match.group(1).lower()
+                entities["duration_value"] = (
+                    1 if word in ("a", "an") else {
+                        "zero": 0, "one": 1, "two": 2, "three": 3,
+                        "four": 4, "five": 5, "six": 6, "seven": 7,
+                        "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+                        "twelve": 12, "fifteen": 15, "twenty": 20,
+                        "thirty": 30,
+                    }.get(word, 1))
+                entities["duration_unit"] = word_match.group(2).lower()
 
         # Target (who to call/text)
         target_match = re.search(

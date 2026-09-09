@@ -843,6 +843,9 @@ class AndroidAgent:
                 and self.user_memory is not None):
             answer = self._memory_question_answer(transcript)
             if answer:
+                # Mirror to the agent log (same headless-probe rationale as
+                # the command path above).
+                self.log("AGENT", f"say: {answer}")
                 self._speak_direct(answer)
                 if self.conversation is not None:
                     self.conversation.on_speak_begin(answer)
@@ -867,7 +870,11 @@ class AndroidAgent:
                     self.dialogue.begin_clarification(
                         category, intent.transcript, intent.entities)
                 if result.response:
-                    # Speak the command result directly
+                    # Speak the command result directly; ALSO in the agent log:
+                    # headless adb-driven probes assert on these log lines, and
+                    # TTS may be muted/absent on test devices (log still proves
+                    # the decision path executed).
+                    self.log("AGENT", f"say: {result.response}")
                     self._speak_direct(result.response)
                     if self.conversation is not None:
                         self.conversation.on_speak_begin(result.response)
@@ -952,6 +959,13 @@ class AndroidAgent:
         if self.interaction is not None:
             self.interaction.record_agent_response(
                 AgentResponse(type="speech", content=clean, target="user"))
+        # Mirror every spoken response into the agent log AND to stderr
+        # (seen by logcat as python.stderr): headless adb smoke probes
+        # assert on these lines, and TTS may be muted/absent on test
+        # devices (the log still proves the speech action executed).
+        self.log("AGENT", f"say: {clean}")
+        import sys as _syslog
+        print(f"SPEAK: {clean}", file=_syslog.stderr, flush=True)
         return delivered
 
     def _select_conversational_model(self) -> str:
@@ -1131,6 +1145,9 @@ class AndroidAgent:
             except Exception as exc:
                 logger.warning("human_observation record failed: %s", exc)
         self.log("INTERACTION", f"{obs.type} from {obs.source}: {detail}")
+        import sys as _syslog
+        print(f"HUMAN-OBS {obs.type}/{obs.source}: {detail}",
+              file=_syslog.stderr, flush=True)
         return {"accepted": True, "type": obs.type, "detail": detail,
                 "presence_event":
                     detail if detail.startswith("USER_") else ""}
@@ -1312,15 +1329,20 @@ class AndroidAgent:
         try:
             observation = self._get_observation()
             self.last_observation = observation
-            # v1.29: conversational fast path — new speech triggers a
+            # v1.28.1: conversational fast path — new speech triggers a
             # personality-driven response immediately, bypassing the full
-            # tool-use decision pipeline.
-            if observation.get("new_speech") and self.engine is not None:
+            # tool-use decision pipeline. No engine gate: deterministic
+            # commands (timer/memory) work without a model; the engine call
+            # inside _handle_conversational_input already guards itself.
+            if observation.get("new_speech"):
                 self._handle_conversational_input(observation)
                 # Still drain conversation events (closed-loop record) before
                 # returning — the ask/answer round-trip must be journaled.
                 self._drain_conversation_events()
                 return
+            if self.engine is None:
+                self.log("AGENT", "no model engine; conversational fast path only",
+                         level="WARN")
             if self.memory is not None:
                 self.memory.record_event("android_observation",
                     payload={"tick": self.tick_count, "observation": observation},

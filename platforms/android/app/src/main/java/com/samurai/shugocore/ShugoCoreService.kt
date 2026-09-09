@@ -84,21 +84,36 @@ class ShugoCoreService : Service() {
     override fun onCreate() {
         super.onCreate()
         Log.i(TAG, "Service created")
-        // Debug-only transcript injection: adb-driven probe path that
-        // mirrors on-device STT final results through the exact same
-        // HumanInteractionBus pipeline. Lets the phase probe matrix run
-        // hands-free (`am broadcast -a ...INJECT_TRANSCRIPT --es text …`).
+        // Debug-only transcript injection: adb-driven probe path that mirrors
+        // on-device STT results through the exact same HumanInteractionBus
+        // pipeline, letting the phase probe matrix run hands-free:
+        //   adb shell am broadcast -a com.samurai.shugocore.INJECT_TRANSCRIPT \
+        //     --es text_b64 <base64>
+        // (base64 keeps the payload intact across `adb shell` word-splitting;
+        // plain `text` remains a manual-adb fallback). A runtime receiver is
+        // used deliberately — implicit broadcasts reach RECEIVER_EXPORTED
+        // runtime receivers on modern Android, unlike manifest-declared ones.
         if (BuildConfig.DEBUG) {
             registerReceiver(
                 object : android.content.BroadcastReceiver() {
                     override fun onReceive(context: Context?, intent: Intent?) {
-                        val text = intent?.getStringExtra("text")?.trim().orEmpty()
-                        if (text.isNotEmpty()) {
-                            LogBus.log(LogBus.Category.AGENT,
-                                "debug transcript injected: \"$text\"")
-                            HumanInteractionBus.post("speech", "on_device_stt",
-                                org.json.JSONObject().put("transcript", text))
-                        }
+                        if (intent?.action != "com.samurai.shugocore.INJECT_TRANSCRIPT") return
+                        var text = intent.getStringExtra("text_b64")?.let { b64 ->
+                            try {
+                                String(android.util.Base64.decode(
+                                    b64, android.util.Base64.DEFAULT))
+                            } catch (e: Exception) {
+                                null
+                            }
+                        } ?: intent.getStringExtra("text")
+                        text = text?.trim().orEmpty()
+                        if (text.isEmpty()) return
+                        val trimmed = text.take(500)
+                        Log.i("ShugoCoreInject", "received: \"$trimmed\"")
+                        LogBus.log(LogBus.Category.AGENT,
+                            "debug transcript injected: \"$trimmed\"")
+                        HumanInteractionBus.post("speech", "on_device_stt",
+                            org.json.JSONObject().put("transcript", trimmed))
                     }
                 },
                 IntentFilter("com.samurai.shugocore.INJECT_TRANSCRIPT"),

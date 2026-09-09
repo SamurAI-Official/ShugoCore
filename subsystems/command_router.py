@@ -6,6 +6,7 @@ or action to invoke. It bridges the gap between "the user wants something
 done" and "the right executor runs."
 """
 import logging
+import re
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -158,6 +159,36 @@ def default_handlers(tools: Any = None) -> Dict[str, Callable[[UserIntent], Comm
                          f"{'s' if value != 1 else ''}.",
                 action_taken="timer_set",
                 data={"duration_value": value, "duration_unit": unit})
+        # v1.28.1: number words ("two seconds", "a minute", "an hour") so
+        # headless debug injection reaches the timer handler like digits do.
+        word_match = re.search(
+            r"(zero|one|two|three|four|five|six|seven|eight|nine|ten|"
+            r"eleven|twelve|fifteen|twenty|thirty|a|an)"
+            r"\s*(minute|min|second|sec|hour|hr)s?",
+            intent.transcript, re.IGNORECASE)
+        if word_match:
+            word = word_match.group(1).lower()
+            if word in ("a", "an"):
+                wvalue: Any = 1
+            else:
+                wvalue = {
+                    "zero": 0, "one": 1, "two": 2, "three": 3,
+                    "four": 4, "five": 5, "six": 6, "seven": 7,
+                    "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+                    "twelve": 12, "fifteen": 15, "twenty": 20,
+                    "thirty": 30,
+                }.get(word, 1)
+            wunit = word_match.group(2).lower()
+            failed = _tool("set_timer", duration_value=wvalue,
+                           duration_unit=wunit)
+            if failed:
+                return failed
+            return CommandResult(
+                success=True,
+                response=(f"Got it — timer set for {wvalue} {wunit}"
+                          f"{'s' if wvalue != 1 else ''}."),
+                action_taken="timer_set",
+                data={"duration_value": wvalue, "duration_unit": wunit})
         # Phase 3.4: multi-turn — ask for the missing slot.
         return CommandResult(
             success=True,

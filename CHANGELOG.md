@@ -4,6 +4,21 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.28.1] - 2026-09-09 — device smoke harness verified end-to-end on two Android devices (9/9 phases)
+
+### Device smoke harness (`tests/android_device_smoke.py`) — now passes 9/9 on Tab S9 FE + A51
+- **Transcript injection** — the payload is base64-encoded into a `text_b64` extra: `adb shell` word-splits every remote argument, and an earlier multi-word `--es text "…"` arrived as separate tokens (the bare `a` became the intent package and the broadcast was dropped). The receiver decodes it, so multi-word transcripts arrive intact.
+- **Liveness** is proven by the 1 Hz `Decision made for task` agent-loop line in logcat (`python.stderr`) — there is no `python3` binary on-device (embedded Chaquopy runtime), so probing one via run-as was a false metric.
+- **File reads** use `exec-out run-as cat <file>`: `sh -c` under `run-as` *hangs* on this device family (observed 90 s subprocess timeouts), and a bare `shell cat` is SELinux-denied. The personality phases read the real `personality_model.json` with `json.loads` (the old `shugo_core_prod_personality_model.json` name + `literal_eval` never matched what the app writes).
+- **Restart phases** wait for the agent loop to actually resume (`wait_for_agent_loop`) before injecting — observations injected during Chaquopy re-initialisation were dropped ("no agent").
+- **Timer teardown phases** use an 8-second timer so expiry deterministically lands *after* force-stop; **memory probes** use the deterministic `recall …` command instead of clarify-path phrasing; the **growth phase** drives the 25-turn `GROWTH_EVERY` cadence until `generation` advances, then asserts `compare_models` drift > 0 offline (repo root added to `sys.path` for the import).
+- `run()` decodes logcat with `errors="replace"` — the ring can contain arbitrary bytes and previously crashed the probe with `UnicodeDecodeError`.
+
+### On-device app
+- **`ShugoCoreService.kt`** — re-added the runtime-registered transcript-injection broadcast receiver (`RECEIVER_EXPORTED`, `BuildConfig.DEBUG`-gated). A manifest-declared receiver was *blocking* delivery on one device (`BroadcastQueue: Background execution not allowed`) and silently dropped on another; the runtime receiver is the single reliable implicit-broadcast path on modern Android and is used exclusively now (manifest `INJECT_TRANSCRIPT` receiver removed).
+- **`AndroidManifest.xml`** — removed the duplicated `ShugoCoreService` / `SensorPublisherService` service declarations and the shadowing manifest receiver.
+- **`shugocore_agent.py`** (on-device copy) — accepted human observations and every spoken response (`_speak_direct`) are mirrored to stderr (`HUMAN-OBS …`, `SPEAK: …`) so headless probes and TTS-muted test devices can observe the decision path in `python.stderr` logcat — the agent's in-memory `self.log` buffer never reaches logcat on its own.
+
 ## [1.28.0] - 2026-09-08 — audio-source discrimination, conversational agent loop, subsystems + personality on device, device smoke harness
 
 ### Audio-source discrimination (new)

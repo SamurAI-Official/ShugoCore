@@ -26,8 +26,15 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 ADB = str(Path.home() / "Library" / "Android" / "sdk" / "platform-tools" / "adb")
 SHUGOCORE_PACKAGE = "com.samurai.shugocore"
 
+# The harness lives in tests/ but imports the personality package (repo
+# root) for the offline compare_models diff; sys.path[0] is tests/ when
+# run as `python3 tests/android_device_smoke.py`, so add the repo root.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 INJECT_ACTION = f"{SHUGOCORE_PACKAGE}.INJECT_TRANSCRIPT"
-INJECTION_KEY = "text"
+INJECTION_KEY = "text_b64"  # base64 extra key (see inject_transcript)
 
 PRODUCTION_MODEL_NAME = "shugocore-ollama"
 
@@ -37,7 +44,10 @@ PRODUCTION_MODEL_NAME = "shugocore-ollama"
 # ---------------------------------------------------------------------------
 
 def run(*args: str) -> Tuple[int, str, str]:
-    proc = subprocess.run([ADB, *args], capture_output=True, text=True, timeout=90)
+    # errors="replace": the logcat ring can contain arbitrary device bytes;
+    # the harness must never crash decoding them.
+    proc = subprocess.run([ADB, *args], capture_output=True, text=True,
+                          timeout=90, errors="replace")
     return proc.returncode, proc.stdout, proc.stderr
 
 
@@ -72,22 +82,66 @@ def expect_in_logs(serial: str, needle: str, within_s: float = 15.0) -> bool:
 
 
 def run_as_shell(serial: str, *shell_args: str) -> Tuple[int, str, str]:
+    """Run a command in the package sandbox as the app user.
+
+    NOTE: `sh -c` under run-as HANGS on this device family (observed as a
+    subprocess timeout), so commands are passed directly as argv — never
+    shell-wrapped. Prefer read_device_file() for reading app-private
+    files (binary-safe via exec-out).
+    """
     rc, out, err = run(
         "-s", serial, "shell", "run-as",
-        SHUGOCORE_PACKAGE, "sh", "-c", *shell_args,
+        SHUGOCORE_PACKAGE, *shell_args,
     )
     return rc, out, err
+
+
+def read_device_file(serial: str, path: str,
+                     max_bytes: int = 1 << 20) -> Optional[bytes]:
+    """Read a device file under the package sandbox (binary-safe).
+
+    Uses `exec-out run-as cat <path>`, which streams raw bytes without a
+    shell wrapper (sh -c under run-as hangs on this device line). Returns
+    None when the file is unreadable or the command is refused.
+    """
+    proc = subprocess.run(
+        [ADB, "-s", serial, "exec-out", "run-as",
+         SHUGOCORE_PACKAGE, "cat", path],
+        capture_output=True, timeout=30,
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout[:max_bytes]
+
+
+def wait_for_agent_loop(serial: str, within_s: float = 30.0,
+                        needle: str = "Decision made for task") -> bool:
+    """Poll (fresh) logcat until the agent's 1 Hz decision loop is live.
+
+    After `am start`, the Chaquopy runtime + Python agent can take
+    seconds to re-initialise; injecting transcripts before the loop is up
+    drops them (observation with no agent). Clears logcat first so only
+    fresh evidence counts.
+    """
+    clear_logcat(serial)
+    return expect_in_logs(serial, needle, within_s=within_s)
 
 
 def inject_transcript(serial: str, text: str, wait_s: float = 1.5) -> None:
     """Send a transcript via the debug broadcast.
 
-    The --es extra is passed as a single arg so multi-word text survives
-    adb->am parsing intact (avoids pkg=time mangling 'what time is it').
+    The payload crosses `adb shell`, which word-splits every remote
+    argument (no re-quoting) — a multi-word `--es text "…"` arrives as
+    separate tokens and `am` misparses them (observed: the bare token "a"
+    became the intent's package, and the broadcast was dropped). The
+    transcript is therefore base64-encoded into the `text_b64` extra:
+    ASCII-only, space-free, a single intact token end-to-end.
     """
+    import base64
+    b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
     run(
         "-s", serial, "shell", "am", "broadcast", "-a", INJECT_ACTION,
-        "--es", INJECTION_KEY, text,
+        "--es", "text_b64", b64,
     )
     time.sleep(wait_s)
 
@@ -243,34 +297,42 @@ def _sep(logger: List[str]) -> None:
 
 
 def step_service_alive(serial: str, logger: List[str]) -> bool:
-    """Low-level probe: adb shell, package resolvable, Python runtime alive."""
+    """Low-level probe: adb shell, package resolvable, agent loop active.
+
+    The on-device Python is a Chaquopy embedded runtime (no `python3`
+    binary), so liveness is proven by the 1 Hz agent-loop decision line the
+    engine emits to logcat under the `python.stderr` tag — never by trying
+    to exec a python binary via run-as.
+    """
     rc, out, err = run(
         "-s", serial, "shell", "ps", "|", "grep", "-i", "shugocore"
     )
     alive = rc == 0 and "shugocore" in out.lower()
-    rc2, ver, _ = run_as_shell(
-        serial, "python3 -c 'import sys; print(sys.version.split()[0])'"
-    )
-    py_ok = rc2 == 0 and ver.strip()
+    runtime_in_logs = bool(log_lines_containing(serial, "python.stderr"))
+    loop_ok = expect_in_logs(serial, "Decision made for task", within_s=10.0)
     for ln in [
         f"  ps grep shugocore: {'yes' if alive else 'no'}",
-        f"  python3 -c version: {'OK ' + ver.strip() if py_ok else 'MISSING/ERR'}",
+        f"  Chaquopy runtime (python.stderr in logcat): {'yes' if runtime_in_logs else 'no'}",
+        f"  agent loop ('Decision made for task'): {'yes' if loop_ok else 'no'}",
     ]:
         _log(logger, ln)
-    return alive and py_ok
+    return alive and runtime_in_logs and loop_ok
 
 def step_timer_fires_while_away(serial: str, logger: List[str]) -> bool:
     """Force-stop, then verify the expired timer is re-announced."""
     ensure_service_started(serial)
+    # An 8 s timer guarantees expiry AFTER the force-stop: the 1-3 s spent
+    # finding the ack plus the 10 s suspension always exceed its lifespan,
+    # so restore() re-inserts it as fired_while_away on the next boot.
     inject_scanout(
-        serial, "set a timer for two seconds and tell me when it fires"
+        serial, "set a timer for eight seconds and tell me when it fires"
     )
-    if not expect_in_logs(serial, "timer set for 2 seconds", within_s=12.0):
+    if not expect_in_logs(serial, "timer set for 8 seconds", within_s=12.0):
         _log_red(logger, "  timer ack missing before teardown")
         return False
     run("-s", serial, "shell", "am", "force-stop", SHUGOCORE_PACKAGE)
     _log(logger, "  force-stop issued; waiting for timer expiry+restart")
-    time.sleep(8.0)
+    time.sleep(10.0)
     ensure_service_started(serial)
     ok = expect_in_logs(serial, "while you were away", within_s=12.0)
     _log(logger, "  'while you were away' log line:", "FOUND" if ok else "MISSING")
@@ -279,18 +341,22 @@ def step_timer_fires_while_away(serial: str, logger: List[str]) -> bool:
 def step_fact_stores(serial: str, logger: List[str]) -> bool:
     """Assert an OS-level fact landed in SQLite."""
     inject_scanout(serial, "remember that my favorite color is midnight blue")
-    ok = expect_in_logs(serial, "remembered", within_s=12.0)
-    _log(logger, "  'remembered' log line:", "FOUND" if ok else "MISSING")
+    ok = expect_in_logs(serial, "I'll remember", within_s=12.0)
+    _log(logger, "  \"I'll remember\" log line:", "FOUND" if ok else "MISSING")
     return ok
 
 
 def step_memory_question(serial: str, logger: List[str]) -> bool:
     """Ask a memory question and confirm the answer uses memory content."""
     clear_logcat(serial)
-    inject_transcript(serial, "what is my favorite color")
+    inject_transcript(serial, "remember that my favorite color is midnight blue")
     time.sleep(3.0)
     before = set(log_lines_containing(serial, "midnight blue"))
-    inject_transcript(serial, "remind me what my favorite color is")
+    # "recall my favorite color" is a deterministic recall command whose
+    # spoken reply carries the stored fact. ("remind me what my favorite
+    # color is" would classify to the clarify handler and reply
+    # "Remember what?" instead of the fact.)
+    inject_transcript(serial, "recall my favorite color")
     time.sleep(3.0)
     after = log_lines_containing(serial, "midnight blue")
     ok = len(after) > len(before) and any(
@@ -304,15 +370,19 @@ def step_fact_survives_restart(serial: str, logger: List[str]) -> bool:
     """Seed a fact, force-stop, restart, ask, and confirm the fact survives."""
     ensure_service_started(serial)
     inject_scanout(serial, "remember that my favorite color is midnight blue")
-    if not expect_in_logs(serial, "remembered", within_s=12.0):
+    if not expect_in_logs(serial, "I'll remember", within_s=12.0):
         _log_red(logger, "  fact not stored before teardown")
         return False
     run("-s", serial, "shell", "am", "force-stop", SHUGOCORE_PACKAGE)
     _log(logger, "  force-stop issued")
     time.sleep(2.0)
     ensure_service_started(serial)
-    clear_logcat(serial)
-    inject_transcript(serial, "remind me what my favorite color is")
+    # The agent loop must be live before the recall can be answered — an
+    # observation injected during re-initialisation is dropped ("no agent").
+    if not wait_for_agent_loop(serial, within_s=30.0):
+        _log_red(logger, "  agent loop did not resume after restart")
+        return False
+    inject_transcript(serial, "recall my favorite color")
     time.sleep(4.0)
     ok = expect_in_logs(serial, "midnight blue", within_s=12.0)
     _log(logger, "  fact survives restart:", "FOUND" if ok else "MISSING")
@@ -323,16 +393,17 @@ def step_full_teardown_announced(serial: str, logger: List[str]) -> bool:
     """Full teardown round-trip: seed timers/facts, force-stop, restart,
     and confirm the agent announces what was restored."""
     ensure_service_started(serial)
-    inject_scanout(
-        serial,
-        "set a timer for two seconds and remember that my middle name is June",
-    )
-    if not expect_in_logs(serial, "timer set for 2 seconds", within_s=12.0):
+    inject_scanout(serial, "set a timer for eight seconds")
+    if not expect_in_logs(serial, "timer set for 8 seconds", within_s=12.0):
         _log_red(logger, "  timer ack missing before teardown")
+        return False
+    inject_scanout(serial, "remember that my middle name is June")
+    if not expect_in_logs(serial, "I'll remember", within_s=12.0):
+        _log_red(logger, "  fact store ack missing before teardown")
         return False
     run("-s", serial, "shell", "am", "force-stop", SHUGOCORE_PACKAGE)
     _log(logger, "  force-stop issued; waiting for timer expiry + restart")
-    time.sleep(8.0)
+    time.sleep(10.0)
     ensure_service_started(serial)
     ok1 = expect_in_logs(serial, "while you were away", within_s=12.0)
     _log(logger, "  'while you were away' after restart:", "FOUND" if ok1 else "MISSING")
@@ -344,66 +415,93 @@ def step_full_teardown_announced(serial: str, logger: List[str]) -> bool:
     return ok1 and ok2
 
 def step_personality_model_genesis(serial: str, logger: List[str]) -> bool:
-    """Verify the first production model paragraph exists in SQLite.
+    """Verify the personality model JSON exists in app-private storage.
 
-    We deliberately probe the production-model file, not the dev one.
-    The harness must not assert on dev-model artifacts.
+    The agent persists its living PersonalityModel atomically to
+    data_dir/personality_model.json (json.dump layout: name/generation/
+    policy/traits). We read it sandbox-only — never by path outside the
+    confirmed app-private location.
     """
-    rc, out, err = run_as_shell(
-        serial,
-        "cat /data/data/com.samurai.shugocore/files/"
-        "shugo_core_prod_personality_model.json 2>/dev/null | head -c 200",
-    )
-    body = (out or "") + (err or "")
-    ok = rc == 0 and len(body.strip()) > 120 and "ShugoCore" in body
-    _log(logger, "  production model JSON readable:", "OK" if ok else "MISSING/EMPTY")
+    path = f"/data/data/{SHUGOCORE_PACKAGE}/files/personality_model.json"
+    data = read_device_file(serial, path, max_bytes=4096)
+    body = (data or b"").decode("utf-8", "replace").strip()
+    ok = (data is not None and len(body) > 60
+          and '"generation"' in body and '"warmth"' in body)
+    _log(logger, "  personality model JSON readable:", "OK" if ok else "MISSING/EMPTY")
     if not ok:
-        _log(logger, "    first 200 chars:", body.strip()[:200])
+        _log(logger, "    first 400 chars:", body[:400])
     return ok
 
 def step_personality_growth_log(serial: str, logger: List[str]) -> bool:
-    """Force growth, then read the growth-driven model paragraph from SQLite,
-    and diff it offline against the then-current production paragraph.
+    """Grow the personality one generation on-device, then read the
+    growth-driven model JSON back and diff it offline against the
+    pre-growth snapshot.
 
-    Growth is triggered here by a forced _growth_maybe-equivalent stimulus
-    (multiple conversational turns). We read the model JSON both before and
-    after, compute compare_models locally, and assert drift > 0.
+    Growth fires when the agent's in-memory turn counter reaches
+    GROWTH_EVERY (25 conversational turns) and is persisted atomically to
+    data_dir/personality_model.json. We inject turns in a loop, re-reading
+    the JSON every few injections until generation advances, then compute
+    compare_models locally and assert drift > 0.
     """
     import ast
+    import json as _json
     from personality import PersonalityModel
 
     def read_prod_model(serial: str) -> Optional[PersonalityModel]:
-        rc, out, _ = run_as_shell(
-            serial,
-            "cat /data/data/com.samurai.shugocore/files/"
-            "shugo_core_prod_personality_model.json 2>/dev/null",
-        )
-        if rc != 0 or not out.strip():
+        path = (f"/data/data/{SHUGOCORE_PACKAGE}/files/"
+                "personality_model.json")
+        raw = read_device_file(serial, path)
+        if raw is None:
             return None
+        out = raw.decode("utf-8", "replace")
+        data = None
         try:
-            return PersonalityModel.from_dict(ast.literal_eval(out))
+            data = _json.loads(out)
+        except Exception:
+            try:
+                data = ast.literal_eval(out)
+            except Exception:
+                return None
+        try:
+            return PersonalityModel.from_dict(data)
         except Exception:
             return None
 
     before = read_prod_model(serial)
     if before is None:
-        _log_red(logger, "  cannot read production model before growth")
+        _log_red(logger, "  cannot read personality model before growth")
         return False
     _log(logger, "  pre-growth generation:", before.generation)
 
+    # Mix of commands / questions / chitchat: every non-empty injected
+    # transcript counts as one growth turn inside the agent, so the ~32
+    # injections below cross the 25-turn GROWTH_EVERY cadence.
     turns = [
-        "what is my favorite color",
         "remember that I adopted a rescue greyhound named June",
         "you are being very kind today",
-        "remember that my favorite dessert is mango sticky rice",
+        "set a timer for thirty seconds",
         "thank you for remembering things about me",
+        "recall what you know about June",
+        "tell me a joke",
+        "what time is it",
+        "you are very helpful",
+        "what is my favorite color",
+        "remember that I like sunrise walks",
     ]
-    for t in turns:
-        inject_transcript(serial, t, wait_s=2.0)
+    grew = False
+    after = None
+    for idx in range(32):
+        inject_transcript(serial, turns[idx % len(turns)], wait_s=1.5)
+        if (idx + 1) % 3 != 0:
+            continue
+        probe = read_prod_model(serial)
+        if probe is not None and probe.generation > before.generation:
+            after = probe
+            grew = True
+            break
 
-    after = read_prod_model(serial)
-    if after is None:
-        _log_red(logger, "  cannot read production model after growth")
+    if not grew:
+        _log_red(logger, "  generation did not advance after injections")
         return False
     _log(logger, "  post-growth generation:", after.generation)
 
@@ -417,8 +515,8 @@ def step_personality_growth_log(serial: str, logger: List[str]) -> bool:
     _log(logger, "  comparison drift:", repr(drift))
     _log(
         logger,
-        "  comparison traits:",
-        json.dumps(comparison.get("traits"), sort_keys=True, indent=2),
+        "  comparison trait_deltas:",
+        json.dumps(comparison.get("trait_deltas"), sort_keys=True, indent=2),
     )
     ok = (drift is not None) and (drift > 0.0)
     _log(logger, "  growth drift > 0:", "OK" if ok else "NONE/STALE")

@@ -197,6 +197,44 @@ class SubconsciousModel:
                 return ""
 
 
+
+    def get_conversational_output(self, model_name: str,
+                                  prompt: str,
+                                  backend: Optional[BaseBackend] = None) -> str:
+        """Query a model with a conversational prompt (personality-driven).
+
+        Unlike get_model_output(), this does NOT build a tool-use decision
+        prompt — the caller provides the full conversational prompt (from
+        prompts.builder.build_conversational_prompt). Returns raw model
+        output ('' on failure). The decision engine parses the speak action.
+        """
+        if not validate_model_name(model_name):
+            logger.error(f"Rejected invalid model name: {model_name!r}")
+            return ""
+        backend = backend or self.backend
+        available = self.get_available_models()
+        if (backend is self.backend and available
+                and model_name not in available):
+            logger.error(f"Model {model_name} is not available.")
+            return ""
+        with get_tracer("subconscious").start_span(
+                "backend.generate_conversation",
+                {"model": sanitize_text(model_name, 64)}) as span:
+            try:
+                output = str(backend.generate(model_name, prompt,
+                                              timeout=self.request_timeout))
+                span.set_attribute("chars", len(output))
+                self.last_call_errors.pop(str(model_name)[:64], None)
+                return output
+            except Exception as exc:
+                span.set_attribute("error", type(exc).__name__)
+                logger.error(
+                    f"Conversational model {model_name} call failed: "
+                    f"{type(exc).__name__}")
+                self.note_call_error(
+                    model_name, f"transport_error: {type(exc).__name__}")
+                return ""
+
     # -- success bookkeeping ---------------------------------------------------
 
     def log_model_success(self, model_id: str, success: bool) -> None:

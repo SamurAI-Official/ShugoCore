@@ -40,5 +40,35 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
-    </application>
+            <service
+            android:name=".ShugoCoreService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <service
+            android:name=".runtime.SensorPublisherService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <receiver
+            android:name=".runtime.DeviceSensorBroadcastReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.samurai.shugocore.DEBUG_INJECT_SENSOR" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Phase 4.5/5 debug probe: injects a transcript into
+        HumanInteractionBus so the on-device smoke harness can drive the
+        agent headlessly. Exported so `adb` can target it; action-string is
+        namespaced to this package. -->
+        <receiver
+            android:name=".debug.InjectTranscriptBroadcastReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.samurai.shugocore.INJECT_TRANSCRIPT" />
+            </intent-filter>
+        </receiver>
+
+</application>
 </manifest>

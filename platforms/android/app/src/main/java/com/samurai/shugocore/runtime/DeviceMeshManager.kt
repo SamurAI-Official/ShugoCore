@@ -30,6 +30,18 @@ class DeviceMeshManager(private val context: Context) {
         val MESH_SERVICE_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
         /** A peer is considered offline if no message arrives within this window. */
         private const val STALE_THRESHOLD_MS = 5_000L
+
+        /** v1.29: process-wide shared manager. The peripheral must run exactly
+         * ONE BluetoothTransport per UUID — SensorPublisherService joins THIS
+         * instance instead of building a second one (the dual-RFCOMM bug that
+         * left peers stuck at role=primary with no sensor data). */
+        @Volatile var shared: DeviceMeshManager? = null
+            private set
+
+        fun getOrCreate(context: Context): DeviceMeshManager =
+            shared ?: synchronized(this) {
+                shared ?: DeviceMeshManager(context.applicationContext).also { shared = it }
+            }
     }
     var onPeerConnected: ((String) -> Unit)? = null
     var onPeerDisconnected: ((String) -> Unit)? = null
@@ -39,6 +51,7 @@ class DeviceMeshManager(private val context: Context) {
      *  immediately instead of waiting for the next 1 Hz tick. */
     var onSensorAgentsChanged: ((String) -> Unit)? = null
     private val transport = BluetoothTransport(context, MESH_SERVICE_UUID)
+    private var started = false
     private val peers = ConcurrentHashMap<String, MeshPeer>()
     private val bluetoothAdapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
     var role: String = "primary"
@@ -51,7 +64,11 @@ class DeviceMeshManager(private val context: Context) {
     private fun isStale(peer: MeshPeer): Boolean =
         System.currentTimeMillis() - peer.lastSeenMs > STALE_THRESHOLD_MS
 
+    /** v1.29: idempotent — both the agent service and the sensor publisher
+     * call this on the shared manager; the listener is wired and the RFCOMM
+     * server opened exactly once. */
     fun start(): Boolean {
+        if (started) return true
         transport.setListener(object : BluetoothTransport.Listener {
             override fun onMessageReceived(msg: BluetoothMessage) = handleMessage(msg.deviceId, msg.json)
             override fun onDeviceConnected(id: String) {
@@ -64,7 +81,10 @@ class DeviceMeshManager(private val context: Context) {
             }
         })
         val ok = transport.startServer()
-        if (ok) autoConnectPaired()
+        if (ok) {
+            started = true
+            autoConnectPaired()
+        }
         return ok
     }
 

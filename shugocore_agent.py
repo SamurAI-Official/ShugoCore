@@ -130,6 +130,15 @@ class AndroidAgent:
         # register_speak_listener(); the internal speak action executes
         # through it. The decision core never imports the provider.
         self._speak_listener: Optional[Any] = None
+        # v1.29: conversation state + personality for responsive dialogue.
+        self._last_transcript_ts: float = 0.0
+        self._last_transcript: str = ""
+        self.conversation = None
+        self.personality = None
+        # Phase B (CSFA): living PersonalityModel + growth-cycle window.
+        self.personality_model = None
+        self.GROWTH_EVERY = 25  # conversational turns per generation
+        self._growth_stats: Dict[str, Any] = {}
         self._bootstrap()
         if self.engine is not None:
             try:
@@ -206,7 +215,125 @@ class AndroidAgent:
             self.engine = self._initialize_engine()
             if self.engine is None and not self.engine_error:
                 self.engine_error = "engine initialization returned None"
+            # Keep a direct handle on the real engine's task manager: tests
+            # (and hot-swap paths) may replace self.engine afterwards, which
+            # would orphan the worker thread and make cleanup unreachable.
+            self._real_task_manager = getattr(self.engine, "task_manager", None)
+            # Phase 4: same idea for full teardown — shutdown() must flush
+            # the REAL engine's memory even if self.engine was swapped.
+            self._real_engine = self.engine
             self._write_diagnostics()
+            # v1.29: conversation manager + personality for responsive dialogue.
+            try:
+                from conversation import ConversationManager
+                self.conversation = ConversationManager()
+            except Exception as exc:
+                self.log("AGENT", f"conversation init failed: {exc}", level="WARN")
+            try:
+                from personality import load_personality
+                self.personality = load_personality(self.data_dir)
+            except Exception as exc:
+                self.log("AGENT", f"personality load failed: {exc}", level="WARN")
+                from personality import DEFAULT_PERSONALITY
+                self.personality = DEFAULT_PERSONALITY
+            # Phase B (CSFA): the living PersonalityModel. Born once as a
+            # blank baby state (policy only), then grown from memory.
+            try:
+                from personality.model import PersonalityModel
+                pm_path = self._join_data("personality_model.json")
+                self.personality_model = PersonalityModel.load(pm_path)
+                if self.personality_model is None:
+                    self.personality_model = PersonalityModel.genesis(
+                        self.personality)
+                    self.personality_model.save(pm_path)
+                    self.log("PERSONALITY", "genesis: baby state born "
+                             "(gen 0, policy only)")
+                else:
+                    self.log("PERSONALITY", "resumed at gen "
+                             f"{self.personality_model.generation}")
+                # Downstream consumers (prompt builder) stay unchanged:
+                # they keep reading a PersonalityProfile, now rendered
+                # from the living model.
+                self.personality = self.personality_model.as_profile()
+                # On-device observability: bootstrap result lands in the
+                # data dir (the LOG tab buffer is bounded and boot lines
+                # scroll away within minutes).
+                self._write_diag_file("personality_boot.txt",
+                                      f"ok gen={self.personality_model.generation}")
+            except Exception as exc:
+                self.log("PERSONALITY", f"model init failed: {exc}",
+                         level="WARN")
+                self._write_diag_file("personality_error.txt",
+                                      traceback.format_exc())
+            # v1.29: intent parser + command executor for agentic behavior.
+            # v1.30 (Phase 3): + durable memory, real tools, fallback retry,
+            # and multi-turn dialogue state. All best-effort: any failure
+            # degrades to the plain conversational path gracefully.
+            try:
+                from subsystems import (IntentParser, CommandExecutor,
+                                        MemoryManager, DialogueState)
+                from subsystems.command_router import default_handlers
+                from subsystems.tools import default_tools, TimerManager
+
+                self.intent_parser = IntentParser()
+                # Phase 3.1 — durable user facts + topic tracking.
+                self.user_memory = MemoryManager(self.data_dir)
+                # Phase 3.4 — clarification + coreference state.
+                self.dialogue = DialogueState()
+
+                def _battery_level():
+                    tele = self.telemetry or {}
+                    for key in ("battery_level", "battery", "battery_pct"):
+                        val = tele.get(key)
+                        if val is not None:
+                            try:
+                                return float(val)
+                            except (TypeError, ValueError):
+                                return None
+                    return None
+
+                def _sensor_snapshot():
+                    tele = self.telemetry or {}
+                    out = {}
+                    for key, val in tele.items():
+                        if key in ("mesh_peers", "mesh_peer_count"):
+                            continue
+                        if isinstance(val, (int, float, str, bool)):
+                            out[key] = val
+                    return out
+
+                # Phase 3.2 — real tool executions. Phase 4 — timers persist
+                # across restarts (data_dir) and memory tools are wired to
+                # the durable fact store.
+                timer_path = self._join_data("timers.json")
+                timers = TimerManager(persist_path=timer_path)
+                self.tool_registry = default_tools(
+                    timer_manager=timers,
+                    on_timer_fire=lambda label: self._speak_direct(
+                        f"{label} is done!"),
+                    battery_provider=_battery_level,
+                    sensor_provider=_sensor_snapshot,
+                    memory_provider=self.user_memory.facts)
+                # Phase 4: surface timers that expired while the process
+                # was away; the next tick announces them (fired_while_away).
+                for missed_timer in timers.restore():
+                    self.log("TIMER", f"timer expired while away: "
+                                      f"{missed_timer.label} "
+                                      f"({missed_timer.timer_id})")
+
+                self.command_executor = CommandExecutor()
+                self.command_executor.set_tool_registry(self.tool_registry)
+                for name, handler in default_handlers(
+                        self.tool_registry).items():
+                    self.command_executor.register_handler(name, handler)
+            except Exception as exc:
+                self.log("AGENT", f"subsystems init failed: {exc}",
+                         level="WARN")
+                self.intent_parser = None
+                self.command_executor = None
+                self.user_memory = None
+                self.tool_registry = None
+                self.dialogue = None
             # v1.20: start ShugoNet runtime for cross-device transport.
             self._start_shugonet()
             # v1.21: initialise the network delegation manager and register
@@ -248,6 +375,103 @@ class AndroidAgent:
                     fh.write(self.init_error)
         except Exception:
             pass
+
+    def _write_diag_file(self, name: str, content: str) -> None:
+        """Best-effort: persist a diagnostics note under the data dir.
+        Unlike the LOG-tab buffer (bounded, boot lines scroll away),
+        these files survive for adb/run-as inspection."""
+        try:
+            if not self.data_dir:
+                return
+            with open(str(Path(self.data_dir) / name), "w",
+                      encoding="utf-8") as fh:
+                fh.write(content)
+        except Exception:
+            pass
+    # ------------------------------------------------------------------
+    # Phase B (CSFA): personality growth cycle
+    # ------------------------------------------------------------------
+    def _growth_observe(self, transcript: str) -> None:
+        """Record one conversational turn for the growth cycle, including
+        any explicit feedback about how Shugo is being. Checks the
+        generation cadence on every turn."""
+        if self.personality_model is None:
+            return
+        try:
+            from personality.growth import extract_feedback
+            self._growth_stats["turns"] = (
+                self._growth_stats.get("turns", 0) + 1)
+            for trait, net in extract_feedback(transcript).items():
+                bucket = self._growth_stats.setdefault("feedback", {})
+                bucket[trait] = bucket.get(trait, 0) + net
+            if self._growth_stats.get("turns", 0) >= self.GROWTH_EVERY:
+                self._growth_maybe()
+        except Exception:
+            pass
+
+    def _growth_note_intent(self, intent: Any) -> None:
+        """Count the intent kind for the growth window."""
+        if self.personality_model is None or intent is None:
+            return
+        try:
+            kind = intent.intent_type.value
+            if kind == "question":
+                self._growth_stats["questions"] = (
+                    self._growth_stats.get("questions", 0) + 1)
+            elif kind == "command":
+                self._growth_stats["commands"] = (
+                    self._growth_stats.get("commands", 0) + 1)
+        except Exception:
+            pass
+
+    def _growth_note_failure(self) -> None:
+        """Count a failed command execution for the growth window."""
+        if self.personality_model is None:
+            return
+        try:
+            self._growth_stats["tool_failures"] = (
+                self._growth_stats.get("tool_failures", 0) + 1)
+        except Exception:
+            pass
+
+    def _growth_maybe(self, force: bool = False) -> Optional[Dict[str, Any]]:
+        """Phase B growth cycle: periodically take memory, grow one
+        generation of the PersonalityModel, compare it against the
+        previous generation, and persist. Returns the growth report."""
+        if self.personality_model is None:
+            return None
+        if not force and (self._growth_stats.get("turns", 0)
+                          < self.GROWTH_EVERY):
+            return None
+        try:
+            from personality.growth import grow_from_memory
+            from personality.model import PersonalityModel
+            stats = dict(self._growth_stats)
+            self._growth_stats = {}  # fresh window
+            # Snapshot the pre-existing model BEFORE growth so the
+            # successor can be compared against it (CSFA audit trail).
+            before_model = PersonalityModel.from_dict(
+                self.personality_model.to_dict())
+            report = grow_from_memory(self.personality_model, stats)
+            if report is None:
+                return None
+            before = before_model.generation
+            comparison = PersonalityModel.compare_models(
+                before_model, self.personality_model)
+            self.log("PERSONALITY",
+                     f"grew gen {before} -> {report['generation']} "
+                     f"({report['reasons']}); "
+                     f"drift={comparison['drift']:.4f}")
+            report["comparison"] = comparison
+            self.personality_model.save(
+                self._join_data("personality_model.json"))
+            # Refresh the rendered profile so new growth is live.
+            self.personality = self.personality_model.as_profile()
+            return report
+        except Exception as exc:
+            self.log("PERSONALITY", f"growth failed: {exc}", level="WARN")
+            return None
+
     def _start_shugonet(self) -> None:
         """v1.20: start the ShugoNet TCP/JSON transport runtime and register
         network handlers with the execution layer. Best-effort: failures
@@ -492,6 +716,339 @@ class AndroidAgent:
         if self.memory is not None:
             self.memory.record_event(
                 "agent_question", {"question": text})
+        return {"status": "success", "asked": text, "delivered": delivered}
+
+    def _drain_conversation_events(self) -> None:
+        """v1.17 closed-loop Record: completed question/answer round trips
+        land in Tier 1 as METADATA ONLY (latency + lengths — the words stay
+        in the bounded bus, per the transcripts-never-enter-memory rule)."""
+        if self.interaction is None:
+            return
+        for event in self.interaction.drain_conversation_events():
+            if self.memory is None:
+                break
+            try:
+                self.memory.record_event("conversation_event",
+                    payload={
+                        "round_trip_s": event.get("round_trip_s"),
+                        "question_chars":
+                            len(str(event.get("question") or "")),
+                        "answer_chars":
+                            len(str(event.get("answer") or "")),
+                    },
+                    metadata={"source": "interaction_bus",
+                              "privacy_scope": "local"})
+            except Exception:
+                pass
+
+    def _check_timers(self) -> None:
+        """Phase 3.2: fire any due background timers (speaks on completion).
+
+        Called every tick. The TimerManager is owned by the tool registry;
+        each fired timer invokes its on_fire callback (which speaks), so a
+        user-set timer announces itself without any model involvement.
+        """
+        try:
+            registry = getattr(self, "tool_registry", None)
+            if registry is None:
+                return
+            manager = getattr(registry, "_timer_manager", None)
+            if manager is None:
+                return
+            fired = manager.check()
+            for timer in fired:
+                # Phase 4: timers found expired after a restart have no
+                # on_fire callback — announce the miss here instead.
+                if getattr(timer, "fired_while_away", False):
+                    try:
+                        self._speak_direct(
+                            f"While you were away, your "
+                            f"{timer.label.lower()} fired.")
+                    except Exception:
+                        pass
+                self.log("TIMER", f"timer fired: {timer.label} "
+                                  f"({timer.timer_id})")
+        except Exception as exc:
+            self.log("TIMER", f"timer check failed: {exc}", level="WARN")
+
+    def _handle_conversational_input(self, observation: Dict[str, Any]) -> None:
+        """Fast path for responding to user speech.
+
+        Phase 3 flow:
+          1. resolve pending clarifications ("5 minutes" -> timer duration)
+          2. resolve coreferences ("turn them off" -> "turn the lights off")
+          3. record durable facts + topic (MemoryManager)
+          4. command intents execute through real tools (retry + fallback)
+          5. everything else -> personality-driven conversational prompt
+        """
+        transcript = observation.get("transcript", "").strip()
+        if not transcript:
+            return
+
+        # Phase B: growth bookkeeping — every turn counts, explicit
+        # feedback is captured as trait signals.
+        self._growth_observe(transcript)
+
+        # Update conversation state
+        if self.conversation is not None:
+            self.conversation.on_user_speech(transcript)
+
+        # Phase 3.4: pending clarification answers + coreference resolution
+        resolved_intent = None
+        if self.dialogue is not None:
+            resolved_intent = self.dialogue.resolve_answer(transcript)
+            if resolved_intent is None:
+                transcript = self.dialogue.resolve_coreference(transcript)
+            self.dialogue.record_utterance(transcript)
+
+        # Phase 3.1: learn durable facts + update topic. Phase 4: explicit
+        # memory commands ("remember that X") skip auto-extraction — the
+        # command path stores the verbatim fact, avoiding a duplicate
+        # paraphrased copy that "forget" couldn't cleanly remove.
+        if (self.user_memory is not None
+                and not transcript.lower().startswith(
+                    ("remember", "recall", "forget"))):
+            memory_digest = self.user_memory.on_user_input(transcript)
+            if memory_digest.get("new_facts"):
+                self.log("MEMORY",
+                         f"learned {len(memory_digest['new_facts'])} fact(s)")
+                self._growth_stats["new_facts"] = (
+                    self._growth_stats.get("new_facts", 0)
+                    + len(memory_digest["new_facts"]))
+
+        # Classify intent — fast rule-based, <10ms. A resolved clarification
+        # answer already carries the reconstructed command intent, so it
+        # wins over the raw classification of the answer alone.
+        intent = resolved_intent
+        if intent is None and self.intent_parser is not None:
+            intent = self.intent_parser.classify(transcript)
+        if intent is not None:
+            self.log("AGENT", f"intent: {intent}")
+            self._growth_note_intent(intent)
+
+        # Phase 3.4: remember the target entity for follow-up coreference
+        if (intent and intent.intent_type.value == "command"
+                and self.dialogue is not None):
+            try:
+                from subsystems.dialogue import extract_named_entity
+                self.dialogue.remember_entity(extract_named_entity(transcript))
+            except Exception:
+                pass
+
+        # Phase 4/5: deterministic memory questions, no model call —
+        # "what do you remember" (full recall) and "what's my X" / "who am I"
+        # (targeted lookup, rewritten to second person for speech).
+        if (intent is not None
+                and intent.intent_type.value in ("question", "chitchat")
+                and self.user_memory is not None):
+            answer = self._memory_question_answer(transcript)
+            if answer:
+                self._speak_direct(answer)
+                if self.conversation is not None:
+                    self.conversation.on_speak_begin(answer)
+                self.log("AGENT", "memory recall (question path)")
+                return
+
+        # If it's a command, try to execute it directly (no model call)
+        if intent and intent.intent_type.value == "command":
+            if self.command_executor is not None:
+                result = self.command_executor.execute(intent)
+                if not result.success:
+                    self._growth_note_failure()
+                # Phase 3.4: when the handler asks a follow-up question, open
+                # a clarification so the next utterance answers it.
+                if (result.action_taken and self.dialogue is not None
+                        and result.action_taken.endswith("_clarify")):
+                    base = (result.action_taken[:-len("_clarify")]
+                            .replace("-", "_") or "task")
+                    category = (f"{base}_duration" if base == "timer"
+                                else f"{base}_target" if base == "device"
+                                else base)
+                    self.dialogue.begin_clarification(
+                        category, intent.transcript, intent.entities)
+                if result.response:
+                    # Speak the command result directly
+                    self._speak_direct(result.response)
+                    if self.conversation is not None:
+                        self.conversation.on_speak_begin(result.response)
+                    self.log("AGENT", f"command: {result.action_taken}")
+                    return
+
+        # Otherwise: personality-driven conversational response
+        history_text = ""
+        if self.conversation is not None:
+            history_text = self.conversation.get_history_text()
+
+        # Phase 3.1: combine Tier-2 facts with durable user memory + topic
+        facts = self._extract_facts_for_transcript(transcript)
+        memory_notes: List[str] = []
+        if self.user_memory is not None:
+            # Phase 5: relevance-ranked — facts about what the user is
+            # actually saying surface first, top-scored fill the rest.
+            memory_notes = self.user_memory.recall_fact_strings(
+                limit=4, about=transcript)
+            topic_text = self.user_memory.topics.as_context_text()
+            if topic_text:
+                memory_notes.append(topic_text)
+        facts = memory_notes + [f for f in facts if f not in memory_notes]
+        perception = self._extract_perception(observation)
+
+        # Build the conversational prompt
+        from prompts import build_conversational_prompt
+        prompt = build_conversational_prompt(
+            transcript=transcript,
+            personality=self.personality,
+            history_text=history_text,
+            facts=facts,
+            perception=perception,
+        )
+
+        # Build the conversational task
+        task = {
+            "id": f"conversation-{self.tick_count}",
+            "type": "conversation",
+            "prompt": prompt,
+            "transcript": transcript,
+            "model": self._select_conversational_model(),
+        }
+
+        try:
+            decision = self.engine.make_decision(task)
+            # Execute the decision directly (speak/ask_user)
+            action_type = decision.get("action_type")
+            if action_type == "speak":
+                result = self._execute_speak(decision)
+                spoken = decision.get("params", {}).get("text", "")
+                if self.conversation is not None and spoken:
+                    self.conversation.on_speak_begin(spoken)
+                self.log("AGENT", f"conversation: spoke -> {spoken[:80]!r}")
+            elif action_type == "ask_user":
+                result = self._execute_ask_user(decision)
+                asked = decision.get("params", {}).get("question", "")
+                if self.conversation is not None and asked:
+                    self.conversation.on_speak_begin(asked)
+                self.log("AGENT", f"conversation: asked -> {asked[:80]!r}")
+            else:
+                self.log("AGENT",
+                         f"conversation: unexpected action {action_type}",
+                         level="WARN")
+        except Exception as exc:
+            self.log("ERROR", f"conversation handling failed: {exc}",
+                     level="ERROR")
+
+    def _speak_direct(self, text: str) -> bool:
+        """Speak text directly through the TTS listener, bypassing the decision
+        pipeline. Used for command responses and other deterministic output."""
+        from security import sanitize_text
+        from human_interaction import AgentResponse
+        if self._speak_listener is None:
+            return False
+        clean = sanitize_text(text, 400)
+        try:
+            delivered = bool(self._speak_listener.speak(clean))
+        except Exception as exc:
+            self.log("ERROR", f"speak_direct failed: {exc}", level="ERROR")
+            return False
+        if self.interaction is not None:
+            self.interaction.record_agent_response(
+                AgentResponse(type="speech", content=clean, target="user"))
+        return delivered
+
+    def _select_conversational_model(self) -> str:
+        """Select the best model for conversation. Prefers the first available
+        model from the engine's model list."""
+        try:
+            if self.engine is not None:
+                models = self.engine.select_models({"type": "conversation"})
+                if models:
+                    return str(models[0].get("id", ""))
+        except Exception:
+            pass
+        return ""
+
+    def _extract_facts_for_transcript(self, transcript: str) -> list:
+        """Extract relevant memory facts for a transcript."""
+        if self.memory is None:
+            return []
+        try:
+            entities = self.memory.tier2.extract_entities(transcript)[:3]
+            facts = []
+            for ent in entities:
+                facts.extend(self.memory.tier2.facts_about(ent, limit=2))
+            return [f.get("content", "") if isinstance(f, dict) else str(f)
+                    for f in facts[:5]]
+        except Exception:
+            return []
+
+    def _memory_question_answer(self, transcript: str) -> Optional[str]:
+        """Phase 5: deterministic answers for memory questions. Returns
+        speech text, or None to let the model handle the question."""
+        import re
+        tl = re.sub(r"[?!.]+$", "", (transcript or "").lower().strip())
+        if "what do you remember" in tl or "what do you know about me" in tl:
+            try:
+                if (self.tool_registry is not None
+                        and self.tool_registry.has("recall_facts")):
+                    result = self.tool_registry.call("recall_facts")
+                    if result.ok:
+                        return result.output
+            except Exception as exc:
+                self.log("MEMORY", f"recall failed: {exc}", level="WARN")
+            facts = self.user_memory.recall_fact_strings(limit=4)
+            if facts:
+                return "Here's what I remember: " + "; ".join(facts) + "."
+            return None
+
+        keyword = None
+        m = re.search(r"\bwhat(?:'s| is) my (.+)", tl)
+        if m:
+            keyword = m.group(1).strip()
+        elif tl in ("who am i", "who i am"):
+            keyword = "name"
+        if not keyword:
+            return None
+
+        # Try the full keyword, then its significant words (longest first)
+        # so "sister's name" still finds the sister or name fact.
+        rows: List[Dict[str, Any]] = []
+        candidates = [keyword] + sorted(
+            {w.replace("'", "") for w in re.findall(r"[a-z0-9']+", keyword)
+             if len(w) >= 3}, key=len, reverse=True)
+        for kw in candidates:
+            try:
+                rows = self.user_memory.facts.facts_about(kw, limit=2)
+            except Exception:
+                rows = []
+            if rows:
+                break
+        if not rows:
+            return None
+
+        from subsystems.memory import fact_to_second_person
+        answers = []
+        for row in rows:
+            text = fact_to_second_person(row["text"])
+            if not text:
+                continue
+            text = text[0].upper() + text[1:]
+            if not text.endswith((".", "!", "?")):
+                text += "."
+            answers.append(text)
+        if not answers:
+            return None
+        return " ".join(answers) if len(answers) > 1 else answers[0]
+
+    def _extract_perception(self, observation: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract perception context from the observation."""
+        human = observation.get("human", {})
+        hctx = human.get("user_context", {})
+        return {
+            "person_present": hctx.get("person_present"),
+            "face_count": hctx.get("face_count", -1),
+            "gaze_direction": hctx.get("gaze_direction"),
+            "speech_source": hctx.get("speech_source"),
+        }
+
         return {"status": "success", "asked": text, "delivered": delivered}
 
     def speak_test(self, text: Optional[str] = None) -> Dict[str, Any]:
@@ -744,6 +1301,8 @@ class AndroidAgent:
 
     def tick(self) -> None:
         self.tick_count += 1
+        # Phase 3.2: poll background timers each tick — no sleep threads.
+        self._check_timers()
         decision, action = "—", "—"
         outcome = "ENGINE_FAILURE"
         trail: Tuple[str, ...] = ("OBSERVE",)
@@ -753,6 +1312,15 @@ class AndroidAgent:
         try:
             observation = self._get_observation()
             self.last_observation = observation
+            # v1.29: conversational fast path — new speech triggers a
+            # personality-driven response immediately, bypassing the full
+            # tool-use decision pipeline.
+            if observation.get("new_speech") and self.engine is not None:
+                self._handle_conversational_input(observation)
+                # Still drain conversation events (closed-loop record) before
+                # returning — the ask/answer round-trip must be journaled.
+                self._drain_conversation_events()
+                return
             if self.memory is not None:
                 self.memory.record_event("android_observation",
                     payload={"tick": self.tick_count, "observation": observation},
@@ -761,23 +1329,7 @@ class AndroidAgent:
             # land in Tier 1 as METADATA ONLY (latency + lengths — the words
             # stay in the bounded bus, per the transcripts-never-enter-memory
             # rule established with the 1.12 journal contract).
-            if self.interaction is not None:
-                for event in self.interaction.drain_conversation_events():
-                    if self.memory is None:
-                        break
-                    try:
-                        self.memory.record_event("conversation_event",
-                            payload={
-                                "round_trip_s": event.get("round_trip_s"),
-                                "question_chars":
-                                    len(str(event.get("question") or "")),
-                                "answer_chars":
-                                    len(str(event.get("answer") or "")),
-                            },
-                            metadata={"source": "interaction_bus",
-                                      "privacy_scope": "local"})
-                    except Exception:
-                        pass
+            self._drain_conversation_events()
             if self.engine is not None:
                 allowed, scope = self._backend_target_allowed()
                 if not allowed:
@@ -806,9 +1358,19 @@ class AndroidAgent:
                     if self.attention is not None:
                         if self.interaction is not None:
                             human = observation.get("human", {})
-                            if human.get("speech_recent"):
-                                t = (human.get("user_context", {}).get("last_transcript") or "")
+                            t = (human.get("user_context", {}).get("last_transcript") or "")
+                            # v1.29: recognized WORDS are speech; bare VAD
+                            # energy is not. stamp_speech("") would clear
+                            # _speech_any, so an energy-only window goes
+                            # through stamp_voice instead — music playing at
+                            # the primary's own mic can never read as someone
+                            # talking.
+                            if human.get("speech_recent") and t.strip():
                                 self.attention.stamp_speech(t)
+                            tele = (self.telemetry
+                                    if isinstance(self.telemetry, dict) else {})
+                            if tele.get("voice_active"):
+                                self.attention.stamp_voice(True)
                             lv = next((e for e in reversed(getattr(self.interaction, "_buffer", [])) if e.get("type") == "visual"), None)
                             if lv:
                                 fc = lv.get("payload", {}).get("face_count", 0)
@@ -845,11 +1407,16 @@ class AndroidAgent:
                             # "none" rows every tick.
                             verdict = src.get("source", "none")
                             last = getattr(self, "_last_attribution_verdict", None)
-                            # Journal only *speech-carrying* verdicts on
-                            # transition — absence-of-speech rows ("none",
-                            # "person_present_silent") are not evidence of
-                            # attribution and would flood the journal.
-                            if (verdict in ("verified_person", "unattributed_audio")
+                            # Journal scene transitions that carry
+                            # information: speech attribution verdicts and
+                            # noise onsets (music/TV started). Absence rows
+                            # ("none", "person_present_silent") would flood
+                            # the journal every tick in a quiet room.
+                            if (verdict in ("instruction_directed",
+                                            "verified_person",
+                                            "unattributed_audio",
+                                            "person_present_ambient_noise",
+                                            "ambient_noise")
                                     and verdict != last):
                                 try:
                                     self.memory.record_event("speech_attribution",
@@ -1068,6 +1635,19 @@ class AndroidAgent:
                     except Exception:
                         pass
             observation["human"] = hctx
+        # v1.29: detect NEW speech (transcript timestamp advanced) so the tick
+        # loop can route to the conversational fast path.
+        observation["new_speech"] = False
+        observation["transcript"] = ""
+        if self.interaction is not None:
+            stats = self.interaction.stats()
+            last_ts = float(stats.get("last_transcript_ts") or 0)
+            last_txt = stats.get("last_transcript") or ""
+            if last_ts > self._last_transcript_ts and last_txt.strip():
+                self._last_transcript_ts = last_ts
+                self._last_transcript = last_txt
+                observation["new_speech"] = True
+                observation["transcript"] = last_txt
         # v1.22: device mesh peer observations from connected peripherals.
         # The Kotlin service pushes mesh peer JSON into telemetry.
         mesh = t.get("mesh_peers", None)
@@ -1087,39 +1667,79 @@ class AndroidAgent:
                     remote_faces = []
                     remote_voice = False
                     remote_sources = []
+                    remote_conf = 0.0
                     for peer in mesh:
                         if peer.get("camera") and self.interaction is not None:
                             face_present = bool(peer.get("remote_face_present"))
                             remote_faces.append(face_present)
                             src = peer.get("remote_speech_source") or "none"
                             remote_sources.append(src)
+                            sconf = peer.get("remote_speech_confidence")
+                            if isinstance(sconf, (int, float)):
+                                remote_conf = max(remote_conf, sconf)
                             if peer.get("remote_voice_active"):
                                 remote_voice = True
+                                # v1.29: remote voice ENERGY reaches the
+                                # primary's attention layer as energy-only —
+                                # words arrive separately via the transcript
+                                # path, so music on a peripheral mic can
+                                # never read as speech here either.
+                                if self.attention is not None:
+                                    self.attention.stamp_voice(True)
                             from human_interaction import HumanObservation
+                            rgaze = peer.get("remote_gaze_toward_camera")
+                            payload = {
+                                "person_present": face_present,
+                                "face_count": 1 if face_present else 0,
+                            }
+                            if rgaze is not None:
+                                # v1.29: remote gaze binds (or refuses to
+                                # bind) the peer's words to its face.
+                                payload["gaze_direction"] = (
+                                    "toward_camera" if rgaze else "away")
                             obs, _ = HumanObservation.from_dict({
                                 "type": "visual",
                                 "source": f"remote:{peer.get('device_id', 'unknown')}",
-                                "payload": {
-                                    "person_present": face_present,
-                                    "face_count": 1 if face_present else 0,
-                                },
+                                "payload": payload,
                                 "privacy_scope": "local",
                             })
                             if obs is not None:
                                 self.interaction.publish(obs)
                     any_remote_face = any(remote_faces)
                     any_remote_voice = bool(remote_voice) if mesh else False
+                    # v1.29: prefer the peripheral's own classifyScene verdict
+                    # (full taxonomy, transcript-aware) over the v1.28 boolean
+                    # derivation — the peer SAW the scene, the primary only
+                    # sees booleans. Legacy peers that stream no verdict (or
+                    # an un-upgraded v1.28 string) still get the derivation.
+                    _VERDICT_RANK = {
+                        "instruction_directed": 0,
+                        "verified_person": 1,
+                        "person_talking": 2,
+                        "person_present_ambient_noise": 3,
+                        "unattributed_audio": 4,
+                        "unattributed_speech": 4,  # v1.28 peripheral alias
+                        "ambient_noise": 5,
+                        "person_present_silent": 6,
+                    }
+                    declared = [s for s in remote_sources
+                                if s and s != "none" and s in _VERDICT_RANK]
+                    if declared:
+                        remote_src = min(declared, key=lambda s: _VERDICT_RANK[s])
+                    else:
+                        remote_src = (
+                            "verified_person"
+                            if any_remote_face and any_remote_voice
+                            else ("unattributed_audio" if any_remote_voice
+                                  else ("person_present_silent" if any_remote_face
+                                        else "none")))
                     # v1.28: surface remote attribution as evidence for the
                     # decision context (metadata only — no transcripts).
                     observation["remote_binding"] = {
                         "face_present": any_remote_face,
                         "voice_active": any_remote_voice,
-                        "speech_source": (
-                            "verified_person"
-                            if any_remote_face and any_remote_voice
-                            else ("unattributed_audio" if any_remote_voice
-                                  else ("person_present_silent" if any_remote_face
-                                        else "none"))),
+                        "speech_source": remote_src,
+                        "speech_source_confidence": round(remote_conf, 2),
                         "peers": remote_sources,
                     }
             except Exception:
@@ -1310,6 +1930,21 @@ class AndroidAgent:
             self._run_consolidation()
         except Exception as exc:
             logger.error("Cleanup error: %s", exc)
+        # Stop the engine's task-manager worker.  Without this every agent
+        # lifecycle leaks a polling task-manager-worker thread.  Prefer the
+        # real engine's manager captured at bootstrap — self.engine may have
+        # been replaced (test mocks, hot-swap) and would orphan the worker.
+        # (Full engine.shutdown() also closes shared memory/telemetry state
+        # and is NOT safe here — a stopped agent's memory may still be read.)
+        try:
+            tm = getattr(self, "_real_task_manager", None)
+            if tm is None:
+                engine = getattr(self, "engine", None)
+                tm = getattr(engine, "task_manager", None) if engine is not None else None
+            if tm is not None and hasattr(tm, "stop"):
+                tm.stop()
+        except Exception as exc:
+            logger.error("Task manager stop error: %s", exc)
         # v1.20: stop ShugoNet runtime.
         try:
             if getattr(self, "shugonet_runtime", None) is not None:
@@ -1317,6 +1952,35 @@ class AndroidAgent:
         except Exception:
             pass
         logger.info("Agent cleaned up")
+
+    def shutdown(self) -> None:
+        """Phase 4: full teardown for service death / process exit.
+
+        Unlike cleanup() — which stays light so a stopped agent's shared
+        memory and telemetry stay readable (tests, hot-swap) — shutdown()
+        is the end-of-lifecycle path: it flushes the real engine's
+        episodic memory to disk, stops the task worker and robotics, then
+        runs the normal cleanup (consolidation, ShugoNet stop). Safe to
+        call multiple times; falls back to cleanup()-only semantics if the
+        engine is missing or refuses.
+        """
+        engine = getattr(self, "_real_engine", None)
+        if engine is None:
+            engine = getattr(self, "engine", None)
+        if getattr(self, "_shutdown_complete", False):
+            logger.info("Agent already shut down; skipping")
+            return
+        if engine is not None and hasattr(engine, "shutdown"):
+            try:
+                engine.shutdown()
+                logger.info("Engine shut down (memory flushed)")
+            except Exception as exc:
+                logger.error("Engine shutdown error: %s", exc)
+        else:
+            logger.info("No shutdown-capable engine; cleanup-only teardown")
+        self.cleanup()
+        self._shutdown_complete = True
+        logger.info("Agent shut down")
 
 
 def create_agent(device_caps: Optional[str] = None,

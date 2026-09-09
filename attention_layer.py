@@ -34,31 +34,63 @@ class AttentionState(str, Enum):
 
 
 class SpeechSource(str, Enum):
-    """Attribution verdict for the most recent speech window.
+    """Attribution verdict for the most recent perception window.
 
-    Distinguishes "a person I can SEE is talking to me" from "audio with no
-    visible talker" (television, music, ambient noise, a voice from another
-    room) — the visual-audio binding (v1.28).
+    v1.28 distinguished "a person I can SEE is talking to me" from "audio
+    with no visible talker" (television, music, ambient noise). v1.29 adds
+    the scene taxonomy the agent needs to tell "I see a person and hear
+    noise" apart from "I see a person TALKING to me — giving an instruction":
 
-      NONE                  no fresh speech evidence at all
-      PERSON_PRESENT_SILENT face fresh, but no speech in the window
-      VERIFIED_PERSON       speech fresh AND attributable to a visible,
-                            attending human (face fresh + gaze toward
-                            camera, or an explicit directed-speech stamp)
-      UNATTRIBUTED_AUDIO    speech fresh but no visible talker (or the
-                            visible person is not looking at the agent) —
-                            likely TV / music / ambient voice
+      NONE                         no fresh perception evidence at all
+      PERSON_PRESENT_SILENT        face fresh, but no voice and no words
+      VERIFIED_PERSON              recognized words bound to a visible,
+                                   attending person (not a wake-word call)
+      INSTRUCTION_DIRECTED         words addressed to the agent by name
+                                   (sentence-initial wake word: "Shugo…",
+                                   "Hey Shugo…", "Ok Shugo…") — the
+                                   strongest human-instruction evidence
+      PERSON_TALKING               recognized words from a visible person
+                                   with no gaze evidence either way
+      UNATTRIBUTED_AUDIO           recognized words with no visible talker,
+                                   or the visible person is looking away —
+                                   TV dialogue, a voice in another room
+      PERSON_PRESENT_AMBIENT_NOISE face fresh + voice ENERGY but no words
+                                   (music / TV while a person is present)
+      AMBIENT_NOISE                voice ENERGY with no words and no face
+
+    The load-bearing distinction: VAD energy fires on music and television,
+    but only real human speech produces recognized transcript text. Energy
+    alone is never "someone talking to the agent".
     """
     NONE = "none"
     PERSON_PRESENT_SILENT = "person_present_silent"
     VERIFIED_PERSON = "verified_person"
     UNATTRIBUTED_AUDIO = "unattributed_audio"
+    INSTRUCTION_DIRECTED = "instruction_directed"
+    PERSON_TALKING = "person_talking"
+    PERSON_PRESENT_AMBIENT_NOISE = "person_present_ambient_noise"
+    AMBIENT_NOISE = "ambient_noise"
 # Default freshness windows (ms); configurable per instance.
 _DEFAULT_FACE_WINDOW_MS = 8000
 _DEFAULT_SPEECH_WINDOW_MS = 15000
 _DEFAULT_GAZE_WINDOW_MS = 5000
 _DEFAULT_DIRECTED_SPEECH_WINDOW_MS = 10000
 _DEFAULT_STALE_TIMEOUT_MS = 30000
+
+# v1.29 wake-word vocatives (sentence-initial only). "hello shugo" is a
+# greeting to a person who happens to be present — a conversation, not an
+# instruction call. "Shugo …" / "Hey Shugo …" / "Ok Shugo …" address the
+# agent by name and are treated as directed instruction evidence.
+_WAKE_PREFIXES = ("shugo", "hey shugo", "ok shugo", "okay shugo")
+
+
+def is_wake_word_call(text: str) -> bool:
+    """True when the transcript begins by addressing the agent by name."""
+    t = " ".join((text or "").strip().lower().split())
+    return any(
+        t == p or t.startswith(p + " ") or t.startswith(p + ",")
+        for p in _WAKE_PREFIXES
+    )
 
 
 class AttentionLayer:
@@ -96,6 +128,12 @@ class AttentionLayer:
         self._speech_directed_at_agent: Optional[bool] = None
         self._speech_directed_ts: float = 0.0
         self._tts_speaking: bool = False
+        # v1.29: voice ENERGY (VAD) is tracked separately from recognized
+        # words — energy without words is music/TV/ambient, never speech.
+        self._voice_active: bool = False
+        self._voice_ts: float = 0.0
+        self._last_transcript: str = ""
+        self._last_transcript_is_call: bool = False
 
         self._state: AttentionState = AttentionState.UNKNOWN
         self._state_changed_ts: float = self._clock()
@@ -117,14 +155,33 @@ class AttentionLayer:
                 self._gaze_toward_camera_ts = now
 
     def stamp_speech(self, transcript: str, directed: Optional[bool] = None) -> None:
-        """Called by AudioProvider on every final transcript."""
+        """Called by AudioProvider on every final transcript.
+
+        Recognized WORDS are the only evidence of real speech: the VAD fires
+        on music and television, but the platform SpeechRecognizer only
+        produces text for actual human speech (v1.29 scene classification).
+        """
         now = self._clock()
         with self._lock:
             self._speech_any = bool(transcript)
             self._speech_any_ts = now
+            self._last_transcript = transcript or ""
+            self._last_transcript_is_call = is_wake_word_call(self._last_transcript)
             if directed is not None:
                 self._speech_directed_at_agent = directed
                 self._speech_directed_ts = now
+
+    def stamp_voice(self, active: bool) -> None:
+        """v1.29: voice ENERGY without (yet) recognized words — VAD fired.
+
+        Deliberately separate from ``stamp_speech``: energy alone is music,
+        television, or ambient noise and must never be treated as someone
+        talking to the agent.
+        """
+        now = self._clock()
+        with self._lock:
+            self._voice_active = bool(active)
+            self._voice_ts = now
 
     def stamp_tts(self, speaking: bool) -> None:
         """Called by the agent shell (maps PerceptionState.ttsSpeaking)."""
@@ -146,13 +203,19 @@ class AttentionLayer:
                 and _age(self._gaze_toward_camera_ts) < self._gaze_window_ms
             )
             speech_fresh = self._speech_any and _age(self._speech_any_ts) < self._speech_window_ms
+            voice_fresh = (
+                self._voice_active and _age(self._voice_ts) < self._speech_window_ms
+            )
             directed_fresh = (
                 self._speech_directed_at_agent is not None
                 and _age(self._speech_directed_ts) < self._directed_speech_window_ms
             )
-            any_signal_fresh = face_fresh or speech_fresh or gaze_fresh or directed_fresh
+            any_signal_fresh = (
+                face_fresh or speech_fresh or gaze_fresh
+                or directed_fresh or voice_fresh
+            )
             all_stale = (
-                not face_fresh and not speech_fresh
+                not face_fresh and not speech_fresh and not voice_fresh
                 and not gaze_fresh and not directed_fresh
             )
 
@@ -194,8 +257,21 @@ class AttentionLayer:
                     conf = 0.3
                     new_state = AttentionState.ATTENDING
             elif speech_fresh and not face_fresh:
-                conf = 0.3
-                new_state = AttentionState.ATTENDING
+                # v1.29: words with no visible talker. A wake-word call
+                # ("Hey Shugo…") is someone addressing the agent — attend.
+                # Unattributed words (TV dialogue, another room) are NOT
+                # attention: upgrading on them let a playing video grant
+                # attended-action consent (the v1.28 music-alone bug).
+                if self._last_transcript_is_call:
+                    conf = 0.5
+                    new_state = AttentionState.ATTENDING
+                else:
+                    conf = 0.2
+                    new_state = (
+                        AttentionState.DIVERTED
+                        if self._state == AttentionState.ATTENDING
+                        else self._state
+                    )
 
             if new_state != self._state:
                 self._transition_to(new_state)
@@ -203,13 +279,59 @@ class AttentionLayer:
             self._confidence = conf
             return self._state, self._confidence
 
+    def _classify_speech_locked(
+        self,
+        face_fresh: bool,
+        speech_fresh: bool,
+        voice_fresh: bool,
+        gaze_fresh: bool,
+        directed_fresh: bool,
+    ) -> Tuple[SpeechSource, float]:
+        """Shared scene classification. MUST be called with self._lock held.
+
+        Precedence: wake-word call > visible-attending talker > visible
+        talker (unconfirmed) > unattributed words > bare voice energy >
+        silence.
+        """
+        gaze_now = self._gaze_toward_camera if gaze_fresh else None
+        directed_now = self._speech_directed_at_agent if directed_fresh else None
+
+        if speech_fresh:
+            if self._last_transcript_is_call:
+                bound = face_fresh and (gaze_now is True or directed_now is True)
+                return SpeechSource.INSTRUCTION_DIRECTED, (0.95 if bound else 0.85)
+            talker_is_visible = face_fresh and (
+                gaze_now is True or directed_now is True
+            )
+            if talker_is_visible:
+                return SpeechSource.VERIFIED_PERSON, 0.9
+            if face_fresh:
+                if gaze_now is False:
+                    # Explicit negative evidence: the person in frame is
+                    # looking away, so the words are probably not theirs.
+                    return SpeechSource.UNATTRIBUTED_AUDIO, 0.8
+                # No gaze data either way → probably the person talking.
+                return SpeechSource.PERSON_TALKING, 0.7
+            return SpeechSource.UNATTRIBUTED_AUDIO, 0.6
+        if voice_fresh:
+            # Energy without words: music / TV / ambient — never "talking".
+            return (
+                (SpeechSource.PERSON_PRESENT_AMBIENT_NOISE, 0.7)
+                if face_fresh else (SpeechSource.AMBIENT_NOISE, 0.7)
+            )
+        if face_fresh:
+            return SpeechSource.PERSON_PRESENT_SILENT, 0.9
+        return SpeechSource.NONE, 1.0
+
     def speech_source(self) -> Dict[str, Any]:
         """Bind the most recent speech window to the visual channel.
 
-        Returns a verdict distinguishing a visible-and-attending talker from
-        unattributed audio (TV / music / ambient) — v1.28 visual-audio
-        binding. Uses the same freshness windows as ``evaluate()`` so the two
-        views never disagree about what counts as evidence.
+        v1.29 scene taxonomy: distinguishes a wake-word instruction, a
+        verified visible talker, unattributed words (TV / another room),
+        and bare voice energy (music / ambient) — the "I see a person and
+        hear noise" vs "I see a person giving an instruction" boundary.
+        Uses the same freshness windows as ``evaluate()`` so the two views
+        never disagree about what counts as evidence.
         """
         now_s = self._clock()
         with self._lock:
@@ -218,6 +340,9 @@ class AttentionLayer:
 
             face_fresh = self._face_detected and _age(self._face_detected_ts) < self._face_window_ms
             speech_fresh = self._speech_any and _age(self._speech_any_ts) < self._speech_window_ms
+            voice_fresh = (
+                self._voice_active and _age(self._voice_ts) < self._speech_window_ms
+            )
             gaze_fresh = (
                 self._gaze_toward_camera is not None
                 and _age(self._gaze_toward_camera_ts) < self._gaze_window_ms
@@ -226,31 +351,15 @@ class AttentionLayer:
                 self._speech_directed_at_agent is not None
                 and _age(self._speech_directed_ts) < self._directed_speech_window_ms
             )
-
-            if not speech_fresh:
-                source = SpeechSource.PERSON_PRESENT_SILENT if face_fresh else SpeechSource.NONE
-                confidence = 0.9 if face_fresh else 1.0
-            else:
-                gaze_now = self._gaze_toward_camera if gaze_fresh else None
-                directed_now = self._speech_directed_at_agent if directed_fresh else None
-                talker_is_visible = face_fresh and (
-                    gaze_now is True or directed_now is True
-                )
-                if talker_is_visible:
-                    source = SpeechSource.VERIFIED_PERSON
-                    confidence = 0.9
-                else:
-                    # Speech is fresh but no visible/attending talker — the
-                    # audio is not bound to the person in frame (TV, music,
-                    # ambient voice, or a turn away from the camera).
-                    source = SpeechSource.UNATTRIBUTED_AUDIO
-                    confidence = 0.8 if face_fresh else 0.6
+            source, confidence = self._classify_speech_locked(
+                face_fresh, speech_fresh, voice_fresh, gaze_fresh, directed_fresh)
 
             return {
                 "source": source.value,
                 "confidence": round(confidence, 2),
                 "face_fresh": face_fresh,
                 "speech_fresh": speech_fresh,
+                "voice_fresh": voice_fresh,
                 "gaze_toward_camera": self._gaze_toward_camera if gaze_fresh else None,
             }
 
@@ -314,16 +423,11 @@ class AttentionLayer:
                 self._speech_directed_at_agent is not None
                 and _age(self._speech_directed_ts) < self._directed_speech_window_ms
             )
-            speech_source = SpeechSource.NONE
-            if speech_fresh:
-                gaze_now = self._gaze_toward_camera if gaze_fresh else None
-                directed_now = self._speech_directed_at_agent if directed_fresh else None
-                if face_fresh and (gaze_now is True or directed_now is True):
-                    speech_source = SpeechSource.VERIFIED_PERSON
-                else:
-                    speech_source = SpeechSource.UNATTRIBUTED_AUDIO
-            elif face_fresh:
-                speech_source = SpeechSource.PERSON_PRESENT_SILENT
+            voice_fresh = (
+                self._voice_active and _age(self._voice_ts) < self._speech_window_ms
+            )
+            speech_source, source_conf = self._classify_speech_locked(
+                face_fresh, speech_fresh, voice_fresh, gaze_fresh, directed_fresh)
 
             return {
                 "state": self._state.value,
@@ -335,11 +439,8 @@ class AttentionLayer:
                 "state_changed_ts": self._state_changed_ts,
                 "attending_speech_count": len(self._attending_speech_buffer),
                 "speech_source": speech_source.value,
-                "speech_source_conf": round(
-                    0.9 if speech_source == SpeechSource.VERIFIED_PERSON
-                    else (0.8 if speech_source == SpeechSource.UNATTRIBUTED_AUDIO
-                          else (0.9 if speech_source == SpeechSource.PERSON_PRESENT_SILENT
-                                else 1.0)), 2),
+                "speech_source_conf": round(source_conf, 2),
+                "voice_fresh": voice_fresh,
                 "face_fresh": face_fresh,
                 "speech_fresh": speech_fresh,
                 "gaze_fresh": gaze_fresh,

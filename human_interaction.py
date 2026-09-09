@@ -654,6 +654,12 @@ class InteractionBus:
                     if last_speech is not None
                     and last_speech.get("payload", {}).get("transcript")
                     else None),
+                # v1.29: timestamp of the last speech observation (epoch seconds)
+                # so the agent shell can detect NEW speech for the conversational
+                # fast path.
+                "last_transcript_ts": (
+                    float(last_speech.get("timestamp", 0.0))
+                    if last_speech is not None else 0.0),
                 # Speech output truth: what the agent last said (None until
                 # a speak action has actually executed).
                 "last_spoken": (

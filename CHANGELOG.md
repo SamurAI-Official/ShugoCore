@@ -4,6 +4,28 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.28.0] - 2026-09-08 — audio-source discrimination, conversational agent loop, subsystems + personality on device, device smoke harness
+
+### Audio-source discrimination (new)
+- **`PerceptionState.kt`** — scene taxonomy: `instruction_directed` (wake-word + command words), `verified_person`, `unattributed_audio`, `ambient_noise`, `person_present_ambient_noise`, `person_present_silent`. Voice energy alone can never grant ATTENDING (fixes video-playback false-positive that could mask consent).
+- **`DeviceMeshManager.kt` / `SensorPublisherService.kt`** — shared-mesh sensor publisher, 200 ms streaming with adaptive thermal back-off, merged sensor/batch messages.
+- **`ShugoCoreService.kt`** — synchronous mesh-peer push into the agent observation context on message arrival.
+
+### Conversational agent loop (new)
+- **`shugocore_agent.py`** — `_handle_conversational_input`, `_speak_direct`, `_select_conversational_model`, memory question answering, fact extraction per transcript, timer checking, growth observation hooks, graceful `shutdown()`.
+- **`decision_engine.py` / `attention_layer.py` / `human_interaction.py` / `subconscious.py`** — wake-word-gated attention, speech directedness, intent extraction (`intent_subject` / `intent_verb`), TTS lifecycle hardening. All mirrored into `platforms/android/app/src/main/python/`.
+
+### Subsystems + personality tree (new)
+- **`subsystems/`** (command_router, dialogue, fallback, intent, memory, tools), **`personality/`** (loader, model, growth, prompt), **`conversation/manager.py`**, **`prompts/builder.py`**, **`config/personality.json`** — now committed at repo root and mirrored under `platforms/android/app/src/main/python/` so the on-device Chaquopy tree covers the full import graph.
+- **Tests** — `test_subsystems_phase3/4/5`, `test_personality_model`, `test_personality_growth` (256 tests passing with control-plane + lifecycle suites).
+
+### Device smoke harness (new)
+- **`tests/android_device_smoke.py`** — dependency-injected, read-only on-device probe (`--device`, `--repeat`, `--phases`, `--tag`, `--list`, `--json`); 9 phases covering service-alive, timers, facts, restarts, teardown, personality genesis/growth. Split sources in `tests/smoke_part_*.py`, verified by `tests/build_smoke.py`.
+
+### Android packaging
+- **`AndroidManifest.xml`** — debug inject receivers (`INJECT_TRANSCRIPT`, `DEBUG_INJECT_SENSOR`) for headless on-device driving via adb.
+- **`build.gradle`** — `versionCode 14`, `versionName "1.28.0"`.
+
 ## [1.27.0] - 2026-09-07 — peripheral-mode confirmation, sensor-agent state, mesh latency
 
 ### Peripheral-mode confirmation (new)

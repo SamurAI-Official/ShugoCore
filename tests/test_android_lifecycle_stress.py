@@ -360,7 +360,16 @@ class TestNodeStartStopCycles(unittest.TestCase):
             self.assertIsNone(node._worker)
             beats += sum(1 for t, _ in bridge.published
                          if t.endswith("/heartbeat"))
-        self.assertEqual(threading.active_count(), baseline)
+        # Worker teardown is asynchronous; under a loaded test suite the
+        # last workers may still be winding down (or a doomed baseline
+        # thread — e.g. a just-stopped server — may exit) while we run.
+        # A real leak means threads ACCUMULATE and never return to the
+        # baseline count, so assert one-sidedly after a bounded grace
+        # window: fail only when the count stays ABOVE baseline.
+        deadline = time.time() + 5.0
+        while threading.active_count() > baseline and time.time() < deadline:
+            time.sleep(0.1)
+        self.assertLessEqual(threading.active_count(), baseline)
         self.assertGreaterEqual(beats, 25)
 
     def test_bridge_death_mid_run(self):

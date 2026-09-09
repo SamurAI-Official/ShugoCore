@@ -426,7 +426,13 @@ class DecisionEngine:
                       | set(self.execution_layer._handlers.keys()))
 
     def make_decision(self, task: Dict[str, Any]) -> Dict[str, Any]:
-        """Makes a decision from structured model proposals + memory context."""
+        """Makes a decision from structured model proposals + memory context.
+
+        v1.29: conversation tasks use a personality-driven prompt and always
+        expect a speak/ask_user action. All other tasks use the existing
+        tool-use decision path."""
+        if task.get("type") == "conversation":
+            return self._make_conversational_decision(task)
         selected_models = self.select_models(task)
         model_outputs: Dict[str, str] = {}
         proposals: List[Tuple[str, Dict[str, Any], float]] = []
@@ -444,10 +450,15 @@ class DecisionEngine:
                 continue
             try:
                 # v1.21: delegation URL from the agent shell's network
-                # delegation manager overrides this model's backend.
+                # delegation manager overrides this model's backend.  The
+                # kwarg is only forwarded when a URL actually exists —
+                # passing delegation_url=None is equivalent but breaks
+                # single-argument _backend_for test seams.
                 del_url = task.get("context", {}).get("delegation_url")
+                backend = (self._backend_for(model, delegation_url=del_url)
+                           if del_url else self._backend_for(model))
                 output = self.subconscious.get_model_output(
-                    model_id, task, backend=self._backend_for(model, delegation_url=del_url),
+                    model_id, task, backend=backend,
                     action_schema=self.available_action_types())
             except Exception as exc:
                 self.logger.error(f"Model {model_id} failed: {type(exc).__name__}")
@@ -529,6 +540,85 @@ class DecisionEngine:
             decision["memory_context"] = []
 
         return decision
+
+    def _make_conversational_decision(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        """Personality-driven response for conversation tasks.
+
+        Uses the pre-built conversational prompt (from prompts.builder) that
+        includes personality, history, facts and the user's transcript.
+        Expects the model to return a speak or ask_user action. Falls back
+        to a gentle clarification on null/garbage output."""
+        prompt = task.get("prompt", "")
+        if not prompt:
+            return {
+                "action_type": "speak",
+                "params": {"text": "I'm here — what did you want to talk about?"},
+                "confidence": 0.3,
+                "proposal_source": "conversation_fallback",
+            }
+
+        model_name = task.get("model") or self._default_model_id()
+        if not validate_model_name(model_name):
+            model_name = self._default_model_id()
+
+        backend = self._backend_for({"id": model_name})
+        output = self.subconscious.get_conversational_output(
+            model_name, prompt, backend=backend)
+
+        if not output:
+            return {
+                "action_type": "speak",
+                "params": {"text": "I didn't catch that — could you say it again?"},
+                "confidence": 0.2,
+                "proposal_source": "conversation_empty",
+            }
+
+        proposal = self._parse_proposal(output)
+        if proposal is None:
+            # Model emitted something that didn't parse as JSON — try to
+            # extract any text and wrap it in a speak action.
+            text = output.strip()[:300]
+            if text:
+                return {
+                    "action_type": "speak",
+                    "params": {"text": text},
+                    "confidence": 0.5,
+                    "proposal_source": "conversation_raw",
+                }
+            return {
+                "action_type": "speak",
+                "params": {"text": "Tell me more — I'm listening."},
+                "confidence": 0.2,
+                "proposal_source": "conversation_unparseable",
+            }
+
+        # Ensure the action is speak or ask_user — conversation mode never
+        # produces tool actions. If the model proposed something else, wrap
+        # its text in a speak.
+        action_type = proposal.get("action_type")
+        if action_type not in ("speak", "ask_user"):
+            text = (proposal.get("params", {}).get("text")
+                    or proposal.get("text", "") or "")
+            if not text:
+                text = "I'm not sure how to respond to that."
+            return {
+                "action_type": "speak",
+                "params": {"text": text[:400]},
+                "confidence": proposal.get("confidence", 0.5),
+                "proposal_source": "conversation_rerouted",
+            }
+
+        return proposal
+
+    def _default_model_id(self) -> str:
+        """Return the first available model ID, or a safe fallback."""
+        try:
+            models = self.select_models({"type": "conversation"})
+            if models:
+                return str(models[0].get("id", ""))
+        except Exception:
+            pass
+        return ""
 
     @staticmethod
     def _parse_proposal(text: Any) -> Optional[Dict[str, Any]]:

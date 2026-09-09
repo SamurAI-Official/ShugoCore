@@ -89,32 +89,76 @@ object PerceptionState {
     @Volatile var remoteFacePresent: Boolean = false
     @Volatile var remoteVoiceActive: Boolean = false
     @Volatile var remoteGazeTowardCamera: Boolean = false
+    /** v1.29: the peer's latest recognized transcript (final-only, ≤400
+     * chars) streamed over the mesh — fused into classifyScene() so a
+     * remote instruction can drive the primary's own pipeline. Fresh for
+     * the same 15 s window as the local transcript. */
+    @Volatile var remoteTranscript: String = ""
+    @Volatile var remoteTranscriptTs: Long = 0L
 
     /** Recompute the local speech-source verdict from the current signal
-     * snapshot. Mirrors AttentionLayer.speech_source() in v1.28 Python —
-     * used by the peripheral to stream a truthful attribution. */
+     * snapshot. v1.29: superseded by classifyScene() — delegate so every
+     * entry point shares ONE taxonomy (the v1.28 standalone mirror emitted
+     * divergent strings like "unattributed_speech"). */
     fun computeSpeechSource(): Pair<String, Float> {
-        val vis = PerceptionState.visualPresence
-        val visFresh = vis.fresh(8_000)
-        val faceHere = visFresh && (vis.value ?: 0) > 0
-        val speechFresh = PerceptionState.humanSpeech ||
-            (System.currentTimeMillis() - PerceptionState.transcription.tsMs) < 15_000
-        val gaze = PerceptionState.gazeTowardCamera
-        val source: String
-        val conf: Float
-        if (!speechFresh) {
-            source = if (faceHere) "person_present_silent" else "none"
-            conf = if (faceHere) 0.9f else 1.0f
-        } else if (faceHere && gaze) {
-            source = "verified_person"
-            conf = 0.9f
-        } else {
-            source = "unattributed_audio"
-            conf = if (faceHere) 0.8f else 0.6f
-        }
+        val (source, conf) = classifyScene()
         PerceptionState.speechSource = source
         PerceptionState.speechSourceConfidence = conf
         return source to conf
+    }
+
+    /**
+     * v1.29: full scene classification fusing LOCAL and REMOTE perception
+     * into one honest label the agent can act on. The taxonomy strings
+     * MATCH AttentionLayer.SpeechSource in the Python agent exactly, so a
+     * peripheral's verdict can be consumed by the primary as-is. Scenes:
+     *   instruction_directed           sentence-initial wake word ("Shugo…",
+     *                                  "Hey Shugo…") — addressed to the agent
+     *   verified_person                real words + face + gaze (talking to us)
+     *   person_present_ambient_noise   face + voice energy but no words (TV/music)
+     *   person_present_silent          face, no voice, no words
+     *   unattributed_audio             real words, no visible attending talker
+     *   ambient_noise                  voice energy, no words, no face
+     *   none                           nothing fresh
+     * Returns label to confidence.
+     */
+    fun classifyScene(): Pair<String, Float> {
+        val now = System.currentTimeMillis()
+        val vis = PerceptionState.visualPresence
+        val faceLocal = vis.fresh(8_000) && (vis.value ?: 0) > 0
+        val faceHere = faceLocal || remoteFacePresent
+        val gaze = gazeTowardCamera || remoteGazeTowardCamera
+        val voiceLocal = voiceDetected || humanSpeech
+        val voiceHere = voiceLocal || remoteVoiceActive
+        // Freshest transcript wins (local STT or a peer's streamed words).
+        val localT = transcription
+        val localFresh = localT.value != null && (now - localT.tsMs) < 15_000
+        val remoteFresh = remoteTranscript.isNotEmpty() &&
+            (now - remoteTranscriptTs) < 15_000
+        val transcriptValue: String? = when {
+            localFresh && (!remoteFresh || localT.tsMs >= remoteTranscriptTs) -> localT.value
+            remoteFresh -> remoteTranscript
+            else -> null
+        }
+        val words = transcriptValue?.trim()
+            ?.split(Regex("\\s+"))?.filter { it.length >= 2 } ?: emptyList()
+        val realSpeech = words.isNotEmpty()
+        // v1.29: sentence-initial wake word only — a bare greeting like
+        // "hello shugo" is a conversation with a present person, not an
+        // instruction call (mirrors Python is_wake_word_call()).
+        val t0 = transcriptValue?.trim()?.lowercase()
+        val directed = realSpeech && t0 != null && (
+            t0.startsWith("shugo") || t0.startsWith("hey shugo") ||
+            t0.startsWith("ok shugo") || t0.startsWith("okay shugo"))
+        return when {
+            directed -> "instruction_directed" to 0.95f
+            realSpeech && faceHere && gaze -> "verified_person" to 0.9f
+            realSpeech -> "unattributed_audio" to 0.7f
+            voiceHere && faceHere -> "person_present_ambient_noise" to 0.75f
+            voiceHere -> "ambient_noise" to 0.7f
+            faceHere -> "person_present_silent" to 0.9f
+            else -> "none" to 1.0f
+        }
     }
 
     /** Stamp a remote camera observation from a mesh peer. */
@@ -144,6 +188,19 @@ object PerceptionState {
         PerceptionState.micActive = act
         PerceptionState.lastMicActivityMs = now
         remoteVoiceActive = act
+        // v1.29: remote transcript crosses the mesh so the primary can
+        // classify scenes and FEED REMOTE INSTRUCTIONS into its own
+        // conversation pipeline (the peripheral has no agent of its own —
+        // its STT words would otherwise die there). Words live only in the
+        // interaction bus / bounded conversation memory, never in journals.
+        val rt = payload.optString("transcript", "")
+        if (rt.isNotEmpty()) {
+            remoteTranscript = rt
+            remoteTranscriptTs = now
+            PerceptionState.transcription = PerceptionSignal(
+                rt.take(400), now, source = "remote:$deviceId")
+            PerceptionState.humanSpeech = true
+        }
         payload.optString("speech_source").let { s ->
             if (s.isNotEmpty() && s != "null") {
                 remoteSpeechSource = s

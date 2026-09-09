@@ -447,6 +447,75 @@ class TestVisualAudioBinding(unittest.TestCase):
         self.assertEqual(snap["speech_source"], "verified_person")
         self.assertIn("speech_source_conf", snap)
 
+    # -- v1.29 scene taxonomy ------------------------------------------------
+
+    def test_wake_word_call_is_instruction_directed(self):
+        layer, clock = self._layer()
+        layer.stamp_face(1, gaze_toward_camera=True)
+        clock.side_effect = lambda: 1001.0
+        layer.stamp_speech("shugo what time is it")
+        src = layer.speech_source()
+        self.assertEqual(src["source"], "instruction_directed")
+        self.assertGreaterEqual(src["confidence"], 0.9)
+
+    def test_wake_word_call_without_face_still_directed(self):
+        layer, clock = self._layer()
+        layer.stamp_speech("hey shugo read the instruction")
+        clock.side_effect = lambda: 1001.0
+        src = layer.speech_source()
+        self.assertEqual(src["source"], "instruction_directed")
+        self.assertGreaterEqual(src["confidence"], 0.8)
+
+    def test_greeting_is_not_an_instruction_call(self):
+        layer, clock = self._layer()
+        layer.stamp_face(1, gaze_toward_camera=True)
+        clock.side_effect = lambda: 1001.0
+        layer.stamp_speech("hello shugo")
+        self.assertEqual(layer.speech_source()["source"], "verified_person")
+
+    def test_voice_energy_without_words_is_ambient_noise(self):
+        layer, _ = self._layer()
+        layer.stamp_voice(True)
+        self.assertEqual(layer.speech_source()["source"], "ambient_noise")
+
+    def test_voice_energy_with_face_is_person_present_ambient_noise(self):
+        layer, _ = self._layer()
+        layer.stamp_face(1)
+        layer.stamp_voice(True)
+        self.assertEqual(layer.speech_source()["source"],
+                         "person_present_ambient_noise")
+
+    def test_voice_energy_alone_never_grants_attention(self):
+        # The v1.28 bug: a playing video (voice energy, no words, no face)
+        # upgraded the state to ATTENDING and could mask consent.
+        layer, clock = self._layer()
+        layer.stamp_voice(True)
+        clock.side_effect = lambda: 1001.0
+        state, _ = layer.evaluate()
+        self.assertNotEqual(state.value, "attending")
+
+    def test_wake_word_call_without_face_grants_attention(self):
+        layer, clock = self._layer()
+        layer.stamp_speech("shugo stop")
+        clock.side_effect = lambda: 1001.0
+        state, conf = layer.evaluate()
+        self.assertEqual(state.value, "attending")
+        self.assertGreaterEqual(conf, 0.5)
+
+    def test_unattributed_words_alone_do_not_grant_attention(self):
+        layer, clock = self._layer()
+        layer.stamp_speech("tv dialogue about the weather")
+        clock.side_effect = lambda: 1001.0
+        state, _ = layer.evaluate()
+        self.assertNotEqual(state.value, "attending")
+
+    def test_snapshot_carries_voice_fresh(self):
+        layer, _ = self._layer()
+        layer.stamp_voice(True)
+        snap = layer.snapshot()
+        self.assertTrue(snap["voice_fresh"])
+        self.assertEqual(snap["speech_source"], "ambient_noise")
+
 
 class TestRemoteBinding(unittest.TestCase):
     """update_mesh_peers + observation fusion: a peripheral's carried

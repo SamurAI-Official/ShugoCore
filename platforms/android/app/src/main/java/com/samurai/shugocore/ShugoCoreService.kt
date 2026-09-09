@@ -5,7 +5,9 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Binder
 import android.os.Build
 import android.os.Handler
@@ -13,6 +15,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import android.bluetooth.BluetoothAdapter
 import com.samurai.shugocore.inference.*
 import com.samurai.shugocore.runtime.AudioProvider
@@ -81,6 +84,27 @@ class ShugoCoreService : Service() {
     override fun onCreate() {
         super.onCreate()
         Log.i(TAG, "Service created")
+        // Debug-only transcript injection: adb-driven probe path that
+        // mirrors on-device STT final results through the exact same
+        // HumanInteractionBus pipeline. Lets the phase probe matrix run
+        // hands-free (`am broadcast -a ...INJECT_TRANSCRIPT --es text …`).
+        if (BuildConfig.DEBUG) {
+            registerReceiver(
+                object : android.content.BroadcastReceiver() {
+                    override fun onReceive(context: Context?, intent: Intent?) {
+                        val text = intent?.getStringExtra("text")?.trim().orEmpty()
+                        if (text.isNotEmpty()) {
+                            LogBus.log(LogBus.Category.AGENT,
+                                "debug transcript injected: \"$text\"")
+                            HumanInteractionBus.post("speech", "on_device_stt",
+                                org.json.JSONObject().put("transcript", text))
+                        }
+                    }
+                },
+                IntentFilter("com.samurai.shugocore.INJECT_TRANSCRIPT"),
+                ContextCompat.RECEIVER_EXPORTED
+            )
+        }
         if (!Python.isStarted()) {
             Python.start(AndroidPlatform(this))
         }
@@ -95,7 +119,9 @@ class ShugoCoreService : Service() {
         createNotificationChannel()
         // v1.22: start Bluetooth device mesh for peripheral sensors.
         try {
-            meshManager = DeviceMeshManager(this)
+            // v1.29: shared singleton so SensorPublisherService joins the
+            // same transport instead of opening a second RFCOMM listener.
+            meshManager = DeviceMeshManager.getOrCreate(this)
             // v1.27: push live sensor-agent snapshots to the Python agent the
             // instant a sensor message arrives — decouples mesh awareness from
             // the 1 Hz tick so the agent's observation context is near-real-time.
@@ -136,6 +162,15 @@ class ShugoCoreService : Service() {
                                 // a non-iterable LinkedHashMap proxy.
                                 val obj = org.json.JSONObject()
                                 for ((k, v) in tm.getTelemetryMap()) obj.put(k, v)
+                                // v1.29: fold the LOCAL scene verdict + voice
+                                // energy into the telemetry so the Python
+                                // agent can distinguish voice ENERGY without
+                                // words (music/TV — never speech) from
+                                // recognized transcript words.
+                                val scene = PerceptionState.classifyScene()
+                                obj.put("voice_active", PerceptionState.voiceDetected)
+                                obj.put("scene_speech_source", scene.first)
+                                obj.put("scene_speech_confidence", scene.second.toDouble())
                                 // v1.27: fold the live mesh peer snapshot into the
                                 // telemetry so the Python agent's observation context
                                 // and get_status_json actually see connected
@@ -883,7 +918,18 @@ class ShugoCoreService : Service() {
         apiServer?.stop()
         llamaBridge?.close()
         executor.shutdown()
-        pyAgent?.callAttr("cleanup")
+        // Phase 4: full teardown — flush engine memory to disk so facts,
+        // timers and episodic state survive the process going away. Falls
+        // back to the light cleanup() if shutdown is unavailable/fails.
+        try {
+            pyAgent?.callAttr("shutdown")
+        } catch (e: Throwable) {
+            Log.w(TAG, "agent shutdown failed; falling back to cleanup", e)
+            try {
+                pyAgent?.callAttr("cleanup")
+            } catch (_: Throwable) {
+            }
+        }
         pyAgent = null
         python = null
     }

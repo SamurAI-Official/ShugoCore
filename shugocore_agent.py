@@ -255,6 +255,15 @@ class AndroidAgent:
                 # they keep reading a PersonalityProfile, now rendered
                 # from the living model.
                 self.personality = self.personality_model.as_profile()
+                # Personality governor: the living model as a structured
+                # reasoning layer.  The decision engine consults it on every
+                # proposed action (annotate + apply) alongside the safety
+                # governor.  Falls back to a default-baseline model if the
+                # living model failed to load.
+                from personality.governor import PersonalityGovernor
+                gov_model = self.personality_model if self.personality_model is not None else PersonalityModel.genesis(self.personality)
+                self.personality_governor = PersonalityGovernor(gov_model)
+                self.log("PERSONALITY", f"governor live (gen {gov_model.generation})")
                 # On-device observability: bootstrap result lands in the
                 # data dir (the LOG tab buffer is bounded and boot lines
                 # scroll away within minutes).
@@ -532,6 +541,11 @@ class AndroidAgent:
             # the control plane's enrichment and the journal are complete.
             if self.memory is not None:
                 kwargs["memory"] = self.memory
+            # Personality governor: structured reasoning layer that annotates
+            # proposed actions and can modify/reroute them alongside the
+            # safety governor.
+            if getattr(self, "personality_governor", None) is not None:
+                kwargs["personality_governor"] = self.personality_governor
             return DecisionEngine(**kwargs)
         except Exception as exc:
             logger.error("Failed to initialize engine: %s", exc, exc_info=True)

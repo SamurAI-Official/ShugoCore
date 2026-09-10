@@ -258,6 +258,119 @@ class RenderingTest(unittest.TestCase):
         self.assertEqual(model.as_profile().speech["formality"], "formal")
 
 
+class PersonalityGovernorTestCase(unittest.TestCase):
+    """PersonalityGovernor: structured reasoning layer alongside safety."""
+
+    def _governor(self, warmth=0.5, verbosity=0.5, formality=0.3,
+                  proactivity=0.3, max_sentences=3):
+        model = _baby()
+        model.apply_delta({"warmth": warmth - 0.5})
+        model.apply_delta({"verbosity": verbosity - 0.5})
+        model.apply_delta({"formality": formality - 0.3})
+        model.apply_delta({"proactivity": proactivity - 0.3})
+        model.voice["max_sentences"] = max_sentences
+        from personality.governor import PersonalityGovernor
+        return PersonalityGovernor(model)
+
+    def test_exports(self):
+        from personality.governor import (PersonalityGovernor,
+                                          PersonalityVerdict)
+        self.assertIsInstance(PersonalityVerdict(), PersonalityVerdict)
+
+    def test_clean_speak_passes(self):
+        gov = self._governor()
+        decision = {"action_type": "speak",
+                    "params": {"text": "Hey! How are you doing today?"}}
+        v = gov.annotate(decision)
+        self.assertEqual(v.verdict, "pass")
+        self.assertTrue(v.verbosity_ok)
+        self.assertGreater(v.tone_score, 0)
+
+    def test_never_say_forces_reroute(self):
+        gov = self._governor()
+        decision = {"action_type": "speak",
+                    "params": {"text": "As an AI, I don't have feelings."}}
+        v = gov.annotate(decision)
+        self.assertEqual(v.verdict, "reroute")
+        self.assertEqual(v.route_to, "speak")
+        self.assertEqual(v.appropriateness, 0.0)
+        applied = gov.apply(decision, v)
+        self.assertTrue(applied.get("personality_rerouted"))
+        self.assertNotIn("As an AI", applied["params"]["text"])
+
+    def test_over_verbose_gets_modified(self):
+        # Low verbosity trait + long text => modify (truncate).
+        gov = self._governor(verbosity=0.1, max_sentences=1)
+        long_text = ("This is sentence one. This is sentence two. "
+                     "This is sentence three. This is sentence four.")
+        decision = {"action_type": "speak", "params": {"text": long_text}}
+        v = gov.annotate(decision)
+        self.assertEqual(v.verdict, "modify")
+        applied = gov.apply(decision, v)
+        self.assertTrue(applied.get("personality_modified"))
+        kept = applied["params"]["text"]
+        # Should be truncated to budget (<= max_sentences sentences).
+        self.assertLess(len(kept), len(long_text))
+
+    def test_proactivity_suppresses_self_initiated(self):
+        gov = self._governor(proactivity=0.1)
+        decision = {"action_type": "speak",
+                    "params": {"text": "By the way, I noticed something."}}
+        ctx = {"self_initiated": True}
+        v = gov.annotate(decision, ctx)
+        self.assertEqual(v.verdict, "reroute")
+        self.assertEqual(v.route_to, "ask_user")
+        applied = gov.apply(decision, v)
+        self.assertEqual(applied["action_type"], "ask_user")
+
+    def test_proactivity_allows_prompted_speak(self):
+        gov = self._governor(proactivity=0.1)
+        decision = {"action_type": "speak",
+                    "params": {"text": "Here is what you asked for."}}
+        # Not self_initiated => no proactivity suppression.
+        v = gov.annotate(decision, {"self_initiated": False})
+        self.assertEqual(v.verdict, "pass")
+
+    def test_policy_reflects_traits(self):
+        gov = self._governor(verbosity=1.0, max_sentences=3)
+        self.assertGreaterEqual(gov.policy["verbosity_budget"], 3)
+        self.assertEqual(gov.policy["tone"], "casual")
+
+    def test_apply_pass_is_identity(self):
+        gov = self._governor()
+        decision = {"action_type": "speak",
+                    "params": {"text": "Hello there."}}
+        v = gov.annotate(decision)
+        applied = gov.apply(decision, v)
+        self.assertIs(applied, decision)  # pass returns unchanged
+
+    def test_robustness_no_params(self):
+        gov = self._governor()
+        # No params at all — must not raise, returns a verdict.
+        v = gov.annotate({"action_type": "speak"})
+        self.assertEqual(v.verdict, "pass")
+
+    def test_robustness_none_params(self):
+        gov = self._governor()
+        v = gov.annotate({"action_type": None, "params": None})
+        self.assertEqual(v.verdict, "pass")
+
+    def test_tool_action_extracts_text(self):
+        from personality.governor import PersonalityGovernor
+        self.assertEqual(PersonalityGovernor._extract_text("speak",
+                         {"text": "hi"}), "hi")
+        self.assertEqual(PersonalityGovernor._extract_text("ask_user",
+                         {"question": "what?"}), "what?")
+        self.assertEqual(PersonalityGovernor._extract_text("speak",
+                         {"question": "q", "text": "t"}), "t")
+
+    def test_sentence_counting(self):
+        from personality.governor import PersonalityGovernor
+        self.assertEqual(PersonalityGovernor._count_sentences("One. Two. Three."), 3)
+        self.assertEqual(PersonalityGovernor._count_sentences("Just one"), 1)
+        self.assertEqual(PersonalityGovernor._count_sentences(""), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
 

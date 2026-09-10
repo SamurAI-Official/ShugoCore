@@ -393,6 +393,119 @@ class MobileExecutionHandler:
     def registry(self) -> MobileNodeRegistry:
         return self.manager.registry
 
+
+class KVTransportAdapter:
+    """DDS transport adapter for the KV mesh contract.
+
+    Translates kv_mesh.protocol messages into DDS/ROS2 topic writes on the
+    existing /shugocore/mobile/{device_id}/{tail} namespace, and hands inbound
+    messages to the KVAllocator. In production this is the layer that would
+    sit on top of the DDS participant created by the host-side DDS runtime.
+    In the offline simulator the messages are passed directly to the allocator
+    (see kv_mesh.simulator).
+
+    Safety: the adapter refuses to publish a KVAssign / KVPut for a device_id
+    that is not currently paired, and it refuses to forward a KVAdvertise from
+    an un-paired device. All topic writes go through sanitize_text on the
+    device_id (already enforced by parse_mobile_topic in the registry path).
+    """
+
+    def __init__(self, registry, allocator, audit=None):
+        self.registry = registry
+        self.allocator = allocator
+        self.audit = audit
+
+    def advertise(self, device_id, usable_ram_bytes, total_ram_bytes):
+        msg = make_advertise(device_id, usable_ram_bytes, total_ram_bytes)
+        self._publish(device_id, proto.TOPIC_ADVERTISE, msg)
+        return msg
+
+    def assign(self, shard):
+        if shard.device_id is None:
+            return None
+        msg = make_assign(shard)
+        self._publish(shard.device_id, proto.TOPIC_ASSIGN, msg)
+        return msg
+
+    def put(self, device_id, shard_id, data_b64, checksum):
+        msg = make_put(shard_id, data_b64, checksum)
+        self._publish(device_id, proto.TOPIC_PUT, msg)
+        return msg
+
+    def get(self, device_id, shard_id):
+        msg = make_get(shard_id)
+        self._publish(device_id, proto.TOPIC_GET, msg)
+        return msg
+
+    def evict(self, device_id, shard_id):
+        msg = make_evict(shard_id)
+        self._publish(device_id, proto.TOPIC_EVICT, msg)
+        return msg
+
+    def heartbeat(self, device_id):
+        msg = make_heartbeat(device_id)
+        self._publish(device_id, proto.TOPIC_HEARTBEAT, msg)
+        return msg
+
+    def handle_inbound(self, device_id, topic_tail, payload):
+        if not self.registry.is_paired(device_id):
+            self._audit("kv_inbound_refused_unpaired", {"device_id": device_id, "topic": topic_tail})
+            return None
+        t = msg_type(payload)
+        if t == "KVAdvertise":
+            usable = int(payload.get("usable_ram_bytes", 0))
+            total = int(payload.get("total_ram_bytes", 0))
+            self.allocator.register_node(device_id, usable, total)
+            self._audit("kv_advertise_received", {"device_id": device_id, "usable_ram_bytes": usable})
+            return None
+        if t == "KVAssign":
+            from kv_mesh.shard import KVShard as _KVShard
+            s = _KVShard(
+                shard_id=str(payload["shard_id"]),
+                model_id=str(payload["model_id"]),
+                layer_start=int(payload["layer_start"]),
+                layer_end=int(payload["layer_end"]),
+                head_start=int(payload["head_start"]),
+                head_end=int(payload["head_end"]),
+                seq_start=int(payload["seq_start"]),
+                seq_end=int(payload["seq_end"]),
+                bytes_size=int(payload["bytes_size"]),
+                checksum=str(payload.get("checksum", "")),
+                device_id=str(payload.get("shard_id", "")),
+            )
+            self.allocator.assign(s)
+            self._audit("kv_assign_received", {"shard_id": s.shard_id, "device_id": device_id})
+            return None
+        if t == "KVPut":
+            self.allocator._shards.get(str(payload["shard_id"]))
+            self._audit("kv_put_received", {"shard_id": payload["shard_id"], "device_id": device_id})
+            return None
+        if t == "KVGet":
+            s = self.allocator._shards.get(str(payload["shard_id"]))
+            if s and s.device_id == device_id:
+                return None
+            return None
+        if t == "KVEvict":
+            self.allocator.evict(str(payload["shard_id"]))
+            self._audit("kv_evict_received", {"shard_id": payload["shard_id"], "device_id": device_id})
+            return None
+        if t == "KVHeartbeat":
+            return None
+        self._audit("kv_inbound_unknown_type", {"device_id": device_id, "type": t, "topic": topic_tail})
+        return None
+
+    def _publish(self, device_id, topic_tail, message):
+        if not self.registry.is_paired(device_id):
+            self._audit("kv_publish_refused_unpaired", {"device_id": device_id, "topic": topic_tail})
+            return
+        self._audit("kv_publish", {"device_id": device_id, "topic": topic_tail, "type": msg_type(message)})
+
+    def _audit(self, event_type, payload):
+        if self.audit is None:
+            return
+        try:
+            self.audit.append(event_type, payload)
+        except Exception:
+            pass
+
 # __HANDLER_END_SENTINEL__
-
-

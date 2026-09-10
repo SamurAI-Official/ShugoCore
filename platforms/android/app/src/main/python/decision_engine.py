@@ -220,6 +220,7 @@ class DecisionEngine:
                  request_timeout: float = 600.0,
                  subconscious_backend: Optional[Any] = None,
                  governor: Optional[ExecutionGovernor] = None,
+                 personality_governor: Optional[Any] = None,
                  fallbacks: Optional[FallbackController] = None,
                  step_budget: int = 50,
                  # On-device CPU inference (e.g. 0.5B Q4 on Exynos 1380) has a
@@ -262,6 +263,12 @@ class DecisionEngine:
             task_deadline_seconds=task_deadline_seconds,
             audit=self.audit,
         )
+        # Personality governor: a structured reasoning layer that annotates
+        # proposed actions with tone/verbosity/appropriateness and can modify
+        # or reroute them.  It sits ALONGSIDE the safety governor (above) and
+        # never replaces it — personality can only restrict/modify, never
+        # authorize.  Optional; when absent the engine behaves as before.
+        self.personality_governor = personality_governor
         self.fallbacks = fallbacks if fallbacks is not None else FallbackController(
             governor=self.governor,
             audit=self.audit,
@@ -539,7 +546,9 @@ class DecisionEngine:
             self.logger.warning(f"Memory context retrieval failed: {exc}")
             decision["memory_context"] = []
 
-        return decision
+        # Personality governor: annotate-only on the tool path (tool actions
+        # stay gated by the safety governor; personality only advises/audits).
+        return self._apply_personality(decision, task, advisory_only=True)
 
     def _make_conversational_decision(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """Personality-driven response for conversation tasks.
@@ -550,12 +559,13 @@ class DecisionEngine:
         to a gentle clarification on null/garbage output."""
         prompt = task.get("prompt", "")
         if not prompt:
-            return {
+            decision = {
                 "action_type": "speak",
                 "params": {"text": "I'm here — what did you want to talk about?"},
                 "confidence": 0.3,
                 "proposal_source": "conversation_fallback",
             }
+            return self._apply_personality(decision, task)
 
         model_name = task.get("model") or self._default_model_id()
         if not validate_model_name(model_name):
@@ -566,12 +576,13 @@ class DecisionEngine:
             model_name, prompt, backend=backend)
 
         if not output:
-            return {
+            decision = {
                 "action_type": "speak",
                 "params": {"text": "I didn't catch that — could you say it again?"},
                 "confidence": 0.2,
                 "proposal_source": "conversation_empty",
             }
+            return self._apply_personality(decision, task)
 
         proposal = self._parse_proposal(output)
         if proposal is None:
@@ -579,18 +590,20 @@ class DecisionEngine:
             # extract any text and wrap it in a speak action.
             text = output.strip()[:300]
             if text:
-                return {
+                decision = {
                     "action_type": "speak",
                     "params": {"text": text},
                     "confidence": 0.5,
                     "proposal_source": "conversation_raw",
                 }
-            return {
+                return self._apply_personality(decision, task)
+            decision = {
                 "action_type": "speak",
                 "params": {"text": "Tell me more — I'm listening."},
                 "confidence": 0.2,
                 "proposal_source": "conversation_unparseable",
             }
+            return self._apply_personality(decision, task)
 
         # Ensure the action is speak or ask_user — conversation mode never
         # produces tool actions. If the model proposed something else, wrap
@@ -601,14 +614,59 @@ class DecisionEngine:
                     or proposal.get("text", "") or "")
             if not text:
                 text = "I'm not sure how to respond to that."
-            return {
+            decision = {
                 "action_type": "speak",
                 "params": {"text": text[:400]},
                 "confidence": proposal.get("confidence", 0.5),
                 "proposal_source": "conversation_rerouted",
             }
+            return self._apply_personality(decision, task)
 
-        return proposal
+        return self._apply_personality(proposal, task)
+
+
+    def _apply_personality(self, decision: dict, task: dict,
+                           advisory_only: bool = False) -> dict:
+        """Run the personality governor over a proposed decision (if present).
+
+        Annotates the decision with a PersonalityVerdict and returns the
+        (possibly modified / rerouted) decision.  The safety gate runs on
+        the returned decision afterward — personality never pre-approves.
+
+        When ``advanced_only`` is True (tool path), the verdict is attached
+        for audit but the action is never modified or rerouted — tool actions
+        stay gated exclusively by the safety governor.
+
+        Always safe to call: if no governor is attached, returns the decision
+        unchanged with no verdict attached.
+        """
+        if self.personality_governor is None:
+            return decision
+        try:
+            context = {
+                "self_initiated": bool(task.get("self_initiated")),
+                "task_type": task.get("type"),
+            }
+            verdict = self.personality_governor.annotate(decision, context)
+            if not advisory_only:
+                decision = self.personality_governor.apply(decision, verdict)
+            # Journal the verdict (auditable, like the safety signal).
+            decision["personality_verdict"] = verdict.to_dict()
+            try:
+                self.memory.record_event(
+                    "personality_verdict",
+                    {"verdict": verdict.verdict, "reason": verdict.reason,
+                     "tone_score": verdict.tone_score,
+                     "appropriateness": verdict.appropriateness,
+                     "action_type": decision.get("action_type")})
+            except Exception:
+                pass
+        except Exception as exc:
+            # Personality governor failure must never break the decision path.
+            decision["personality_verdict"] = {
+                "verdict": "pass",
+                "reason": f"governor failure (ignored): {exc}"}
+        return decision
 
     def _default_model_id(self) -> str:
         """Return the first available model ID, or a safe fallback."""

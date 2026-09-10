@@ -4,6 +4,28 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.28.2] - 2026-09-09 — personality governor + KV-cache mesh split design
+
+### Personality governor (`personality/governor.py`) — new
+- The personality model is no longer only a prompt-shaping input (`as_profile()` -> system prompt). It is now a **first-class reasoning signal** the decision engine consults on every proposed action: `proposed action -> governor.annotate() -> PersonalityVerdict -> governor.apply() -> (possibly rerouted) action`.
+- **`PersonalityGovernor`** wraps the living `PersonalityModel` and exposes a small structured policy derived deterministically from its trait vector + frozen policy (no LLM calls, no I/O -- `annotate()` is O(text-length) string ops, safe for the 1 Hz hot path).
+- **`annotate()`** scores a proposed action on three axes and returns a `PersonalityVerdict` (`pass` | `modify` | `reroute`): **verbosity** (sentence count vs a trait-derived budget; over-budget -> truncate), **tone/register** (contraction density vs the formality trait), and **appropriateness** (frozen-policy `never_say` / boundaries hits -> reroute to a safe fallback). A **proactivity** check reroutes self-initiated speaks to `ask_user` when the proactivity trait is below threshold.
+- **`apply()`** is a pure function of action + verdict: it can modify params (truncate text) or reroute the action type (e.g. `speak` -> `ask_user`). It never re-consults the model.
+- **Safety invariant (non-negotiable):** the personality governor governs a *different axis* than the safety governor (`ExecutionGovernor`) and the policy gate (`ApprovalBroker` / `ConsentRegistry` / `CapabilityRegistry`). Those remain dominant on the harm / consent / approval axis. The personality governor can only RESTRICT or MODIFY, never AUTHORIZE: a personality PASS does not override a policy BLOCK; a personality MODIFY cannot reclassify a side-effecting action as safe; a personality verdict never unlocks consent or approval.
+
+### Decision engine (`decision_engine.py`)
+- New optional constructor param `personality_governor`. When attached, both decision paths consult it: `_make_conversational_decision()` runs full annotate + apply (personality can modify/reroute conversation actions); `make_decision()` (tool path) runs annotate-only (`advisory_only=True`) so tool actions stay gated exclusively by the safety governor while personality advises/audits.
+- Every governed decision carries a `personality_verdict` field (the `PersonalityVerdict.to_dict()`) and journals a `personality_verdict` memory event -- the personality signal is as auditable as the safety signal. When no governor is attached, the engine behaves exactly as before (opt-in, fully backwards compatible).
+
+### On-device app
+- `shugocore_agent.py` constructs a `PersonalityGovernor` from the living `PersonalityModel` at bootstrap and injects it into the `DecisionEngine`. Because the governor holds a reference to the living model (mutated in-place on growth), it tracks new generations automatically.
+
+### KV-cache / context mesh split (`kv_mesh/`, `docs/kv_cache_mesh_split.md`) — new
+- **Design doc** (`docs/kv_cache_mesh_split.md`) -- Option 1: split the transformer KV cache and context windows across peripheral Android devices (host computes, peripherals contribute RAM).  Covers the shard model (`KVShard`, `ContextShard`, `ShardSpec`), memory accounting (KV size = L*S*2*H*D*B), three split strategies (sequence-parallel context split, KV-offload, head-split), the kv contract protocol topics under the existing `/shugocore/mobile/{device_id}/...` namespace, the latency budget (viable for the 0.5B on-device target on a 2-3 node mesh), and the safety surface (consent-gated, no persistence past TTL, checksummed, fail-closed to host memory).
+- **Offline prototype** (`kv_mesh/`) -- proves the protocol and memory accounting WITHOUT real distributed inference: `shard.py` (shard data types + partition into sequence-split or layer-split shards), `allocator.py` (`KVAllocator` assigns shards by advertised RAM, enforces capacity caps, rebalances on node join/leave, fail-closed), `protocol.py` (message types + topic routing for the kv contract), `simulator.py` (`MeshSimulator` + `SimNode` run assign/get/put/evict cycles over simulated nodes with RAM caps).
+- Reuses the existing fleet layer: pairing/TTL, topic ACL, and the consent-gated compute-offload path.  A KV shard is just another contract topic; storing one is a privacy-relevant action gated the same way as other mobile compute.  Real on-device multi-node KV splitting (multi-instance llama.cpp + high-bandwidth activation transport) is explicitly a follow-on phase.
+- `shugocore_agent.py` constructs a `PersonalityGovernor` from the living `PersonalityModel` at bootstrap and injects it into the `DecisionEngine`. Because the governor holds a reference to the living model (mutated in-place on growth), it tracks new generations automatically.
+
 ## [1.28.1] - 2026-09-09 — device smoke harness verified end-to-end on two Android devices (9/9 phases)
 
 ### Device smoke harness (`tests/android_device_smoke.py`) — now passes 9/9 on Tab S9 FE + A51

@@ -27,8 +27,10 @@ shugocore-verify-audit = "audit:cli_main"
 shugocore-server = "shugocore_server:main"
 
 [tool.setuptools]
-py-modules = ["acceleration", "android_bridge", "android_inference", "android_node",
-              "android_runtime", "audit", "autonomy", "continuous_agent",
+packages = ["benchmarks", "conversation", "kv_mesh", "nrr", "personality",
+            "prompts", "simulation", "subsystems"]
+py-modules = ["acceleration", "agent_runtime", "android_bridge", "android_inference", "android_model_manager",
+              "android_node", "android_runtime", "attention_layer", "audit", "autonomy", "continuous_agent",
               "decision_engine", "execution_layer", "fallbacks",
               "gazebo_simulation", "human_interaction", "logging_manager", "memory_system",
               "mobile_nodes", "model_backends", "model_manager",

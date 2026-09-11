@@ -43,6 +43,10 @@ class AndroidBackend(BaseBackend):
         api_url: str = "http://127.0.0.1:11434",
         model_name: str = "shugocore",
         device_caps: Optional[Dict[str, Any]] = None,
+        # v1.28.2: accept base_url as an alias (delegation manager sets
+        # base_url; OllamaBackend uses base_url, AndroidBackend uses
+        # api_url -- explicit wins, alias fills when explicit is default).
+        base_url: Optional[str] = None,
         # CPU-only on-device generation needs ample headroom for prompt
         # eval (prefill) + decode. On a 0.5B Q4 model on Exynos 1380:
         # prefill ~280s + decode ~1.3s/token. Full 80-token generation
@@ -50,6 +54,8 @@ class AndroidBackend(BaseBackend):
         # thermal-throttle slowdowns.
         timeout: int = 600,
     ):
+        if base_url and api_url == "http://127.0.0.1:11434":
+            api_url = base_url
         self.base_url = api_url.rstrip("/")
         self.model_name = model_name
         self.device_caps = device_caps or {}

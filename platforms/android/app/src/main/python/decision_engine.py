@@ -389,8 +389,18 @@ class DecisionEngine:
             # the configured one.  This is a one-shot — the cache entry uses
             # the original config for future calls without delegation.
             try:
+                # v1.28.2: backends disagree on the URL kwarg name
+                # (OllamaBackend: base_url, AndroidBackend: api_url).
+                # Prefer api_url for android-type backends, base_url
+                # otherwise; drop the other key so create_backend never
+                # passes an unexpected kwarg.
                 cfg_override = dict(config)
-                cfg_override["base_url"] = delegation_url
+                if str(config.get("type", "")).lower() == "android":
+                    cfg_override["api_url"] = delegation_url
+                    cfg_override.pop("base_url", None)
+                else:
+                    cfg_override["base_url"] = delegation_url
+                    cfg_override.pop("api_url", None)
                 bk = create_backend(cfg_override)
                 self._backend_cache[model_id] = bk
                 return bk

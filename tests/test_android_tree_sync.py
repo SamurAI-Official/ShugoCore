@@ -47,7 +47,11 @@ class TestAndroidTreeSync(unittest.TestCase):
         for name in ("shugocore_agent.py", "decision_engine.py",
                      "subconscious.py", "android_inference.py",
                      "telemetry.py", "policy.py", "human_interaction.py",
-                     "security.py", "personality/governor.py"):
+                     "security.py", "personality/governor.py",
+                     "nrr/__init__.py", "nrr/schema.py",
+                     "nrr/descriptor.py", "nrr/result.py",
+                     "nrr/protocol.py", "nrr/adapter.py",
+                     "mobile_nodes.py", "attention_layer.py"):
             self.assertTrue(
                 os.path.isfile(os.path.join(BUNDLED, name)),
                 f"{name} missing from the bundled tree")

@@ -6,6 +6,58 @@ frozen: no breaking changes across any 1.x release.
 
 ## [1.28.2] - 2026-09-09 — personality governor + KV-cache mesh split design
 
+### 16 KB sanitizer budget (`mobile_nodes.py`) — Android compatibility
+- `_MAX_SNAPSHOT_BYTES`: 4096 -> `16 * 1024`. Structured payloads (NRR
+  frame descriptors/results, batched detections) can legitimately exceed
+  the old 4 KB cap while remaining bounded; unbounded blobs (>16 KB) are
+  still refused before they reach memory or decisions.
+
+### Capability-aware compute routing (`mobile_nodes.py`) — NRR pattern
+- Pairing manifests now carry a bounded `compute_caps` block (`fp16`,
+  `int8`, `vram_mb`, `workloads`) sanitized at `pair()` time -- the NRR
+  capability-matrix pattern applied to the ShugoCore fleet layer.
+- `MobileNodeRegistry.nodes_for_workload(workload)` lists paired nodes
+  advertising a workload; `MobileComputeBroker.request_compute()` refuses
+  (fail-closed, audited) unknown workloads and devices that never
+  advertised the requested workload. `KNOWN_WORKLOADS` =
+  `("nrr_render", "vision")`.
+
+### NRR contract shim (`nrr/`) — new, offline / capability-gated
+- Descriptor-level mirror of the NRR frame contract
+  (SamurAI-Official/NRR `specification/frame_contract.md`): the primary
+  sends a lightweight `NRRFrameDescriptor` (resolution, pixel format,
+  model/ref ids, temporal `frame_index`/`delta_time`) -- never raw pixels.
+  The peripheral worker runs `nrr_render()` locally and returns an
+  `NRRRenderResult` (output handle + render stats).
+- `nrr/schema.py` / `descriptor.py` / `result.py`: versioned dataclasses
+  with fail-closed validation; `nrr/protocol.py`: topic tails + message
+  makers under the existing `/shugocore/mobile/{device_id}/` namespace;
+  `nrr/adapter.py`: `NRRTransportAdapter` (capability-gated dispatch over
+  `MobileComputeBroker`, inbound result validation, `worker_stub()` that
+  answers `not_supported` until a real NRR backend exists).
+- No NRR binary linked; no pixels cross the mesh; unpaired devices refused
+  on both directions; every refusal audited.
+
+### Temporal skip-gate for reasoning (`attention_layer.py`)
+- `AttentionLayer.should_regenerate(observation)` /
+  `mark_regenerated(observation)`: rolling SHA-256 over the
+  decision-relevant observation slice (speech source, face count, recent
+  speech, attention state, scene verdict, mesh peer count). Unchanged
+  observations inside the 30 s dedup window return
+  `(False, "observation_unchanged")` so the primary can reuse the last
+  decision instead of re-running a minute-scale generation -- the NRR
+  temporal-coherence pattern applied to LLM invocations. Fresh speech,
+  instruction verdicts, transcripts, and events always force regeneration;
+  hashing errors fail open to regeneration.
+
+### NRR detector proposal (`docs/nrr_detector_proposal.md`) — new
+- Cross-repo, non-blocking: proposes a `neural_detector` model type, an
+  `NRRDetectionArray` output struct (label/confidence/bbox/frame_index/
+  scene_verdict, no pixel bytes), and `int8_quantization` /
+  `perception_output` capability flags for the NRR spec, with the
+  ShugoCore-side convergence path (`nrr_detect` workload, dual-envelope
+  migration, local SceneContext fallback).
+
 ### Personality governor (`personality/governor.py`) — new
 - The personality model is no longer only a prompt-shaping input (`as_profile()` -> system prompt). It is now a **first-class reasoning signal** the decision engine consults on every proposed action: `proposed action -> governor.annotate() -> PersonalityVerdict -> governor.apply() -> (possibly rerouted) action`.
 - **`PersonalityGovernor`** wraps the living `PersonalityModel` and exposes a small structured policy derived deterministically from its trait vector + frozen policy (no LLM calls, no I/O -- `annotate()` is O(text-length) string ops, safe for the 1 Hz hot path).

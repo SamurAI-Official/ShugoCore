@@ -138,7 +138,7 @@ class TestManagerIngestion(unittest.TestCase):
     def test_oversize_payload_refused(self):
         h = _Harness()
         h.registry.pair("pixel8")
-        huge = {"blob": "x" * 10000}
+        huge = {"blob": "x" * 20000}
         self.assertIsNone(h.manager.ingest("pixel8", "camera", huge))
 
     def test_heartbeat_updates_liveness(self):
@@ -173,7 +173,7 @@ class TestComputeBroker(unittest.TestCase):
 
     def test_happy_path_with_correlated_result(self):
         h = _Harness()
-        h.registry.pair("pixel8")
+        h.registry.pair("pixel8", {"compute_caps": {"workloads": ["vision"]}})
         result_box = {}
 
         def _offload():
@@ -204,7 +204,7 @@ class TestComputeBroker(unittest.TestCase):
 
     def test_timeout_fails_closed(self):
         h = _Harness()
-        h.registry.pair("pixel8")
+        h.registry.pair("pixel8", {"compute_caps": {"workloads": ["vision"]}})
         start = time.monotonic()
         result = h.broker.request_compute("pixel8", "vision", {}, timeout=0.1)
         self.assertEqual(result["status"], "error")

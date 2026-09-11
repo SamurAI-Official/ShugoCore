@@ -112,6 +112,13 @@ class AttentionLayer:
     ):
         self._clock = clock or time.time
         self._lock = threading.Lock()
+        # v1.28.2: temporal skip-gate for reasoning (NRR temporal-coherence
+        # pattern applied to LLM invocations).  A rolling hash of the fused
+        # observation lets the primary skip a minute-scale generation when
+        # nothing meaningfully changed.  Bounded: last hash + last tick ts.
+        self._dedup_window_s = 30.0
+        self._last_obs_hash: Optional[str] = None
+        self._last_obs_ts: float = 0.0
         self._face_window_ms = face_window_ms
         self._speech_window_ms = speech_window_ms
         self._gaze_window_ms = gaze_window_ms
@@ -403,6 +410,100 @@ class AttentionLayer:
             }
 
     # -- read-only snapshot --------------------------------------------------
+
+    def should_regenerate(self, observation: Dict[str, Any],
+                          window_s: Optional[float] = None) -> Tuple[bool, str]:
+        """Temporal skip-gate: True when the LLM should run again.
+
+        Returns (regenerate, reason).  The gate fires (regenerate=True) when:
+          - no prior observation hash exists (first tick), or
+          - the fused-observation hash differs (scene changed), or
+          - the dedup window elapsed (stale reuse is unsafe), or
+          - the observation carries fresh high-signal content (new speech
+            transcript, new instruction, or a state-changing event).
+
+        Otherwise (same hash inside the window, no fresh signals) the caller
+        may reuse the last decision -- the NRR temporal-coherence pattern
+        (frame_index / history reuse) applied to minute-scale generations.
+        Fail-open: any hashing error returns (True, "hash_error").
+        """
+        try:
+            window = (self._dedup_window_s if window_s is None
+                      else max(0.0, float(window_s)))
+            now = self._clock()
+            current = self._observation_hash(observation)
+            with self._lock:
+                last_hash = self._last_obs_hash
+                last_ts = self._last_obs_ts
+            if last_hash is None:
+                return True, "first_observation"
+            if self._has_fresh_signals(observation):
+                return True, "fresh_signals"
+            if current != last_hash:
+                return True, "observation_changed"
+            if (now - last_ts) >= window:
+                return True, "dedup_window_elapsed"
+            return False, "observation_unchanged"
+        except Exception:
+            return True, "hash_error"
+
+    def mark_regenerated(self, observation: Dict[str, Any]) -> None:
+        """Record that the LLM ran for ``observation`` (closes the gate)."""
+        try:
+            current = self._observation_hash(observation)
+        except Exception:
+            return
+        with self._lock:
+            self._last_obs_hash = current
+            self._last_obs_ts = self._clock()
+
+    @staticmethod
+    def _observation_hash(observation: Dict[str, Any]) -> str:
+        """Stable hash over the decision-relevant observation slice."""
+        import hashlib
+        import json
+        obs = observation if isinstance(observation, dict) else {}
+        human = obs.get("human") if isinstance(obs.get("human"), dict) else {}
+        attention = (obs.get("attention") if isinstance(obs.get("attention"), dict)
+                     else {})
+        scene_verdict = obs.get("scene_verdict", "")
+        if not isinstance(scene_verdict, str):
+            scene_verdict = str(scene_verdict)
+        speech = human.get("speech_recent", "")
+        if not isinstance(speech, str):
+            speech = str(speech)
+        slice_data = {
+            "speech_source": str(human.get("speech_source", "none")),
+            "face_count": human.get("face_count", 0),
+            "speech_recent": speech.strip()[:200],
+            "attention_state": str(attention.get("attention_state",
+                                                 "unknown")),
+            "scene_verdict": scene_verdict.strip()[:64],
+            "mesh_peer_count": obs.get("mesh_peer_count", 0),
+        }
+        raw = json.dumps(slice_data, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+    @staticmethod
+    def _has_fresh_signals(observation: Dict[str, Any]) -> bool:
+        """True when the observation carries content that must regenerate."""
+        if not isinstance(observation, dict):
+            return True
+        human = observation.get("human")
+        if isinstance(human, dict):
+            speech = human.get("speech_recent", "")
+            if isinstance(speech, str) and speech.strip():
+                return True
+            if human.get("speech_source") in ("instruction_directed",
+                                              "verified_person"):
+                return True
+        if isinstance(observation.get("transcript"), str):
+            if observation["transcript"].strip():
+                return True
+        events = observation.get("events")
+        if isinstance(events, list) and events:
+            return True
+        return False
 
     def snapshot(self) -> Dict[str, Any]:
         """Thread-safe state snapshot for logging / telemetry."""

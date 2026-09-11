@@ -38,7 +38,61 @@ logger = logging.getLogger(__name__)
 tracer = get_tracer("shugocore.mobile")
 
 DEFAULT_PAIRING_TTL_HOURS = 12.0
-_MAX_SNAPSHOT_BYTES = 4096
+# v1.28.2: 16 KB snapshot budget for Android compatibility at large --
+# structured payloads (NRR descriptors/results, batched detections) can
+# legitimately exceed the old 4 KB cap while remaining bounded.
+_MAX_SNAPSHOT_BYTES = 16 * 1024
+
+# Compute-capability keys carried in the pairing manifest (NRR capability
+# matrix pattern: fp16 / int8 / minimum vram / supported workloads).  The
+# primary routes pixel work only to nodes that advertise the workload.
+_COMPUTE_CAPS_KEY = "compute_caps"
+_KNOWN_CAP_KEYS = ("fp16", "int8", "vram_mb", "workloads")
+# Workloads the primary may delegate.  "nrr_render" is the NRR rendering
+# worker contract; "vision" is the legacy compute offload alias.
+KNOWN_WORKLOADS = ("nrr_render", "vision")
+
+
+def _sanitize_compute_caps(manifest: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract and bound the compute-capability block from a manifest.
+
+    Returns {} when absent.  Unknown keys are dropped; numeric caps are
+    clamped to sane ranges; the workloads list is filtered to known
+    workload names (max 8, each sanitized).
+    """
+    caps = manifest.get(_COMPUTE_CAPS_KEY)
+    if not isinstance(caps, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    fp16 = caps.get("fp16")
+    if isinstance(fp16, bool):
+        out["fp16"] = fp16
+    int8 = caps.get("int8")
+    if isinstance(int8, bool):
+        out["int8"] = int8
+    vram = caps.get("vram_mb")
+    if isinstance(vram, (int, float)) and 0 < vram < 1e6:
+        out["vram_mb"] = int(vram)
+    workloads = caps.get("workloads")
+    if isinstance(workloads, (list, tuple)):
+        clean = []
+        for w in list(workloads)[:8]:
+            name = sanitize_text(str(w), 32)
+            if name in KNOWN_WORKLOADS:
+                clean.append(name)
+        if clean:
+            out["workloads"] = clean
+    return out
+
+
+def node_supports_workload(manifest: Dict[str, Any], workload: str) -> bool:
+    """True when ``manifest``'s compute_caps advertise ``workload``."""
+    caps = manifest.get(_COMPUTE_CAPS_KEY)
+    if not isinstance(caps, dict):
+        return False
+    workloads = caps.get("workloads")
+    return (isinstance(workloads, list)
+            and sanitize_text(str(workload), 32) in workloads)
 
 
 def parse_mobile_topic(topic: str) -> Optional[Tuple[str, str]]:
@@ -69,9 +123,17 @@ class MobileNodeRegistry:
         device = sanitize_text(device_id, 48)
         if not device:
             raise ValueError("device_id required")
+        raw_manifest = manifest if isinstance(manifest, dict) else {}
+        # v1.28.2: sanitize the manifest and extract the bounded
+        # compute-capability block (NRR capability-matrix pattern).  Unknown
+        # manifest keys are preserved (bounded) for forward compatibility;
+        # compute_caps is re-derived from the sanitized copy so a malicious
+        # manifest cannot smuggle oversized values past the sanitizer.
+        safe_manifest = self._sanitize_manifest(raw_manifest)
+        safe_manifest[_COMPUTE_CAPS_KEY] = _sanitize_compute_caps(safe_manifest)
         entry = {
             "device_id": device,
-            "manifest": manifest if isinstance(manifest, dict) else {},
+            "manifest": safe_manifest,
             "paired_by": sanitize_text(paired_by, 120),
             "paired_at": time.time(),
             "expires_at": time.time() + self.pairing_ttl_hours * 3600.0,
@@ -138,6 +200,101 @@ class MobileNodeRegistry:
         with self._lock:
             entry = self._paired.get(str(device_id))
         return dict(entry["manifest"]) if entry else {}
+
+    @staticmethod
+    def _sanitize_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
+        """Bound a pairing manifest: <=32 keys, sanitized key names, scalar
+        or shallow-list values capped at 256 chars each.
+
+        The compute_caps block is preserved structurally (booleans, bounded
+        ints, and string lists pass through) so capability-aware routing can
+        read it back after pairing."""
+        out: Dict[str, Any] = {}
+        for key in list(manifest.keys())[:32]:
+            name = sanitize_text(str(key), 48)
+            if not name:
+                continue
+            value = manifest[key]
+            if name == _COMPUTE_CAPS_KEY and isinstance(value, dict):
+                out[name] = MobileNodeRegistry._sanitize_caps_block(value)
+                continue
+            if isinstance(value, bool):
+                out[name] = value
+            elif isinstance(value, (int, float)):
+                out[name] = value if -1e15 < float(value) < 1e15 else 0.0
+            elif isinstance(value, (list, tuple)):
+                out[name] = [sanitize_text(str(v), 256)
+                             for v in list(value)[:16]]
+            elif isinstance(value, dict):
+                sub = {}
+                for sk in list(value.keys())[:16]:
+                    sname = sanitize_text(str(sk), 48)
+                    if not sname:
+                        continue
+                    sv = value[sk]
+                    if isinstance(sv, bool):
+                        sub[sname] = sv
+                    elif isinstance(sv, (int, float)):
+                        sub[sname] = (sv if -1e15 < float(sv) < 1e15
+                                      else 0.0)
+                    else:
+                        sub[sname] = sanitize_text(str(sv), 256)
+                out[name] = sub
+            else:
+                out[name] = sanitize_text(str(value), 256)
+        return out
+
+    @staticmethod
+    def _sanitize_caps_block(caps: Dict[str, Any]) -> Dict[str, Any]:
+        """Bound the compute_caps block inside a manifest (pre-sanitizer).
+
+        Keeps booleans, bounded ints, and string lists intact so
+        _sanitize_compute_caps can derive the canonical capability set
+        from the sanitized copy."""
+        out: Dict[str, Any] = {}
+        for key in list(caps.keys())[:16]:
+            name = sanitize_text(str(key), 48)
+            if not name:
+                continue
+            value = caps[key]
+            if isinstance(value, bool):
+                out[name] = value
+            elif isinstance(value, (int, float)):
+                out[name] = (value if -1e15 < float(value) < 1e15 else 0.0)
+            elif isinstance(value, (list, tuple)):
+                out[name] = [sanitize_text(str(v), 64)
+                             for v in list(value)[:8]]
+            else:
+                out[name] = sanitize_text(str(value), 256)
+        return out
+
+    def nodes_for_workload(self, workload: str) -> List[Dict[str, Any]]:
+        """Paired, live nodes advertising ``workload`` in compute_caps.
+
+        Capability-aware routing (NRR capability-matrix pattern): the
+        primary routes pixel work only to nodes that declared the workload
+        at pairing time.  Returns the same shape as list_nodes()."""
+        name = sanitize_text(str(workload), 32)
+        if name not in KNOWN_WORKLOADS:
+            return []
+        now = time.time()
+        with self._lock:
+            out = []
+            for device, entry in sorted(self._paired.items()):
+                if entry["expires_at"] <= now:
+                    continue
+                if not node_supports_workload(entry["manifest"], name):
+                    continue
+                out.append({
+                    "device_id": device,
+                    "manifest": dict(entry["manifest"]),
+                    "paired_by": entry["paired_by"],
+                    "expires_at": entry["expires_at"],
+                    "alive": (time.monotonic()
+                              - self._last_heartbeat.get(device, 0.0)
+                              <= self.heartbeat_timeout),
+                })
+            return out
 
     def _audit(self, event_type: str, payload: Dict[str, Any]) -> None:
         if self.audit is None:
@@ -306,11 +463,31 @@ class MobileComputeBroker:
         Offload ``workload`` to ``device_id``. Blocks up to ``timeout``
         (default: ``mobile_compute_timeout``). Fails closed: unpaired or
         dead devices are refused; timeout returns an error result.
+
+        v1.28.2: capability-aware routing -- a device that never advertised
+        ``workload`` in its pairing compute_caps is refused with a routing
+        reason (fail-closed, audited).  Unknown workloads are refused too.
         """
+        workload_name = sanitize_text(str(workload), 32)
+        if workload_name not in KNOWN_WORKLOADS:
+            self._audit("mobile_compute_refused_unknown_workload",
+                        {"device_id": sanitize_text(device_id, 48),
+                         "workload": workload_name})
+            return {"status": "refused",
+                    "reason": f"unknown workload '{workload_name}'"}
         if not self.registry.is_paired(device_id):
             return {"status": "refused", "reason": "device not paired"}
         if not self.registry.alive(device_id):
             return {"status": "refused", "reason": "device heartbeat lost"}
+        if not node_supports_workload(self.registry.manifest(device_id),
+                                      workload_name):
+            self._audit("mobile_compute_refused_no_capability",
+                        {"device_id": sanitize_text(device_id, 48),
+                         "workload": workload_name})
+            return {"status": "refused",
+                    "reason": (f"device '{sanitize_text(device_id, 48)}' "
+                               f"does not advertise workload "
+                               f"'{workload_name}'")}
         request_id = uuid.uuid4().hex[:16]
         timeout = float(timeout or self.capabilities.mobile_compute_timeout)
         self._listen(device_id)

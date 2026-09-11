@@ -4,7 +4,7 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
-## [1.28.2] - 2026-09-09 — personality governor + KV-cache mesh split design
+## [1.28.2] - 2026-09-09 — NRR contract shim + capability routing + 16 KB budget + governor + kv-mesh transport
 
 ### 16 KB sanitizer budget (`mobile_nodes.py`) — Android compatibility
 - `_MAX_SNAPSHOT_BYTES`: 4096 -> `16 * 1024`. Structured payloads (NRR
@@ -77,6 +77,13 @@ frozen: no breaking changes across any 1.x release.
 - **Offline prototype** (`kv_mesh/`) -- proves the protocol and memory accounting WITHOUT real distributed inference: `shard.py` (shard data types + partition into sequence-split or layer-split shards), `allocator.py` (`KVAllocator` assigns shards by advertised RAM, enforces capacity caps, rebalances on node join/leave, fail-closed), `protocol.py` (message types + topic routing for the kv contract), `simulator.py` (`MeshSimulator` + `SimNode` run assign/get/put/evict cycles over simulated nodes with RAM caps).
 - Reuses the existing fleet layer: pairing/TTL, topic ACL, and the consent-gated compute-offload path.  A KV shard is just another contract topic; storing one is a privacy-relevant action gated the same way as other mobile compute.  Real on-device multi-node KV splitting (multi-instance llama.cpp + high-bandwidth activation transport) is explicitly a follow-on phase.
 - `shugocore_agent.py` constructs a `PersonalityGovernor` from the living `PersonalityModel` at bootstrap and injects it into the `DecisionEngine`. Because the governor holds a reference to the living model (mutated in-place on growth), it tracks new generations automatically.
+
+### Android backend delegation URL fix (`android_inference.py`, `decision_engine.py`)
+- The Android backend was constructed with a `base_url` kwarg while the class signature takes `api_url` — delegation silently fell back to the default endpoint. Fixed at both call sites; mirrors updated.
+
+### Device smoke harness hardening (`tests/android_device_smoke.py`) — 9/9 verified on both devices with this harness
+- **`personality_growth_log` saturation fix** — device models reached generation 11 with warmth pinned at 1.0, and the positive-only praise mix clamped every delta to 0.0 (drift NONE on repeat runs). The growth drive is now an **alternating CRITICIZE/PRAISE burst loop** that picks its initial direction from the live snapshot's room-to-move; every turn hits a real lexicon pattern in `personality/growth.py`. Verified: non-zero drift (0.061 / 0.078) with non-zero trait deltas on both devices.
+- **`full_teardown_announced` ack race fix** — the fact-seed ack queued behind pending ~50 s-cadence model decisions after the cadence measurement, blowing the fixed 125 s budget (device-dependent flake). The first ack window now drains the decision queue before its deadline starts.
 
 ## [1.28.1] - 2026-09-09 — device smoke harness verified end-to-end on two Android devices (9/9 phases)
 

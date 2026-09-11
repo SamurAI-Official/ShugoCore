@@ -38,6 +38,54 @@ INJECTION_KEY = "text_b64"  # base64 extra key (see inject_transcript)
 
 PRODUCTION_MODEL_NAME = "shugocore-ollama"
 
+# Measured decision cadence (s) for the agent loop, sampled once at start.
+# Phase windows scale off this: v1.28.2 restored REAL on-device model
+# decisions (delegation fix), so each decision takes tens of seconds; the
+# harness must not assume the 1 Hz fallback cadence it was calibrated on.
+_CADENCE_S = 1.0
+
+
+def ack_window() -> float:
+    """Window to observe one model-answered transcript ack."""
+    return max(12.0, _CADENCE_S * 2.5)
+
+
+def restart_window() -> float:
+    """Window for the agent loop to resume + answer after a restart."""
+    return max(30.0, _CADENCE_S * 2.0)
+
+
+def measure_decision_cadence(serial: str) -> float:
+    """Estimate the inter-decision gap (s) of the agent loop.
+
+    Each decision is logged twice (standard logger + logging_manager), so
+    line-count polling would measure 0.  We instead track DISTINCT decision
+    timestamps and return the wall time between the first and the second
+    distinct decision.  Clamped to [1.0, 90.0]; when fewer than two
+    decisions appear within 100 s, returns a conservative real-model floor
+    of 50 s so phase windows still tolerate slow generations.
+    """
+    ts_pat = re.compile(r"(\d{2}:\d{2}:\d{2})\.\d{3}")
+    clear_logcat(serial)
+    start = time.time()
+    seen: set = set()
+    first_seen_at: Optional[float] = None
+    while time.time() - start < 100.0:
+        for ln in log_lines_containing(serial, " - Decision made for task"):
+            m = ts_pat.search(ln)
+            if not m:
+                continue
+            ts = m.group(1)
+            if ts in seen:
+                continue
+            seen.add(ts)
+            if first_seen_at is None:
+                first_seen_at = time.time()
+            else:
+                return min(90.0, max(1.0, time.time() - first_seen_at))
+        time.sleep(0.5)
+    return 50.0
+
 
 # ---------------------------------------------------------------------------
 # adb utility helpers (all ad-hoc, no background collection)
@@ -287,7 +335,7 @@ def step_timer_set(serial: str, logger: List[str]) -> bool:
     inject_scanout(
         serial, "set a timer for two seconds and tell me when it goes off"
     )
-    ok = expect_in_logs(serial, "timer set for 2 seconds", within_s=12.0)
+    ok = expect_in_logs(serial, "timer set for 2 seconds", within_s=ack_window())
     _log(logger, "  timer ack log line:", "FOUND" if ok else "MISSING")
     return ok
 
@@ -309,7 +357,7 @@ def step_service_alive(serial: str, logger: List[str]) -> bool:
     )
     alive = rc == 0 and "shugocore" in out.lower()
     runtime_in_logs = bool(log_lines_containing(serial, "python.stderr"))
-    loop_ok = expect_in_logs(serial, "Decision made for task", within_s=10.0)
+    loop_ok = expect_in_logs(serial, "Decision made for task", within_s=ack_window())
     for ln in [
         f"  ps grep shugocore: {'yes' if alive else 'no'}",
         f"  Chaquopy runtime (python.stderr in logcat): {'yes' if runtime_in_logs else 'no'}",
@@ -327,21 +375,21 @@ def step_timer_fires_while_away(serial: str, logger: List[str]) -> bool:
     inject_scanout(
         serial, "set a timer for eight seconds and tell me when it fires"
     )
-    if not expect_in_logs(serial, "timer set for 8 seconds", within_s=12.0):
+    if not expect_in_logs(serial, "timer set for 8 seconds", within_s=ack_window()):
         _log_red(logger, "  timer ack missing before teardown")
         return False
     run("-s", serial, "shell", "am", "force-stop", SHUGOCORE_PACKAGE)
     _log(logger, "  force-stop issued; waiting for timer expiry+restart")
     time.sleep(10.0)
     ensure_service_started(serial)
-    ok = expect_in_logs(serial, "while you were away", within_s=12.0)
+    ok = expect_in_logs(serial, "while you were away", within_s=restart_window())
     _log(logger, "  'while you were away' log line:", "FOUND" if ok else "MISSING")
     return ok
 
 def step_fact_stores(serial: str, logger: List[str]) -> bool:
     """Assert an OS-level fact landed in SQLite."""
     inject_scanout(serial, "remember that my favorite color is midnight blue")
-    ok = expect_in_logs(serial, "I'll remember", within_s=12.0)
+    ok = expect_in_logs(serial, "I'll remember", within_s=ack_window())
     _log(logger, "  \"I'll remember\" log line:", "FOUND" if ok else "MISSING")
     return ok
 
@@ -350,14 +398,14 @@ def step_memory_question(serial: str, logger: List[str]) -> bool:
     """Ask a memory question and confirm the answer uses memory content."""
     clear_logcat(serial)
     inject_transcript(serial, "remember that my favorite color is midnight blue")
-    time.sleep(3.0)
+    time.sleep(ack_window() * 0.5)
     before = set(log_lines_containing(serial, "midnight blue"))
     # "recall my favorite color" is a deterministic recall command whose
     # spoken reply carries the stored fact. ("remind me what my favorite
     # color is" would classify to the clarify handler and reply
     # "Remember what?" instead of the fact.)
     inject_transcript(serial, "recall my favorite color")
-    time.sleep(3.0)
+    time.sleep(ack_window() * 0.5)
     after = log_lines_containing(serial, "midnight blue")
     ok = len(after) > len(before) and any(
         "midnight blue" in ln.lower() for ln in after
@@ -370,7 +418,7 @@ def step_fact_survives_restart(serial: str, logger: List[str]) -> bool:
     """Seed a fact, force-stop, restart, ask, and confirm the fact survives."""
     ensure_service_started(serial)
     inject_scanout(serial, "remember that my favorite color is midnight blue")
-    if not expect_in_logs(serial, "I'll remember", within_s=12.0):
+    if not expect_in_logs(serial, "I'll remember", within_s=ack_window()):
         _log_red(logger, "  fact not stored before teardown")
         return False
     run("-s", serial, "shell", "am", "force-stop", SHUGOCORE_PACKAGE)
@@ -379,38 +427,50 @@ def step_fact_survives_restart(serial: str, logger: List[str]) -> bool:
     ensure_service_started(serial)
     # The agent loop must be live before the recall can be answered — an
     # observation injected during re-initialisation is dropped ("no agent").
-    if not wait_for_agent_loop(serial, within_s=30.0):
+    if not wait_for_agent_loop(serial, within_s=restart_window()):
         _log_red(logger, "  agent loop did not resume after restart")
         return False
     inject_transcript(serial, "recall my favorite color")
-    time.sleep(4.0)
-    ok = expect_in_logs(serial, "midnight blue", within_s=12.0)
+    time.sleep(ack_window() * 0.5)
+    ok = expect_in_logs(serial, "midnight blue", within_s=ack_window())
     _log(logger, "  fact survives restart:", "FOUND" if ok else "MISSING")
     return ok
 
 
 def step_full_teardown_announced(serial: str, logger: List[str]) -> bool:
     """Full teardown round-trip: seed timers/facts, force-stop, restart,
-    and confirm the agent announces what was restored."""
+    and confirm the agent announces what was restored.
+
+    Ordering matters: the fact is seeded FIRST and the timer LAST, then the
+    force-stop fires immediately after the timer ack.  With a real on-device
+    model each ack costs one decision (~30-60 s); if the timer is seeded
+    first, the 8 s timer expires while the agent is still alive, is consumed
+    by the live loop, and the restart has nothing missed to announce.
+    """
     ensure_service_started(serial)
-    inject_scanout(serial, "set a timer for eight seconds")
-    if not expect_in_logs(serial, "timer set for 8 seconds", within_s=12.0):
-        _log_red(logger, "  timer ack missing before teardown")
-        return False
     inject_scanout(serial, "remember that my middle name is June")
-    if not expect_in_logs(serial, "I'll remember", within_s=12.0):
+    # First ack after the cadence measurement: the measurement injects its own
+    # transcripts, so this ack can queue behind 1-2 pending decisions.  On a
+    # ~50 s cadence a single ack_window (2.5x cadence) is not enough; allow
+    # 4 cadences before declaring the seed lost.
+    first_ack = max(ack_window() * 2.0, _CADENCE_S * 4.0)
+    if not expect_in_logs(serial, "I'll remember", within_s=first_ack):
         _log_red(logger, "  fact store ack missing before teardown")
+        return False
+    inject_scanout(serial, "set a timer for eight seconds")
+    if not expect_in_logs(serial, "timer set for 8 seconds", within_s=ack_window()):
+        _log_red(logger, "  timer ack missing before teardown")
         return False
     run("-s", serial, "shell", "am", "force-stop", SHUGOCORE_PACKAGE)
     _log(logger, "  force-stop issued; waiting for timer expiry + restart")
     time.sleep(10.0)
     ensure_service_started(serial)
-    ok1 = expect_in_logs(serial, "while you were away", within_s=12.0)
+    ok1 = expect_in_logs(serial, "while you were away", within_s=restart_window())
     _log(logger, "  'while you were away' after restart:", "FOUND" if ok1 else "MISSING")
     clear_logcat(serial)
     inject_transcript(serial, "what is my middle name")
-    time.sleep(4.0)
-    ok2 = expect_in_logs(serial, "june", within_s=12.0)
+    time.sleep(ack_window() * 0.5)
+    ok2 = expect_in_logs(serial, "june", within_s=ack_window())
     _log(logger, "  restored fact (june) after restart:", "FOUND" if ok2 else "MISSING")
     return ok1 and ok2
 
@@ -473,35 +533,102 @@ def step_personality_growth_log(serial: str, logger: List[str]) -> bool:
         return False
     _log(logger, "  pre-growth generation:", before.generation)
 
-    # Mix of commands / questions / chitchat: every non-empty injected
-    # transcript counts as one growth turn inside the agent, so the ~32
-    # injections below cross the 25-turn GROWTH_EVERY cadence.
-    turns = [
-        "remember that I adopted a rescue greyhound named June",
-        "you are being very kind today",
-        "set a timer for thirty seconds",
-        "thank you for remembering things about me",
-        "recall what you know about June",
-        "tell me a joke",
+    # v1.28.3: alternating-burst growth drive.
+    #
+    # The old praise-only mix saturates: after repeated smoke runs the
+    # on-device model sits at generation N with warmth pinned at 1.0 (and
+    # verbosity/humor possibly clamped too), so every praise delta clamps to
+    # zero and compare_models reports drift 0.0 forever (NONE/STALE).
+    #
+    # Fix: alternate PRAISE / CRITICIZE bursts.  Deltas carry the net sign of
+    # the current burst's explicit feedback (personality/growth.py
+    # FEEDBACK_PATTERNS) and drift is unsigned RMS distance, so:
+    #   - traits saturated at 1.0 move under the CRITICIZE burst
+    #   - traits saturated at 0.0 move under the PRAISE burst
+    #   - mid-range traits move under either
+    # The initial burst direction is chosen from the live snapshot: whichever
+    # direction has more total room across the trait vector.  The loop
+    # recomputes compare_models against the ORIGINAL pre-growth snapshot
+    # after every generation advance, passes on the first drift > 0, and
+    # flips the pool between bursts so consecutive generations pull in
+    # opposite directions.
+    praise_turns = [
+        # warmth+ (explicit praise)
+        "thank you, that really helps",
+        "you're the best companion I could ask for",
+        "you're so kind to remember June",
+        # verbosity+
+        "tell me more, go on",
+        # humor+
+        "that's hilarious, you're funny",
+        "good one, love your jokes",
+        # questions -> curiosity, facts -> warmth, commands -> proactivity
         "what time is it",
-        "you are very helpful",
         "what is my favorite color",
+        "recall what you know about June",
         "remember that I like sunrise walks",
     ]
-    grew = False
+    criticize_turns = [
+        # warmth-
+        "you're so cold today",
+        "how rude of you",
+        "you're heartless",
+        "you don't care about any of this",
+        # verbosity-
+        "be brief, less detail",
+        "stop rambling, you're too long",
+        "shorter answers please",
+        # humor-
+        "that was a bad joke, not funny",
+        "you're cringe",
+        "too silly",
+    ]
+
+    room_up = sum(1.0 - t.value for t in before.traits.values())
+    room_down = sum(t.value for t in before.traits.values())
+    start_praise = room_up >= room_down
+    _log(logger, "  pre-growth room up/down:",
+         f"{room_up:.2f}/{room_down:.2f} -> start",
+         "PRAISE" if start_praise else "CRITICIZE", "burst")
+
+    import os as _os
+    total_window = float(_os.environ.get("SHUGOCORE_SMOKE_GROWTH_WINDOW_S", "1500"))
+    drive_every = max(1.5, _CADENCE_S * 0.5)
+
+    pool = praise_turns if start_praise else criticize_turns
+    burst = 0
+    t_start = time.time()
+    idx = 0
     after = None
-    for idx in range(32):
-        inject_transcript(serial, turns[idx % len(turns)], wait_s=1.5)
-        if (idx + 1) % 3 != 0:
+    ok = False
+    while time.time() - t_start < total_window:
+        inject_transcript(serial, pool[idx % len(pool)], wait_s=0.2)
+        idx += 1
+        if idx % 3 != 0:
             continue
         probe = read_prod_model(serial)
         if probe is not None and probe.generation > before.generation:
             after = probe
-            grew = True
-            break
+            try:
+                comparison = PersonalityModel.compare_models(before, after)
+                drift = comparison.get("drift")
+            except Exception as exc:
+                _log_red(logger, "  compare_models raised:", exc)
+                drift = None
+            if drift is not None and drift > 0.0:
+                ok = True
+                break
+            # A generation advanced but every delta clamped to zero: flip
+            # the burst emphasis and keep driving until the window expires.
+            burst += 1
+            pool = praise_turns if burst % 2 == 0 else criticize_turns
+            _log(logger, "  drift still 0 after generation",
+                 after.generation, "-> switching to",
+                 "PRAISE" if burst % 2 == 0 else "CRITICIZE", "burst")
+        time.sleep(drive_every)
 
-    if not grew:
-        _log_red(logger, "  generation did not advance after injections")
+    if not ok:
+        _log_red(logger, "  growth drift did not advance from 0.0")
         return False
     _log(logger, "  post-growth generation:", after.generation)
 
@@ -610,6 +737,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     serial = args.device
     ensure_connected(serial)
     ensure_service_started(serial)
+
+    # v1.28.2: sample the decision cadence once so phase windows tolerate
+    # real on-device model latency (delegation fix).  Sampled BEFORE the
+    # phases so service_alive + every window scale correctly.
+    global _CADENCE_S
+    _CADENCE_S = measure_decision_cadence(serial)
+    _cad_log = f"measured decision cadence: {_CADENCE_S:.1f}s"
+    print(_cad_log, flush=True)
 
     results: List[Dict[str, Any]] = []
     run_log: List[str] = []

@@ -96,5 +96,45 @@ class RunHarnessResultTest(unittest.TestCase):
         self.assertIsNone(payload)
 
 
+class HarnessPhaseWiringTest(unittest.TestCase):
+    """The device harness and the training orchestrator must agree.
+
+    `recursive_loop_training.py` validates `--phases` against its own
+    ALL_PHASES list and derives `ok` from `passed == total_phases`, so a phase
+    that exists in only one of the two would either be rejected as unknown or
+    silently reduce the expected total. Importing the harness is safe: it does
+    no work at import time.
+    """
+
+    @staticmethod
+    def _harness_phases():
+        import android_device_smoke as smoke
+        return [p["name"] for p in smoke.PHASES], smoke.STEP_BY_NAME
+
+    def test_every_harness_phase_has_a_step(self):
+        names, steps = self._harness_phases()
+        missing = [n for n in names if n not in steps]
+        self.assertEqual(missing, [], f"phases without a step: {missing}")
+        self.assertGreater(len(names), 8, "harness looks truncated")
+
+    def test_orchestrator_knows_every_harness_phase(self):
+        names, _ = self._harness_phases()
+        self.assertEqual(
+            sorted(rlt.ALL_PHASES), sorted(names),
+            "ALL_PHASES drifted from the harness PHASES list")
+
+    def test_nrr_phase_is_wired_and_marker_based(self):
+        """The NRR phase is the only automated proof that the packaged model
+        asset, the filesDir extraction and libnrr_jni/libonnxruntime all work
+        inside the shipped app, so its presence is guarded."""
+        names, steps = self._harness_phases()
+        self.assertIn("nrr_native_ready", names)
+        self.assertIn("nrr_native_ready", rlt.ALL_PHASES)
+        step = steps["nrr_native_ready"]
+        src = __import__("inspect").getsource(step)
+        self.assertIn("NRR self-test ok", src)
+        self.assertIn("force-stop", src)
+
+
 if __name__ == "__main__":
     unittest.main()

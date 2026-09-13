@@ -118,6 +118,13 @@ contract layer stays binary-free.
   exposed via `PerceptionState.unavailableVisionNote()`, surfaced by the
   SENSORS tab, and that the camera path stays wired end-to-end to the NRR
   render probe.
+- `tests/test_android_lifecycle_stress.py`: fixed the last flaky test in the
+  suite. `test_200_full_lifecycle_cycles` asserted
+  `threading.active_count() == baseline`, which also fails when an *unrelated*
+  background thread finishes during the 200 cycles (observed `1 != 2`, roughly
+  one full-suite run in three). The intent is "no leak", so it now asserts
+  `<= baseline` — a leak still fails, an unrelated thread exiting no longer
+  does. Three consecutive full-suite runs are now green (934 tests).
 
 ### Version
 - `versionCode` 16 -> 17, `versionName` 1.28.2 -> 1.29.0 in version.py,

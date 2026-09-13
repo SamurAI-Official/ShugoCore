@@ -66,7 +66,14 @@ class TestLifecycleChurn(unittest.TestCase):
             self.assertEqual(rt.state, "started")
             rt.on_destroy()
             self.assertEqual(rt.state, "destroyed")
-        self.assertEqual(threading.active_count(), baseline)
+        # No leak: the churn must not leave threads behind. Assert on an
+        # INCREASE only. Another test's background thread can legitimately
+        # finish during these 200 cycles, which lowers the count (observed:
+        # baseline 2 -> 1) and made the old equality assert flake in ~1 run in
+        # 3 -- for a reason that has nothing to do with this code.
+        self.assertLessEqual(
+            threading.active_count(), baseline,
+            "lifecycle churn leaked threads")
 
     def test_concurrent_pause_resume_race(self):
         self.rt.on_create()

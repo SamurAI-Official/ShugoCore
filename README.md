@@ -3,9 +3,9 @@
 > A continuous orchestration layer for synthetic functional agency.
 
 [![PyPI](https://img.shields.io/pypi/v/shugocore)](https://pypi.org/project/shugocore/)
-![Release](https://img.shields.io/badge/release-v1.29.0-blue)
-![Tests](https://img.shields.io/badge/tests-603%20passing-brightgreen)
-![Python](https://img.shields.io/badge/python-3.9%E2%80%933.12-blue)
+![Release](https://img.shields.io/badge/release-v1.29.1-blue)
+![Tests](https://img.shields.io/badge/tests-965%20passing-brightgreen)
+![Python](https://img.shields.io/badge/python-3.9%E2%80%933.13-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android%20%28Termux%2FChaquopy%29-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -18,6 +18,29 @@ Where a chat model produces text, a functionally agentic system produces
 that become reward signals, and experience that consolidates into durable
 knowledge. ShugoCore is the layer that makes that cycle safe, auditable, and
 able to run continuously.
+
+## Project scope
+
+**In scope.** A framework for *functionally agentic* systems: a single
+policy-gated execution path (`DecisionEngine.execute_task`) shared by
+interactive tasks, autonomous cycles and the task queue; a four-tier memory
+architecture with consolidation and salience decay; pluggable model backends
+(Ollama, llama.cpp, any OpenAI-compatible endpoint, on-device Android
+inference); tool/API execution with allowlisted side effects and consent +
+operator approval; a tamper-evident audit chain; a mobile/Android node fleet
+over ROS 2 transports; ShugoNet multi-agent messaging; and the desktop server
+that exposes the engine over the Ollama-compatible wire contract.
+
+**Out of scope.** ShugoCore is not a model, a training framework, or an
+inference engine - it orchestrates backends and vendors runtimes (llama.cpp,
+NRR, ONNX Runtime) for the Android node rather than producing weights. It is
+not a general-purpose RPA/iPaaS platform, and it claims no autonomy beyond the
+authority it is given: side effects are bounded by Tier 3 invariants, consent
+grants, operator approval and capability allowlists.
+
+**Compatibility.** The public Python surface is frozen across the 1.x series -
+no breaking changes in any 1.x release; deprecated functionality is removed
+only after at least one minor release of deprecation.
 
 ## Design principles
 
@@ -158,6 +181,9 @@ defeats nothing:
 | Honest execution | Unimplemented side-effecting actions return `not_implemented` - never simulated success - so the reinforcement signal cannot reward no-ops |
 | Mobile fleet isolation | Android publishers are confined to `/shugocore/mobile/#`; `operator_node` teleop is clamped and relayed - phones never write actuation topics |
 | Local inference confinement | On-device model endpoints must be loopback HTTP(S) on an allowlisted port (`CapabilityRegistry.validate_model_endpoint`) |
+| Desktop server exposure | `shugocore-server` binds loopback by default and refuses a non-loopback bind unless `SHUGOCORE_SERVER_TOKEN` is set (constant-time bearer auth on every route except `/health`) or `--allow-unauthenticated` is passed; per-client rate limiting, 1 MB body cap, loopback-only CORS |
+| Mesh transport bounds | ShugoNet peer runtime caps inbound NDJSON frames (1 MiB), validates message shape before dispatch, and supports an optional shared-secret mesh token |
+| Backend egress validation | Model backends accept only http(s) URLs with a host and no embedded credentials, never follow redirects, and cap responses at 256 KiB |
 
 Key properties:
 
@@ -549,8 +575,17 @@ for fact in candidates:
 ## Testing
 
 ```bash
-python -m unittest discover -s tests -v     # 504 tests, no native deps
+python -m unittest discover -s tests -v     # 965 tests, no native deps
+python -m compileall -q .                   # byte-compile every module
+ruff check .                                # syntax errors + undefined names
+bandit -q -r . -x ./.venv,./.llama_build,./platforms,./dist,./build,./tests -lll
 ```
+
+CI runs the full suite on Python 3.9-3.13 plus a blocking `lint` job (`ruff`,
+`E9`/`F821`) and a `security-scan` job (`bandit` high severity blocking, medium
+advisory); dependency advisories are surfaced by `pip-audit`. See
+[`SECURITY.md`](SECURITY.md) for the disclosure process and the invariants to
+attack.
 
 Beyond security and integration regression tests (v1.2.0), the suite includes
 hardware-facing stress suites:
@@ -662,7 +697,7 @@ Runtime artifacts (`semantic_memory.db`, logs) are local and gitignored.
 - PostgreSQL + pgvector storage option for shared multi-process deployments
 - Entity/relation graphs alongside vector similarity in Tier 2
 - Per-agent memory policies (isolation vs. sharing profiles)
-- HMAC-signed audit chains and remote log shipping
+- HMAC-signed audit chains (shipped in 1.20) - remaining: remote log shipping
 - Human approval UI beyond the programmatic broker API
 - Operator approval surface on the Android SECURITY tab (ApprovalBroker integration)
 - Android client bearer-token support so a token-protected desktop server can
@@ -673,6 +708,8 @@ Runtime artifacts (`semantic_memory.db`, logs) are local and gitignored.
 - Android llama.cpp-compatible host server for Termux (self-hosted launcher path)
 - NPU bring-up on real devices (Snapdragon Hexagon / Dimensity APU) against the acceleration ladder
 - Fleet dashboard for mobile nodes: pairing state, thermal headroom, offload telemetry
+- Triage the remaining bandit medium findings (B608 SQL construction in `pg_memory.py`)
+- Signed release artifacts + SBOM publication
 
 ## Contributing
 

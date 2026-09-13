@@ -4,7 +4,7 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
-## [Unreleased] — network-surface hardening
+## [1.29.1] - 2026-09-13 — network-surface hardening
 
 Bounded the two network-facing surfaces that previously accepted unbounded or
 unauthenticated input. No frozen Python API changed; all additions are

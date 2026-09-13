@@ -21,12 +21,15 @@ CLI::
 import hashlib
 import hmac
 import json
+import logging
 import sys
 import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from security import canonical_hash, canonical_json, sanitize_text
+
+logger = logging.getLogger(__name__)
 
 GENESIS_HASH = "0" * 64
 

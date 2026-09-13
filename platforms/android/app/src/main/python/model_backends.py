@@ -20,6 +20,7 @@ import logging
 import os
 import re
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import requests
 
@@ -30,6 +31,9 @@ logger = logging.getLogger(__name__)
 # Model names must not start with '-' (argument injection) and stay bounded.
 MODEL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$")
 
+# Hard cap on any single backend response we buffer into memory.
+MAX_RESPONSE_BYTES = 262_144  # 256 KiB
+
 
 def validate_model_name(name: str) -> bool:
     return bool(isinstance(name, str) and MODEL_NAME_PATTERN.match(name))
@@ -37,6 +41,56 @@ def validate_model_name(name: str) -> bool:
 
 class BackendError(RuntimeError):
     """Raised when a backend cannot complete a generation request."""
+
+
+def _validated_base_url(url: str) -> str:
+    """Normalize and validate a backend base URL.
+
+    Only http/https is accepted, the host must be present, and embedded
+    credentials are refused, so a config value cannot smuggle a ``file://``
+    read or a userinfo payload into the transport.
+    """
+    text = str(url or "").strip()
+    try:
+        parsed = urlparse(text)
+    except ValueError:
+        raise BackendError(f"unparseable backend URL: {url!r}")
+    if parsed.scheme not in ("http", "https"):
+        raise BackendError(
+            f"backend URL scheme '{parsed.scheme or 'none'}' is not allowed "
+            f"(http/https only)")
+    if not parsed.hostname:
+        raise BackendError("backend URL has no host")
+    if parsed.username or parsed.password:
+        raise BackendError("credentials embedded in a backend URL are not allowed")
+    return text.rstrip("/")
+
+
+def _check_response(response: Any) -> None:
+    """Reject redirects outright (a redirect could bypass an allowlist)."""
+    if 300 <= response.status_code < 400:
+        raise BackendError("backend returned a redirect; refused to follow it")
+    response.raise_for_status()
+
+
+def _read_bounded(response: Any, cap: int = MAX_RESPONSE_BYTES) -> bytes:
+    """Read a streaming response, refusing to buffer more than ``cap`` bytes."""
+    chunks: List[bytes] = []
+    total = 0
+    for chunk in response.iter_content(chunk_size=65536):
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > cap:
+            raise BackendError(
+                f"backend response exceeded {cap} bytes (oversized body refused)")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _decode_json(raw: bytes) -> Dict[str, Any]:
+    data = json.loads(raw.decode("utf-8"))
+    return data if isinstance(data, dict) else {}
 
 
 class BaseBackend:
@@ -57,25 +111,34 @@ class OllamaBackend(BaseBackend):
     name = "ollama"
 
     def __init__(self, base_url: str = "http://127.0.0.1:11434", timeout: float = 120.0):
-        self.base_url = str(base_url).rstrip("/")
+        self.base_url = _validated_base_url(base_url)
         self.timeout = float(timeout)
 
     def generate(self, model_id: str, prompt: str, timeout: float = None) -> str:
         if not validate_model_name(model_id):
             raise BackendError(f"invalid model name: {model_id!r}")
-        response = requests.post(
+        with requests.post(
             f"{self.base_url}/api/generate",
             json={"model": model_id, "prompt": str(prompt), "stream": False},
             timeout=timeout or self.timeout,
-        )
-        response.raise_for_status()
-        return str(response.json().get("response", ""))
+            allow_redirects=False,
+            stream=True,
+        ) as response:
+            _check_response(response)
+            payload = _decode_json(_read_bounded(response))
+        return str(payload.get("response", ""))
 
     def list_models(self) -> List[str]:
-        response = requests.get(f"{self.base_url}/api/tags", timeout=self.timeout)
-        response.raise_for_status()
+        with requests.get(
+            f"{self.base_url}/api/tags",
+            timeout=self.timeout,
+            allow_redirects=False,
+            stream=True,
+        ) as response:
+            _check_response(response)
+            payload = _decode_json(_read_bounded(response))
         return [str(entry.get("name", ""))
-                for entry in response.json().get("models", [])
+                for entry in payload.get("models", [])
                 if isinstance(entry, dict) and entry.get("name")]
 
 
@@ -89,7 +152,7 @@ class OpenAICompatibleBackend(BaseBackend):
 
     def __init__(self, base_url: str, api_key_env: str = "OPENAI_API_KEY",
                  timeout: float = 30.0):
-        self.base_url = str(base_url).rstrip("/")
+        self.base_url = _validated_base_url(base_url)
         self.api_key_env = str(api_key_env)
         self.timeout = float(timeout)
 
@@ -97,15 +160,18 @@ class OpenAICompatibleBackend(BaseBackend):
         api_key = os.environ.get(self.api_key_env)
         if not api_key:
             raise BackendError(f"environment variable {self.api_key_env} is not set")
-        response = requests.post(
+        with requests.post(
             f"{self.base_url}/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}"},
             json={"model": model_id, "stream": False,
                   "messages": [{"role": "user", "content": str(prompt)}]},
             timeout=timeout or self.timeout,
-        )
-        response.raise_for_status()
-        choices = response.json().get("choices", [])
+            allow_redirects=False,
+            stream=True,
+        ) as response:
+            _check_response(response)
+            payload = _decode_json(_read_bounded(response))
+        choices = payload.get("choices", [])
         if not choices:
             return ""
         return str(choices[0].get("message", {}).get("content", ""))

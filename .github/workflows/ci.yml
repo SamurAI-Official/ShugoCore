@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,6 +22,39 @@ jobs:
         run: python -m compileall -q .
       - name: Run security & integration tests
         run: python -m unittest discover -s tests -v
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: pip install 'ruff>=0.6'
+      - name: Ruff (syntax errors + undefined names)
+        run: ruff check .
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install bandit
+        run: pip install 'bandit>=1.7'
+      - name: Bandit - high severity (blocking)
+        run: >-
+          bandit -q -r .
+          -x ./.venv,./.llama_build,./platforms,./dist,./build,./tests
+          -lll
+      - name: Bandit - medium severity (advisory)
+        continue-on-error: true
+        run: >-
+          bandit -q -r .
+          -x ./.venv,./.llama_build,./platforms,./dist,./build,./tests
+          -ll
 
   dependency-audit:
     runs-on: ubuntu-latest

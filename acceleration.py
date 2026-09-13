@@ -322,7 +322,9 @@ class AccelerationPolicy:
             return
         try:
             self._audit.append(event_type, payload)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Never silently drop an audit write: the auditability invariant
+            # depends on failures being visible.
+            logger.warning("audit append failed for '%s': %s", event_type, exc)
 
 

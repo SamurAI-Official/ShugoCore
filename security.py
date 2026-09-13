@@ -37,10 +37,32 @@ _SECRET_KEY_PATTERN = re.compile(
     r"(api[-_]?key|apikey|authorization|token|secret|password|credential)",
     re.IGNORECASE,
 )
+# Captures ``label<sep>[scheme ]secret`` so the whole credential is masked,
+# including the ``Bearer <token>`` form (the old pattern's value group stopped
+# at the first space, so only "Bearer" was redacted and the token leaked).
 _SECRET_IN_TEXT_PATTERN = re.compile(
-    r"(api[-_]?key|apikey|token|access_token|password|authorization)(\s*[=:]\s*)([^\s&,\"']+)",
+    r"(?P<label>api[-_]?key|apikey|access_token|token|password|authorization)"
+    r"(?P<sep>\s*[=:]\s*)"
+    r"(?:(?P<scheme>bearer|basic|token)\s+)?"
+    r"(?P<secret>[^\s&,\"']+)",
     re.IGNORECASE,
 )
+# Unicode bidi/zero-width/format characters are invisible in logs and prompts,
+# so they are stripped to prevent spoofing and prompt-injection tricks.
+_UNICODE_INVISIBLE_PATTERN = re.compile(
+    "[\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]"
+)
+# Environment-variable-shaped names (bare fallback lookup guard).
+_ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+
+
+def _redact_secret_match(match: "re.Match") -> str:
+    """Preserve the ``label<sep>`` (and scheme) but mask the credential."""
+    prefix = f"{match.group('label')}{match.group('sep')}"
+    scheme = match.group("scheme")
+    if scheme:
+        prefix += scheme + " "
+    return prefix + "***REDACTED***"
 
 
 # ---------------------------------------------------------------------------
@@ -77,9 +99,7 @@ def redact(value: Any) -> Any:
     if isinstance(value, tuple):
         return tuple(redact(item) for item in value)
     if isinstance(value, str):
-        return _SECRET_IN_TEXT_PATTERN.sub(
-            lambda match: f"{match.group(1)}{match.group(2)}***REDACTED***", value
-        )
+        return _SECRET_IN_TEXT_PATTERN.sub(_redact_secret_match, value)
     return value
 
 
@@ -100,11 +120,13 @@ class RedactionFilter(logging.Filter):
 # ---------------------------------------------------------------------------
 def sanitize_text(text: Any, max_length: int = MAX_TEXT_LENGTH) -> str:
     """
-    Collapse control characters (prevents log/event injection), collapse the
-    resulting whitespace runs, and hard-cap length (prevents memory
-    pollution through the storage layers).
+    Collapse control characters (prevents log/event injection), strip
+    invisible Unicode bidi/zero-width format characters (prevents log and
+    prompt spoofing), collapse the resulting whitespace runs, and hard-cap
+    length (prevents memory pollution through the storage layers).
     """
     cleaned = re.sub(r"[\x00-\x1f\x7f]", " ", str(text))
+    cleaned = _UNICODE_INVISIBLE_PATTERN.sub("", cleaned)
     cleaned = re.sub(r" {2,}", " ", cleaned)
     return cleaned.strip()[: max(0, int(max_length))]
 
@@ -130,14 +152,19 @@ class SecretResolver:
             self._overrides[str(name)] = str(value)
 
     def get(self, name: str, default: Optional[str] = None) -> Optional[str]:
+        name = str(name)
         with self._lock:
-            override = self._overrides.get(str(name))
+            override = self._overrides.get(name)
         if override:
             return override
-        env_value = os.environ.get(self._env_prefix + str(name).upper())
+        env_value = os.environ.get(self._env_prefix + name.upper())
         if env_value:
             return env_value
-        return os.environ.get(str(name).upper()) or default
+        # Bare fallback only for env-var-shaped names, so an arbitrary caller
+        # string cannot be used to probe unrelated environment variables.
+        if _ENV_NAME_PATTERN.match(name):
+            return os.environ.get(name.upper()) or default
+        return default
 
     def require(self, name: str) -> str:
         value = self.get(name)

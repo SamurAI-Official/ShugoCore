@@ -227,6 +227,44 @@ class SimulatorTest(unittest.TestCase):
         self.assertEqual(stats["assigned"], 2)
 
 
+class KVTransportAdapterTest(unittest.TestCase):
+    """The DDS transport adapter used to reference undefined protocol helpers
+    (F821) so every method raised NameError; these pin the fixed behavior."""
+
+    def setUp(self):
+        from kv_mesh.allocator import KVAllocator
+        from mobile_nodes import KVTransportAdapter, MobileNodeRegistry
+        self.registry = MobileNodeRegistry(audit=None)
+        self.registry.pair("pixel8")
+        self.allocator = KVAllocator()
+        self.adapter = KVTransportAdapter(self.registry, self.allocator,
+                                          audit=None)
+
+    def test_advertise_typed_and_registers_node(self):
+        msg = self.adapter.advertise("pixel8", 1000, 4000)
+        self.assertEqual(proto.msg_type(msg), "KVAdvertise")
+        self.adapter.handle_inbound("pixel8", "kv/advertise", msg)
+        self.assertEqual(self.allocator.node_capacity("pixel8"), (1000, 0))
+
+    def test_publish_to_unpaired_is_refused_without_raising(self):
+        msg = self.adapter.advertise("stranger", 1, 2)
+        self.assertEqual(proto.msg_type(msg), "KVAdvertise")
+
+    def test_heartbeat_and_evict_messages(self):
+        self.assertEqual(proto.msg_type(self.adapter.heartbeat("pixel8")),
+                         "KVHeartbeat")
+        self.assertEqual(proto.msg_type(self.adapter.evict("pixel8", "s-1")),
+                         "KVEvict")
+
+    def test_handle_inbound_unknown_type_returns_none(self):
+        self.assertIsNone(self.adapter.handle_inbound(
+            "pixel8", "kv/x", {"type": "Nonsense"}))
+
+    def test_handle_inbound_from_unpaired_is_refused(self):
+        self.assertIsNone(self.adapter.handle_inbound(
+            "stranger", "kv/advertise", {"type": "KVAdvertise"}))
+
+
 if __name__ == "__main__":
     unittest.main()
 

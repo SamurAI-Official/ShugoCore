@@ -3,10 +3,13 @@
 Safe, fast, non-hanging tests: no real TCP connections, no port binding.
 Uses the classes directly with verify-only assertions.
 """
+import socket
+import threading
+import time
 import unittest
 from unittest.mock import patch, MagicMock
 
-from agent_runtime import ShugonetAgentRuntime, _PeerConnection
+from agent_runtime import ShugonetAgentRuntime, _PeerConnection, _PeerServer
 
 
 class TestShugonetAgentRuntime(unittest.TestCase):
@@ -116,6 +119,79 @@ class TestPeerConnection(unittest.TestCase):
         """Connected property should be False before connect."""
         conn = _PeerConnection("test", "127.0.0.1", 19999)
         self.assertFalse(conn.connected)
+
+
+class TestPeerServerHardening(unittest.TestCase):
+    """Frame-size bound, message validation and optional shared-secret gate."""
+
+    def setUp(self):
+        self.runtime = ShugonetAgentRuntime(
+            agent_id="hardening", host="127.0.0.1", port=0)
+
+    # -- _accepts ------------------------------------------------------------
+
+    def test_accepts_rejects_non_dict_and_missing_type(self):
+        server = _PeerServer(self.runtime, "127.0.0.1", 0)
+        self.assertFalse(server._accepts("not-a-dict"))
+        self.assertFalse(server._accepts(["send"]))
+        self.assertFalse(server._accepts({}))
+        self.assertFalse(server._accepts({"type": ""}))
+        self.assertFalse(server._accepts({"type": 7}))
+        self.assertTrue(server._accepts({"type": "send"}))
+
+    def test_accepts_enforces_token_when_configured(self):
+        server = _PeerServer(self.runtime, "127.0.0.1", 0, auth_token="mesh-key")
+        self.assertFalse(server._accepts({"type": "send"}))
+        self.assertFalse(server._accepts({"type": "send", "token": "wrong"}))
+        self.assertTrue(server._accepts({"type": "send", "token": "mesh-key"}))
+
+    def test_max_frame_bytes_clamped(self):
+        server = _PeerServer(self.runtime, "127.0.0.1", 0, max_frame_bytes=10)
+        self.assertEqual(server._max_frame_bytes, 1024)
+
+    def test_stamp_adds_token_only_when_configured(self):
+        self.assertEqual(self.runtime._stamp({"type": "send"}), {"type": "send"})
+        gated = ShugonetAgentRuntime(agent_id="g", host="127.0.0.1", port=0,
+                                     auth_token="mesh-key")
+        self.assertEqual(gated._stamp({"type": "send"}),
+                         {"type": "send", "token": "mesh-key"})
+
+    # -- live socket behavior ------------------------------------------------
+
+    def test_unterminated_oversized_frame_closes_connection(self):
+        server = _PeerServer(self.runtime, "127.0.0.1", 0, max_frame_bytes=1024)
+        client, server_sock = socket.socketpair()
+        thread = threading.Thread(
+            target=server._handle_client, args=(server_sock, ("local", 0)),
+            daemon=True)
+        thread.start()
+        client.sendall(b"x" * 4096)  # one frame, never terminated by \n
+        client.settimeout(2.0)
+        try:
+            data = client.recv(1024)
+        except socket.timeout:
+            data = None
+        client.close()
+        thread.join(timeout=2)
+        self.assertEqual(data, b"", "oversized unterminated frame must not accumulate")
+
+    def test_valid_message_dispatched_invalid_ignored(self):
+        received = []
+        self.runtime._dispatch_message = (
+            lambda msg, sock: received.append(msg))
+        server = _PeerServer(self.runtime, "127.0.0.1", 0)
+        client, server_sock = socket.socketpair()
+        thread = threading.Thread(
+            target=server._handle_client, args=(server_sock, ("local", 0)),
+            daemon=True)
+        thread.start()
+        client.sendall(b'{"type": "send", "id": "good"}\n')
+        time.sleep(0.2)
+        client.sendall(b'{"no_type": 1}\n')
+        time.sleep(0.2)
+        client.close()
+        thread.join(timeout=2)
+        self.assertEqual([m.get("id") for m in received], ["good"])
 
 
 if __name__ == "__main__":

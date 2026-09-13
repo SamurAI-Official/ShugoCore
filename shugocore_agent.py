@@ -690,6 +690,7 @@ class AndroidAgent:
         Safe to call when NRR is absent: reports available=false rather than
         raising, so the UI/diagnostics can show the truth.
         """
+        import json as _json
         r = self._nrr_renderer
         if r is None:
             return _json.dumps({"available": False,
@@ -1130,8 +1131,6 @@ class AndroidAgent:
             "gaze_direction": hctx.get("gaze_direction"),
             "speech_source": hctx.get("speech_source"),
         }
-
-        return {"status": "success", "asked": text, "delivered": delivered}
 
     def speak_test(self, text: Optional[str] = None) -> Dict[str, Any]:
         """Operator control (AGENT tab 'Test speech'): drives one speak

@@ -25,7 +25,11 @@ shugocore-server ──┬── /api/generate  ── backend ──┬─ Olla
 
 ```bash
 pip install shugocore
-shugocore-server --backend ollama --model qwen3.5:latest --host 0.0.0.0
+# Binding to a non-loopback address is an explicit decision (see
+# "Authentication & exposure" below). The bundled Android app does not send
+# an auth token yet, so LAN pairing uses the acknowledgement flag:
+shugocore-server --backend ollama --model qwen3.5:latest \
+    --host 0.0.0.0 --allow-unauthenticated
 ```
 
 Then in the Android app, enter `http://<desktop-ip>:<port>` in the
@@ -33,6 +37,34 @@ Then in the Android app, enter `http://<desktop-ip>:<port>` in the
 
 > If a local Ollama already owns port `11434`, pick another port:
 > `shugocore-server --port 11435` and enter `http://<desktop-ip>:11435`.
+
+## Authentication & exposure
+
+The server is **loopback by default** (`--host 127.0.0.1`). Binding to a
+non-loopback address is **refused** unless you either:
+
+* set `SHUGOCORE_SERVER_TOKEN` — every route except `/health` then requires
+  `Authorization: Bearer <token>` (or `X-ShugoCore-Token: <token>`); or
+* pass `--allow-unauthenticated` — an explicit acknowledgement that the
+  model and engine endpoints are reachable by anyone who can reach the port.
+
+```bash
+# Token-protected (API clients that can send an Authorization header):
+export SHUGOCORE_SERVER_TOKEN="$(openssl rand -hex 32)"
+shugocore-server --backend ollama --host 0.0.0.0
+
+# Android app pairing today (no client token support yet) — keep the port on
+# a trusted network / behind a firewall:
+shugocore-server --backend ollama --host 0.0.0.0 --allow-unauthenticated
+```
+
+Additional abuse controls, always on:
+
+* Per-client token-bucket rate limiting (`--rate-limit-per-minute`, default
+  240; `--rate-limit-burst`, default 120). `/health` is exempt.
+* Request bodies are capped at 1 MB and a negative/oversized
+  `Content-Length` is rejected without reading.
+* CORS preflight is answered only for loopback origins.
 
 ## Backends
 
@@ -66,7 +98,8 @@ brew install ollama
 ollama serve &        # or: brew services start ollama
 ollama pull qwen3.5:latest
 pip install shugocore
-shugocore-server --backend ollama --model qwen3.5:latest --host 0.0.0.0
+shugocore-server --backend ollama --model qwen3.5:latest \
+    --host 0.0.0.0 --allow-unauthenticated
 ```
 
 Allow incoming connections on the chosen port when macOS prompts.
@@ -77,7 +110,8 @@ Allow incoming connections on the chosen port when macOS prompts.
 curl -fsSL https://ollama.com/install.sh | sh
 ollama pull qwen3.5:latest
 pip install shugocore
-shugocore-server --backend ollama --model qwen3.5:latest --host 0.0.0.0
+shugocore-server --backend ollama --model qwen3.5:latest \
+    --host 0.0.0.0 --allow-unauthenticated
 ```
 
 For a systemd unit:
@@ -88,7 +122,11 @@ Description=ShugoCore desktop server
 After=network.target ollama.service
 
 [Service]
-ExecStart=/usr/local/bin/shugocore-server --backend ollama --model qwen3.5:latest --host 0.0.0.0
+# Option A: token-protected (clients must send the bearer token)
+#EnvironmentFile=/etc/shugocore.env   # SHUGOCORE_SERVER_TOKEN=...
+#ExecStart=/usr/local/bin/shugocore-server --backend ollama --model qwen3.5:latest --host 0.0.0.0
+# Option B: explicit unauthenticated LAN exposure (Android app pairing today)
+ExecStart=/usr/local/bin/shugocore-server --backend ollama --model qwen3.5:latest --host 0.0.0.0 --allow-unauthenticated
 Restart=on-failure
 User=<your-user>
 
@@ -105,7 +143,8 @@ Firewall: allow the server port (default 11434/11435):
 # Install Ollama from https://ollama.com/download/windows
 ollama pull qwen3.5:latest
 pip install shugocore
-shugocore-server --backend ollama --model qwen3.5:latest --host 0.0.0.0
+shugocore-server --backend ollama --model qwen3.5:latest \
+    --host 0.0.0.0 --allow-unauthenticated
 ```
 
 Add an inbound firewall rule for the port:
@@ -123,6 +162,14 @@ curl -X POST http://127.0.0.1:11434/api/generate \
 curl http://127.0.0.1:11434/api/v1/status
 curl -X POST http://127.0.0.1:11434/api/v1/task \
   -d '{"type":"text","content":"explain the plan"}'
+```
+
+When `SHUGOCORE_SERVER_TOKEN` is set, add the header to every route except
+`/health`:
+
+```bash
+curl -H "Authorization: Bearer $SHUGOCORE_SERVER_TOKEN" \
+  http://127.0.0.1:11434/api/v1/status
 ```
 
 The phone's own `AndroidBackend` uses these same endpoints, so pairing is

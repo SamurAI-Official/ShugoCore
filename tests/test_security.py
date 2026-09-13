@@ -279,6 +279,42 @@ class SecurityPrimitivesTestCase(unittest.TestCase):
         self.assertEqual(sanitize_text("bad\x00\x1b[31mtext"), "bad [31mtext")
         self.assertEqual(len(sanitize_text("a" * 5000, 100)), 100)
 
+    def test_sanitize_text_strips_invisible_unicode(self):
+        # Bidi override (U+202E), zero-width space (U+200B), ZWJ (U+200D),
+        # BOM (U+FEFF) and soft hyphen (U+00AD) must not survive.
+        self.assertEqual(sanitize_text("ig\u202enore\u200b!\u200d\ufeff\u00ad"),
+                         "ignore!")
+
+    def test_redaction_masks_bearer_token_fully(self):
+        masked = redact("Authorization: Bearer sk-live-abc123")
+        self.assertNotIn("sk-live-abc123", masked)
+        self.assertIn("***REDACTED***", masked)
+        basic = redact("authorization=Basic dXNlcjpwYXNz")
+        self.assertNotIn("dXNlcjpwYXNz", basic)
+
+    def test_redaction_masks_query_credentials(self):
+        masked = redact("https://h/v2?api_key=abc123&x=1")
+        self.assertNotIn("abc123", masked)
+        self.assertIn("x=1", masked)
+
+    def test_secret_resolver_rejects_non_env_shaped_names(self):
+        resolver = SecretResolver()
+        # Not an env-var-shaped name -> no bare-environment probing.
+        self.assertIsNone(resolver.get("not/a/valid name"))
+        self.assertEqual(resolver.get("not/a/valid name", "fallback"), "fallback")
+
+    def test_audit_chain_logs_malformed_line(self):
+        # _load_existing referenced an undefined `logger` (F821) before this
+        # fix: a malformed chain raised NameError instead of being reported.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "chain.jsonl")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("this is not json\n")
+            with self.assertLogs("audit", level="WARNING") as captured:
+                AuditChain(path)
+            self.assertTrue(any("malformed" in line for line in captured.output),
+                            captured.output)
+
     def test_validate_url_rules(self):
         hosts = ["api.example.com", "*.good.org"]
         self.assertTrue(validate_url("https://api.example.com/x", hosts)[0])

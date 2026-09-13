@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 import requests
 
@@ -162,6 +163,128 @@ class ServerTestCase(unittest.TestCase):
     def test_cors_preflight(self):
         resp = requests.options(f"{self.base}/api/v1/task", timeout=5)
         self.assertEqual(resp.status_code, 204)
+
+
+class _RunningServer:
+    """Spin one loopback server for the duration of a hardening test."""
+
+    def __init__(self, **kwargs):
+        self.port = _free_port()
+        engine = build_engine(
+            models=[{"id": "test-model", "type": "text",
+                     "backend": {"type": "stub"}}],
+            memory_db_path=":memory:", audit_path=None,
+        )
+        self.server = build_server(
+            engine=engine, backend=_build_backend("stub"),
+            model="test-model", host="127.0.0.1", port=self.port, **kwargs)
+        self.thread = threading.Thread(
+            target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        time.sleep(0.15)
+        self.base = f"http://127.0.0.1:{self.port}"
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+
+
+class ServerHardeningTestCase(unittest.TestCase):
+    """Auth, rate limiting, body-size and CORS hardening of the HTTP server."""
+
+    def tearDown(self):
+        if getattr(self, "_srv", None) is not None:
+            self._srv.close()
+
+    def _start(self, **kwargs):
+        self._srv = _RunningServer(**kwargs)
+        return self._srv
+
+    # -- authentication ------------------------------------------------------
+
+    def test_health_stays_open_with_token_configured(self):
+        srv = self._start(auth_token="s3cret")
+        resp = requests.get(f"{srv.base}/health", timeout=5)
+        self.assertEqual(resp.status_code, 200)
+
+    def test_other_routes_require_token(self):
+        srv = self._start(auth_token="s3cret")
+        self.assertEqual(
+            requests.get(f"{srv.base}/api/v1/status", timeout=5).status_code, 401)
+        self.assertEqual(
+            requests.get(f"{srv.base}/api/v1/status", timeout=5,
+                         headers={"Authorization": "Bearer wrong"}).status_code, 401)
+        ok = requests.get(f"{srv.base}/api/v1/status", timeout=5,
+                          headers={"Authorization": "Bearer s3cret"})
+        self.assertEqual(ok.status_code, 200)
+        alt = requests.get(f"{srv.base}/api/v1/status", timeout=5,
+                           headers={"X-ShugoCore-Token": "s3cret"})
+        self.assertEqual(alt.status_code, 200)
+
+    def test_token_exempts_nothing_else(self):
+        srv = self._start(auth_token="s3cret")
+        resp = requests.post(f"{srv.base}/api/v1/task",
+                             json={"type": "user", "content": "x"}, timeout=5)
+        self.assertEqual(resp.status_code, 401)
+
+    # -- rate limiting -------------------------------------------------------
+
+    def test_rate_limit_returns_429(self):
+        srv = self._start(rate_limit_per_minute=1, rate_limit_burst=1)
+        first = requests.get(f"{srv.base}/api/v1/status", timeout=5)
+        self.assertEqual(first.status_code, 200)
+        second = requests.get(f"{srv.base}/api/v1/status", timeout=5)
+        self.assertEqual(second.status_code, 429)
+
+    def test_health_not_rate_limited(self):
+        srv = self._start(rate_limit_per_minute=1, rate_limit_burst=1)
+        for _ in range(3):
+            self.assertEqual(
+                requests.get(f"{srv.base}/health", timeout=5).status_code, 200)
+
+    # -- body guards ---------------------------------------------------------
+
+    def test_negative_content_length_rejected_without_hanging(self):
+        srv = self._start()
+        with socket.create_connection(("127.0.0.1", srv.port), timeout=5) as sock:
+            sock.sendall(b"POST /api/v1/task HTTP/1.1\r\nHost: x\r\n"
+                         b"Content-Length: -1\r\nConnection: close\r\n\r\n")
+            sock.settimeout(5)
+            data = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+        self.assertIn(b"400", data.split(b"\r\n", 1)[0])
+        srv.close()
+        self._srv = None
+
+    # -- CORS ----------------------------------------------------------------
+
+    def test_cors_preflight_loopback_origin_echoed(self):
+        srv = self._start()
+        resp = requests.options(f"{srv.base}/api/v1/task", timeout=5,
+                                headers={"Origin": "http://127.0.0.1:5555"})
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"),
+                         "http://127.0.0.1:5555")
+
+    def test_cors_preflight_remote_origin_not_allowed(self):
+        srv = self._start()
+        resp = requests.options(f"{srv.base}/api/v1/task", timeout=5,
+                                headers={"Origin": "http://evil.example.com"})
+        self.assertEqual(resp.status_code, 204)
+        self.assertIsNone(resp.headers.get("Access-Control-Allow-Origin"))
+
+    # -- fail-closed bind ----------------------------------------------------
+
+    def test_main_refuses_nonloopback_without_token(self):
+        with mock.patch.dict(os.environ, {"SHUGOCORE_SERVER_TOKEN": ""}):
+            rc = shugocore_server.main(
+                ["--host", "0.0.0.0", "--port", "0", "--backend", "stub"])
+        self.assertEqual(rc, 2)
 
 
 class _RaiseBackend:

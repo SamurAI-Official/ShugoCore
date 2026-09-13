@@ -92,6 +92,20 @@ class TestRegistry(unittest.TestCase):
         ids = [n["device_id"] for n in h.registry.list_nodes()]
         self.assertEqual(ids, ["pixel8"])
 
+    def test_audit_failure_is_logged_not_swallowed(self):
+        h = _Harness()
+
+        class _Boom:
+            def append(self, *args, **kwargs):
+                raise RuntimeError("disk full")
+
+        h.registry.audit = _Boom()
+        with self.assertLogs("mobile_nodes", level="WARNING") as captured:
+            h.registry._audit("probe", {"x": 1})
+        self.assertTrue(
+            any("audit append failed" in line for line in captured.output),
+            captured.output)
+
 
 class TestTopicACL(unittest.TestCase):
     def test_unpaired_device_refused(self):

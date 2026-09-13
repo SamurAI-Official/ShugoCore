@@ -4,6 +4,110 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [Unreleased] — network-surface hardening
+
+Bounded the two network-facing surfaces that previously accepted unbounded or
+unauthenticated input. No frozen Python API changed; all additions are
+opt-in/backward-compatible defaults.
+
+### Desktop server (`shugocore_server.py`)
+- **Fail-closed exposure.** Binding to a non-loopback host is now refused
+  unless `SHUGOCORE_SERVER_TOKEN` is set or `--allow-unauthenticated` is passed
+  explicitly. With a token configured, every route except `/health` requires
+  `Authorization: Bearer <token>` (or `X-ShugoCore-Token`), compared in
+  constant time via `hmac.compare_digest`.
+- **Per-client rate limiting.** Token-bucket limiter (`security.RateLimiter`)
+  keyed by client address; `--rate-limit-per-minute` (default 240) and
+  `--rate-limit-burst` (default 120); `/health` exempt; overflow returns 429.
+- **Body-size guard fixed.** A negative `Content-Length` previously reached
+  `rfile.read(-1)` (drain-to-EOF); negative and oversized lengths are now
+  rejected before reading.
+- **CORS narrowed.** Preflight echoes `Access-Control-Allow-Origin` only for
+  loopback origins instead of `*`, and allows the auth headers.
+
+### ShugoNet peer runtime (`agent_runtime.py`, mirrored to the Android tree)
+- **Frame-size bound.** A peer that never sends a newline can no longer grow
+  the receive buffer without bound: a frame over `_MAX_FRAME_BYTES` (1 MiB,
+  `--max-frame-bytes`) closes the connection; oversized framed messages are
+  dropped.
+- **Message validation.** Inbound payloads must be dicts with a non-empty
+  string `type` before dispatch; malformed messages are logged and ignored.
+- **Optional shared-secret gate.** `auth_token` (`--auth-token-env`, default
+  `SHUGOCORE_MESH_TOKEN`) requires a matching `token` on inbound messages and
+  stamps it on outbound send/query/sync. Default off (unchanged behavior).
+
+### Model backends (`model_backends.py`, mirrored to the Android tree)
+- **Base-URL validation.** `OllamaBackend` / `OpenAICompatibleBackend` now
+  reject non-http(s) schemes (`file://`, `ftp://`), missing hosts and embedded
+  URL credentials at construction, instead of passing the raw config value to
+  the transport.
+- **Redirects refused.** Every request sets `allow_redirects=False` and a 3xx
+  response raises `BackendError`, so a redirect can no longer bounce a request
+  past an allowlist.
+- **Response size cap.** Bodies are streamed and refused past
+  `MAX_RESPONSE_BYTES` (256 KiB), bounding how much a hostile endpoint can make
+  the process buffer.
+
+### Security primitives (`security.py`, mirrored to the Android tree)
+- **Token redaction fixed.** The previous secret-in-text regex captured only up
+  to the first whitespace, so ``Authorization: Bearer <token>`` redacted the
+  word "Bearer" and leaked the token. The pattern now consumes an optional
+  ``Bearer``/``Basic`` scheme and masks the whole credential.
+- **Invisible-Unicode stripping.** `sanitize_text` now removes bidi
+  overrides, zero-width and other Unicode format characters (U+00AD,
+  U+200B–U+200F, U+202A–U+202E, U+2060–U+2064, U+2066–U+2069, U+FEFF) that
+  could spoof logs or smuggle prompt text.
+- **SecretResolver fallback narrowed.** The bare ``<NAME>`` environment
+  fallback applies only to env-var-shaped names, so an arbitrary caller string
+  cannot probe unrelated environment variables.
+
+### Latent bugs found by the new lint gate (ruff `F821`)
+- `audit.py` referenced an undefined `logger` in `_load_existing`, so a
+  malformed or unreadable chain raised `NameError` instead of being reported.
+- `mobile_nodes.py::KVTransportAdapter` called `kv_mesh.protocol` helpers
+  (`make_advertise` / `make_assign` / `make_put` / `make_get` / `make_evict` /
+  `make_heartbeat` / `msg_type` / `proto.TOPIC_*`) that were never imported, so
+  every method raised `NameError` — the KV-mesh DDS adapter was
+  non-functional. Imports added and now covered by tests.
+- `shugocore_agent.py::nrr_status_json` used `_json` without the local
+  `import json as _json` its sibling accessors use; and an unreachable
+  `return {"asked": text, ...}` after the `return` in `_extract_perception`
+  (dead code) was removed.
+
+### CI / supply chain
+- CI matrix extended to **Python 3.13**.
+- New blocking **`lint`** job (`ruff check`, configured in `pyproject.toml`
+  with `[tool.ruff]` selecting `E9` + `F821`).
+- New **`security-scan`** job: `bandit -lll` (high) blocking, `bandit -ll`
+  (medium) advisory.
+- `.github/dependabot.yml` covering pip, GitHub Actions, both Gradle roots and
+  the vendored submodules.
+- `SECURITY.md` — coordinated disclosure process, the invariants to attack,
+  and the verification commands.
+- `pyproject.toml` gains a `dev` extra (`pytest`, `ruff`, `bandit`).
+
+### Tests & docs
+- `tests/test_shugocore_server.py`: new `ServerHardeningTestCase` (auth,
+  rate-limit 429, negative `Content-Length`, loopback-only CORS, fail-closed
+  bind).
+- `tests/test_agent_runtime.py`: new `TestPeerServerHardening` (validation,
+  token gate, frame-clamp, live socketpair DoS bound, dispatch filtering).
+- `tests/test_model_execution_stress.py`: new `TestBackendEgressHardening`
+  (scheme/credentials/host rejection, redirect refusal, oversized-body refusal).
+- `tests/test_security.py`: bearer/basic redaction, query-credential redaction,
+  invisible-Unicode stripping, SecretResolver name guard, malformed-audit-line
+  logging.
+- `tests/test_kv_mesh.py`: `KVTransportAdapterTest` pins the previously-broken
+  DDS adapter path (advertise/register, heartbeat, evict, inbound guards).
+- `tests/test_mobile.py`: audit-write failure must be logged, not swallowed.
+- `docs/desktop_server.md` + README: document `SHUGOCORE_SERVER_TOKEN`,
+  `--allow-unauthenticated` and the rate-limit flags.
+
+### Known advisory follow-ups (bandit medium, non-blocking)
+- `B608` string-based SQL construction in `pg_memory.py` (to be reviewed for
+  parameterization) and `B104` bind-all in `agent_runtime.py` (documented
+  opt-in). High-severity bandit is clean.
+
 ## [1.29.0] - 2026-09-12 — native NRR neural rendering on Android (upstream Phase 13 port)
 
 Upstream NRR's C++ runtime now runs on-device: a paired node can execute

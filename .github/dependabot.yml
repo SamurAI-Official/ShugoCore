@@ -1,0 +1,40 @@
+version: 2
+updates:
+  # Python core dependencies (requirements.txt / pyproject.toml)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "security"]
+
+  # CI actions (actions/checkout, actions/setup-python, …)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies", "ci"]
+
+  # Android node app toolchain
+  - package-ecosystem: "gradle"
+    directory: "/platforms/android"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    labels: ["dependencies", "android"]
+
+  # Reference Kotlin bridge client
+  - package-ecosystem: "gradle"
+    directory: "/clients/android"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    labels: ["dependencies", "android"]
+
+  # Vendored llama.cpp / NRR are pinned submodules; track the git refs so a
+  # security-relevant upstream bump is surfaced as a PR.
+  - package-ecosystem: "gitsubmodule"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies", "submodule"]

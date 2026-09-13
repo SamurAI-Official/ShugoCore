@@ -38,16 +38,29 @@ Notes
   If a local Ollama already owns ``:11434``, use ``--port 11435`` etc.
 * ``POST /api/v1/task`` bodies are capped (1 MB) and every string field is
   length-checked; responses never echo raw task content back.
+* **Authentication (fail-closed).** Set ``SHUGOCORE_SERVER_TOKEN`` to require a
+  bearer token (``Authorization: Bearer <token>`` or ``X-ShugoCore-Token``)
+  on every route except ``/health``. Binding to a non-loopback host without a
+  token is refused unless ``--allow-unauthenticated`` is passed explicitly, so
+  exposing the engine/`generate` endpoints to a LAN is an opt-in decision.
+* **Abuse controls.** Requests are token-bucket rate limited per client
+  address (``--rate-limit-per-minute`` / ``--rate-limit-burst``) and CORS
+  preflight is answered only for loopback origins.
 """
 
 import argparse
+import hmac
 import json
 import logging
+import os
 import sys
 import threading
 import time
 from http import server as http_server
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
+
+from security import RateLimiter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -60,6 +73,36 @@ logger = logging.getLogger("shugocore.server")
 # ---------------------------------------------------------------------------
 MAX_JSON_BODY = 1_048_576  # 1 MB task/generate bodies
 MAX_STRING_FIELD = 10_000  # per-field cap for prompt/message content
+SERVER_TOKEN_ENV = "SHUGOCORE_SERVER_TOKEN"
+DEFAULT_RATE_LIMIT_PER_MINUTE = 240.0
+DEFAULT_RATE_LIMIT_BURST = 120
+
+
+# ---------------------------------------------------------------------------
+# Bind / origin helpers
+# ---------------------------------------------------------------------------
+def _is_loopback_host(host: str) -> bool:
+    """True for loopback bind addresses (only these may run unauthenticated)."""
+    candidate = str(host or "").strip().strip("[]").lower()
+    return candidate in ("localhost", "::1") or candidate.startswith("127.")
+
+
+def _is_loopback_origin(origin: str) -> bool:
+    """True when a CORS ``Origin`` header points at a loopback host."""
+    try:
+        parsed = urlparse(str(origin))
+    except ValueError:
+        return False
+    return parsed.scheme in ("http", "https") and _is_loopback_host(parsed.hostname or "")
+
+
+def _extract_token(handler: "http_server.BaseHTTPRequestHandler") -> Optional[str]:
+    """Bearer token from ``Authorization`` (or ``X-ShugoCore-Token``)."""
+    header = str(handler.headers.get("Authorization", "") or "")
+    if header.lower().startswith("bearer "):
+        return header[7:].strip()
+    alt = handler.headers.get("X-ShugoCore-Token")
+    return str(alt).strip() if alt else None
 
 
 # ---------------------------------------------------------------------------
@@ -72,20 +115,27 @@ def _safe_text(value: Any, cap: int = MAX_STRING_FIELD) -> str:
 
 
 def _read_json_body(handler: "http_server.BaseHTTPRequestHandler") -> Dict[str, Any]:
-    """Read and parse a JSON body with size + content-type guards."""
-    raw = "{}"
+    """Read and parse a JSON body with strict size guards.
+
+    A negative or oversized ``Content-Length`` is rejected outright: reading a
+    negative length drains the socket to EOF (unbounded), and an oversized one
+    is refused before allocating. Any malformed body yields ``{}``.
+    """
     try:
         length = int(handler.headers.get("Content-Length", "0") or 0)
-        if length > MAX_JSON_BODY:
-            raise ValueError("request body too large")
+    except (TypeError, ValueError):
+        return {}
+    if length <= 0 or length > MAX_JSON_BODY:
+        return {}
+    try:
         raw = handler.rfile.read(length).decode("utf-8")
-    except Exception:  # malformed length / encoding
-        raw = raw or "{}"
+    except Exception:  # malformed encoding / truncated body
+        return {}
     try:
         data = json.loads(raw)
-        return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _send_json(handler: "http_server.BaseHTTPRequestHandler", status: int,
@@ -126,14 +176,38 @@ def _safe_payload(result: Dict[str, Any]) -> Dict[str, Any]:
 class ShugoCoreServer:
     """HTTP facade over a DecisionEngine + pluggable model backend."""
 
-    def __init__(self, engine, backend, model: str = "qwen3.5:latest"):
+    def __init__(self, engine, backend, model: str = "qwen3.5:latest",
+                 auth_token: Optional[str] = None,
+                 rate_limit_per_minute: Optional[float] = DEFAULT_RATE_LIMIT_PER_MINUTE,
+                 rate_limit_burst: int = DEFAULT_RATE_LIMIT_BURST):
         self.engine = engine
         self.backend = backend
         self.model = model
+        self.auth_token = str(auth_token) if auth_token else None
         self._lock = threading.Lock()
         self._started = time.monotonic()
+        self._limiter: Optional[RateLimiter] = None
+        if rate_limit_per_minute and float(rate_limit_per_minute) > 0:
+            self._limiter = RateLimiter(
+                calls_per_minute=float(rate_limit_per_minute),
+                burst=int(rate_limit_burst),
+            )
         from version import __version__
         self._version = __version__
+
+    # -- request admission ---------------------------------------------------
+
+    def authorize(self, token: Optional[str]) -> bool:
+        """Constant-time bearer-token check; open when no token is configured."""
+        if not self.auth_token:
+            return True
+        return bool(token) and hmac.compare_digest(str(token), self.auth_token)
+
+    def allow_request(self, client_key: str) -> bool:
+        """Non-blocking per-client token-bucket check (always True when off)."""
+        if self._limiter is None:
+            return True
+        return self._limiter.acquire(str(client_key), timeout=0.0)
 
     # -- Ollama wire contract ------------------------------------------------
 
@@ -284,6 +358,16 @@ class ShugoCoreHandler(http_server.BaseHTTPRequestHandler):
         if core is None:
             _send_json(self, 503, {"error": "server not initialized"})
             return
+        # /health stays open for liveness probes; every other route is subject
+        # to the per-client rate limit and (when configured) bearer auth.
+        if not path.endswith("/health"):
+            client_ip = self.client_address[0] if self.client_address else "unknown"
+            if not core.allow_request(client_ip):
+                _send_json(self, 429, {"error": "rate limit exceeded"})
+                return
+            if not core.authorize(_extract_token(self)):
+                _send_json(self, 401, {"error": "unauthorized"})
+                return
         status, payload = 404, {"error": "not found"}
         if path.endswith("/health") and method == "GET":
             status, payload = core.handle_health()
@@ -314,9 +398,13 @@ class ShugoCoreHandler(http_server.BaseHTTPRequestHandler):
 
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = str(self.headers.get("Origin", "") or "")
+        if _is_loopback_origin(origin):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers",
+                         "Content-Type, Authorization, X-ShugoCore-Token")
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -376,13 +464,20 @@ def build_engine(models: Optional[List[Dict[str, Any]]] = None,
 
 def build_server(engine=None, backend=None, model: str = "qwen3.5:latest",
                  host: str = "127.0.0.1",
-                 port: int = 11434) -> http_server.ThreadingHTTPServer:
+                 port: int = 11434,
+                 auth_token: Optional[str] = None,
+                 rate_limit_per_minute: Optional[float] = DEFAULT_RATE_LIMIT_PER_MINUTE,
+                 rate_limit_burst: int = DEFAULT_RATE_LIMIT_BURST,
+                 ) -> http_server.ThreadingHTTPServer:
     """Create and bind the HTTPServer with the injected core."""
     if engine is None:
         engine = build_engine()
     if backend is None:
         backend = _build_backend("stub")
-    core = ShugoCoreServer(engine, backend, model=model)
+    core = ShugoCoreServer(engine, backend, model=model,
+                           auth_token=auth_token,
+                           rate_limit_per_minute=rate_limit_per_minute,
+                           rate_limit_burst=rate_limit_burst)
 
     class _BoundHandler(ShugoCoreHandler):
         pass
@@ -414,7 +509,35 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--memory-db-path", default="semantic_memory.db")
     parser.add_argument("--audit-path", default="audit_chain.jsonl")
     parser.add_argument("--episodic-journal-path", default=None)
+    parser.add_argument("--auth-token-env", default=SERVER_TOKEN_ENV,
+                        help=f"env var holding the bearer token "
+                             f"(default: {SERVER_TOKEN_ENV})")
+    parser.add_argument("--allow-unauthenticated", action="store_true",
+                        help="permit a non-loopback bind with no auth token (dangerous)")
+    parser.add_argument("--rate-limit-per-minute", type=float,
+                        default=DEFAULT_RATE_LIMIT_PER_MINUTE,
+                        help="per-client request rate, 0 disables "
+                             "(default: 240)")
+    parser.add_argument("--rate-limit-burst", type=int,
+                        default=DEFAULT_RATE_LIMIT_BURST,
+                        help="per-client burst capacity (default: 120)")
     args = parser.parse_args(argv)
+
+    # Fail-closed exposure: a non-loopback bind must be authenticated unless
+    # the operator explicitly opts out.
+    token = os.environ.get(args.auth_token_env) or None
+    if not _is_loopback_host(args.host):
+        if not token and not args.allow_unauthenticated:
+            print(f"error: refusing to bind to {args.host} without authentication.",
+                  file=sys.stderr)
+            print(f"  Set {args.auth_token_env}=<secret> to require a bearer token, "
+                  f"or pass", file=sys.stderr)
+            print("  --allow-unauthenticated to expose the engine endpoints openly.",
+                  file=sys.stderr)
+            return 2
+        if not token:
+            logger.warning("binding to %s with NO authentication "
+                           "(--allow-unauthenticated)", args.host)
 
     try:
         backend = _build_backend(args.backend, args.backend_url)
@@ -436,7 +559,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             **engine_kwargs,
         )
         server = build_server(engine=engine, backend=backend,
-                              model=args.model, host=args.host, port=args.port)
+                              model=args.model, host=args.host, port=args.port,
+                              auth_token=token,
+                              rate_limit_per_minute=args.rate_limit_per_minute,
+                              rate_limit_burst=args.rate_limit_burst)
     except OSError as exc:
         print(f"error: cannot bind {args.host}:{args.port}: {exc}", file=sys.stderr)
         print("  If you are using the ollama backend, a local Ollama already owns :11434.",
@@ -450,6 +576,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     logger.info("ShugoCore server listening on http://%s:%d (backend=%s, model=%s)",
                 args.host, args.port, args.backend, args.model)
+    logger.info("Auth: %s", "bearer token required"
+                if token else "disabled (loopback or --allow-unauthenticated)")
     logger.info("Ollama wire contract: /api/generate /api/chat /api/tags /health")
     logger.info("Engine API:           /api/v1/status  POST /api/v1/task")
     try:

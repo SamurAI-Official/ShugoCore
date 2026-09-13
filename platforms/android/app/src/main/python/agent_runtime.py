@@ -27,6 +27,7 @@ Usage (embedded in a ShugoCore agent)::
     register_network_handlers(execution_layer, runtime)
 """
 
+import hmac
 import json
 import logging
 import socket
@@ -41,6 +42,7 @@ _DEFAULT_PORT = 9000
 _RECV_SIZE = 65536
 _SOCKET_TIMEOUT = 5.0
 _CONNECT_TIMEOUT = 2.0  # for initial TCP handshake
+_MAX_FRAME_BYTES = 1_048_576  # hard cap on one NDJSON frame (memory-DoS bound)
 
 
 class _PeerConnection:
@@ -99,11 +101,15 @@ class _PeerConnection:
 class _PeerServer(threading.Thread):
     """Background thread that accepts inbound TCP connections."""
 
-    def __init__(self, runtime: "ShugonetAgentRuntime", host: str, port: int):
+    def __init__(self, runtime: "ShugonetAgentRuntime", host: str, port: int,
+                 max_frame_bytes: int = _MAX_FRAME_BYTES,
+                 auth_token: Optional[str] = None):
         super().__init__(name="shugonet-server", daemon=True)
         self._runtime = runtime
         self._host = host
         self._port = port
+        self._max_frame_bytes = max(1024, int(max_frame_bytes))
+        self._auth_token = str(auth_token) if auth_token else None
         self._server_sock: Optional[socket.socket] = None
         self._stop_event = threading.Event()
 
@@ -140,6 +146,23 @@ class _PeerServer(threading.Thread):
             except Exception:
                 pass
 
+    def _accepts(self, msg: Any) -> bool:
+        """Reject anything that is not a dict with a non-empty string ``type``.
+
+        When the runtime was created with an ``auth_token``, an inbound message
+        must also carry a matching ``token`` (shared-secret gate).
+        """
+        if not isinstance(msg, dict):
+            return False
+        msg_type = msg.get("type")
+        if not isinstance(msg_type, str) or not msg_type:
+            return False
+        if self._auth_token:
+            presented = msg.get("token")
+            return bool(presented) and hmac.compare_digest(
+                str(presented), self._auth_token)
+        return True
+
     def _handle_client(self, client_sock: socket.socket, addr: Any) -> None:
         buf = b""
         try:
@@ -151,16 +174,33 @@ class _PeerServer(threading.Thread):
                 if not data:
                     break
                 buf += data
+                # A peer that never sends a newline must not be allowed to grow
+                # our buffer without bound: close once a frame exceeds the cap.
+                if len(buf) > self._max_frame_bytes and b"\n" not in buf:
+                    logger.warning(
+                        "shugonet frame from %s exceeds %d bytes; closing",
+                        addr, self._max_frame_bytes)
+                    break
                 while b"\n" in buf:
                     line, buf = buf.split(b"\n", 1)
                     line = line.strip()
                     if not line:
                         continue
+                    if len(line) > self._max_frame_bytes:
+                        logger.warning("shugonet oversized frame from %s dropped", addr)
+                        continue
                     try:
                         msg = json.loads(line.decode("utf-8"))
-                        self._runtime._dispatch_message(msg, client_sock)
                     except Exception as exc:
                         logger.warning("shugonet parse error: %s", exc)
+                        continue
+                    if not self._accepts(msg):
+                        logger.warning("shugonet refused malformed message from %s", addr)
+                        continue
+                    try:
+                        self._runtime._dispatch_message(msg, client_sock)
+                    except Exception as exc:
+                        logger.warning("shugonet dispatch error: %s", exc)
         except Exception:
             pass
         finally:
@@ -178,10 +218,14 @@ class ShugonetAgentRuntime:
         host: str = "0.0.0.0",
         port: int = 9000,
         peer_map: Optional[Dict[str, tuple]] = None,
+        max_frame_bytes: int = _MAX_FRAME_BYTES,
+        auth_token: Optional[str] = None,
     ):
         self.agent_id = agent_id
         self._host = host
         self._port = port
+        self._max_frame_bytes = max(1024, int(max_frame_bytes))
+        self._auth_token = str(auth_token) if auth_token else None
         self._started = False
         self._lock = threading.Lock()
         self._outbound: Dict[str, _PeerConnection] = {}
@@ -197,7 +241,9 @@ class ShugonetAgentRuntime:
         if self._started:
             return
         self._started = True
-        self._server = _PeerServer(self, self._host, self._port)
+        self._server = _PeerServer(self, self._host, self._port,
+                                   max_frame_bytes=self._max_frame_bytes,
+                                   auth_token=self._auth_token)
         self._server.start()
         for conn in list(self._outbound.values()):
             conn.connect()
@@ -235,6 +281,12 @@ class ShugonetAgentRuntime:
                 "stats": dict(self._stats),
             }
 
+    def _stamp(self, msg: Dict[str, Any]) -> Dict[str, Any]:
+        """Attach the shared-secret token when this runtime gates inbound."""
+        if self._auth_token:
+            msg["token"] = self._auth_token
+        return msg
+
     def send(self, peer: str, topic: str, payload: Any) -> Dict[str, Any]:
         conn = self._outbound.get(peer)
         if conn is None:
@@ -243,8 +295,8 @@ class ShugonetAgentRuntime:
             conn.connect()
             if not conn.connected:
                 return {"status": "refused", "reason": f"peer '{peer}' not reachable"}
-        msg = {"type": "send", "from": self.agent_id, "topic": topic,
-               "payload": payload, "id": str(uuid.uuid4().hex[:12])}
+        msg = self._stamp({"type": "send", "from": self.agent_id, "topic": topic,
+                           "payload": payload, "id": str(uuid.uuid4().hex[:12])})
         ok = conn.send(msg)
         if ok:
             self._stats["sent"] += 1
@@ -259,8 +311,8 @@ class ShugonetAgentRuntime:
             if conn is None or not conn.connected:
                 continue
             qid = str(uuid.uuid4().hex[:12])
-            msg = {"type": "query", "from": self.agent_id, "query": query,
-                   "top_k": top_k, "id": qid}
+            msg = self._stamp({"type": "query", "from": self.agent_id, "query": query,
+                               "top_k": top_k, "id": qid})
             ok = conn.send(msg)
             if ok:
                 self._stats["sent"] += 1
@@ -276,8 +328,8 @@ class ShugonetAgentRuntime:
         conn = self._outbound.get(pid)
         if conn is None or not conn.connected:
             return {"status": "refused", "reason": f"peer '{pid}' not connected"}
-        msg = {"type": "sync", "from": self.agent_id, "since": since,
-               "id": str(uuid.uuid4().hex[:12])}
+        msg = self._stamp({"type": "sync", "from": self.agent_id, "since": since,
+                           "id": str(uuid.uuid4().hex[:12])})
         ok = conn.send(msg)
         if ok:
             self._stats["sent"] += 1
@@ -325,17 +377,26 @@ class ShugonetAgentRuntime:
 
 def main() -> None:
     import argparse
+    import os
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description="ShugoNet peer runtime")
     parser.add_argument("--port", type=int, default=9000)
     parser.add_argument("--agent-id", default="shugo-peer")
     parser.add_argument("--peer", action="append", nargs=3, metavar=("ID", "HOST", "PORT"))
+    parser.add_argument("--auth-token-env", default="SHUGOCORE_MESH_TOKEN",
+                        help="env var holding the mesh shared secret (optional)")
+    parser.add_argument("--max-frame-bytes", type=int, default=_MAX_FRAME_BYTES,
+                        help="max NDJSON frame size in bytes (default: 1048576)")
     args = parser.parse_args()
     peer_map = {}
     if args.peer:
         for pid, host, port in args.peer:
             peer_map[pid] = (host, int(port))
-    runtime = ShugonetAgentRuntime(agent_id=args.agent_id, port=args.port, peer_map=peer_map or None)
+    token = os.environ.get(args.auth_token_env) or None
+    runtime = ShugonetAgentRuntime(agent_id=args.agent_id, port=args.port,
+                                   peer_map=peer_map or None,
+                                   max_frame_bytes=args.max_frame_bytes,
+                                   auth_token=token)
     runtime.start()
     logger.info("ShugoNet peer '%s' running on port %d", args.agent_id, args.port)
     try:

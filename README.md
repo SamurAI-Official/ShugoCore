@@ -267,8 +267,16 @@ the desktop speaks the same Ollama wire contract plus the engine API.
 
 ```bash
 pip install shugocore
-shugocore-server --backend ollama --model qwen3.5:latest --host 0.0.0.0
+# Non-loopback binds are an explicit decision: the app sends no token yet, so
+# LAN pairing uses the acknowledgement flag (see docs/desktop_server.md).
+shugocore-server --backend ollama --model qwen3.5:latest \
+    --host 0.0.0.0 --allow-unauthenticated
 ```
+
+The server is **loopback by default** and refuses a non-loopback bind unless
+`SHUGOCORE_SERVER_TOKEN` is set (bearer auth on every route except `/health`)
+or `--allow-unauthenticated` is passed. Requests are per-client rate limited,
+bodies are capped at 1 MB, and CORS preflight answers loopback origins only.
 
 Endpoints on the server:
 
@@ -657,6 +665,8 @@ Runtime artifacts (`semantic_memory.db`, logs) are local and gitignored.
 - HMAC-signed audit chains and remote log shipping
 - Human approval UI beyond the programmatic broker API
 - Operator approval surface on the Android SECURITY tab (ApprovalBroker integration)
+- Android client bearer-token support so a token-protected desktop server can
+  be paired without `--allow-unauthenticated`
 - Camera / microphone / GPS live-stream display in the SENSORS tab
 - Per-model backend pools with health-based routing
 - CI trusted publishing to PyPI via GitHub Actions (OIDC, no static token)

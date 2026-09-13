@@ -21,6 +21,7 @@ termux = ["websocket-client>=1.6"]
 shogunet = ["shugonet>=0.1.0"]
 postgres = ["psycopg2-binary>=2.9"]
 simulation = ["mujoco>=3.0", "numpy>=1.24"]
+dev = ["pytest", "ruff>=0.6", "bandit>=1.7"]
 
 [project.scripts]
 shugocore-verify-audit = "audit:cli_main"
@@ -40,3 +41,23 @@ py-modules = ["acceleration", "agent_runtime", "android_bridge", "android_infere
               "shugonet_bridge", "shugocore_agent", "shugocore_server", "state_machine", "subconscious",
               "task_manager", "telemetry", "token_budget", "vector_db",
               "version"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+# Vendored C++ trees, Android build outputs and virtualenvs are not ours.
+extend-exclude = [".venv", ".llama_build", "platforms", "dist", "build",
+                  "*.egg-info", "shugocore.egg-info"]
+
+[tool.ruff.lint]
+# Blocking gate: syntax errors (E9) and undefined names (F821). These are real
+# bugs, not style -- the F821 rule alone caught three broken code paths
+# (audit.py logger, the KV transport adapter's protocol imports, and
+# shugocore_agent.nrr_status_json's missing json import).
+select = ["E9", "F821"]
+
+[tool.ruff.lint.per-file-ignores]
+# smoke_part_*.py are fragments concatenated into a larger smoke script (see
+# tests/smoke_part_main.py), not standalone modules -- names intentionally
+# come from sibling fragments and the files are not collected by unittest.
+"tests/smoke_part_*.py" = ["F821"]

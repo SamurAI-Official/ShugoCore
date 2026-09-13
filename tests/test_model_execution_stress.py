@@ -5,8 +5,10 @@ against a fake loopback llama.cpp/Ollama/LM Studio server (no native deps).
 
 import os
 import sys
+import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import requests
 from unittest import mock
@@ -16,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
 
 from fake_llama_server import FakeLlamaServer, start_fake_server
 from model_backends import (
+    MAX_RESPONSE_BYTES,
     BackendError,
     OllamaBackend,
     OpenAICompatibleBackend,
@@ -237,6 +240,82 @@ class TestFullAgentBackendIntegration(unittest.TestCase):
             self.assertIn("status", result)
             # full_agent should have called the live backend (not stub).
             self.assertGreater(server.request_count(), 0)
+        finally:
+            server.stop()
+
+
+class _ScriptedServer:
+    """Minimal one-response HTTP server for egress-hardening assertions."""
+
+    def __init__(self, status: int, body: bytes = b"", headers=None):
+        self.status = status
+        self.body = body
+        self.headers = dict(headers or {})
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def _respond(self):
+                self.send_response(outer.status)
+                for key, value in outer.headers.items():
+                    self.send_header(key, value)
+                self.send_header("Content-Length", str(len(outer.body)))
+                self.end_headers()
+                self.wfile.write(outer.body)
+
+            do_GET = _respond
+            do_POST = _respond
+
+            def log_message(self, *args):  # silence test output
+                return
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(
+            target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+
+    def base_url(self) -> str:
+        return f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def stop(self) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=2)
+
+
+class TestBackendEgressHardening(unittest.TestCase):
+    """model_backends refuses unsafe URLs, redirects and oversized bodies."""
+
+    def test_non_http_scheme_rejected(self):
+        for bad in ("file:///etc/passwd", "ftp://host/x", "gopher://host"):
+            with self.assertRaises(BackendError):
+                create_backend({"type": "ollama", "base_url": bad})
+
+    def test_embedded_credentials_rejected(self):
+        with self.assertRaises(BackendError):
+            create_backend({"type": "openai",
+                            "base_url": "http://user:pass@api.example.com/v1"})
+
+    def test_missing_host_rejected(self):
+        with self.assertRaises(BackendError):
+            create_backend({"type": "ollama", "base_url": "http://"})
+
+    def test_redirect_refused(self):
+        server = _ScriptedServer(302, b"", {"Location": "http://evil.example.com/"})
+        try:
+            backend = create_backend({"type": "ollama",
+                                      "base_url": server.base_url()})
+            with self.assertRaises(BackendError):
+                backend.generate("m", "prompt")
+        finally:
+            server.stop()
+
+    def test_oversized_response_refused(self):
+        server = _ScriptedServer(200, b"x" * (MAX_RESPONSE_BYTES + 4096))
+        try:
+            backend = create_backend({"type": "ollama",
+                                      "base_url": server.base_url()})
+            with self.assertRaises(BackendError):
+                backend.generate("m", "prompt")
         finally:
             server.stop()
 

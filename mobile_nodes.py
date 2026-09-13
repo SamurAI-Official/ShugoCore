@@ -27,6 +27,16 @@ import time
 import uuid
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from kv_mesh import protocol as proto
+from kv_mesh.protocol import (
+    make_advertise,
+    make_assign,
+    make_evict,
+    make_get,
+    make_heartbeat,
+    make_put,
+    msg_type,
+)
 from policy import (
     MOBILE_ACTION_TYPES,
     MOBILE_READ_ACTION_TYPES,
@@ -301,8 +311,8 @@ class MobileNodeRegistry:
             return
         try:
             self.audit.append(event_type, payload)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("audit append failed for '%s': %s", event_type, exc)
 
 class MobileNodeManager:
     """
@@ -420,8 +430,8 @@ class MobileNodeManager:
             return
         try:
             self.audit.append(event_type, payload)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("audit append failed for '%s': %s", event_type, exc)
 
 class MobileComputeBroker:
     """
@@ -524,8 +534,8 @@ class MobileComputeBroker:
             return
         try:
             self.audit.append(event_type, payload)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("audit append failed for '%s': %s", event_type, exc)
 
 
 class MobileExecutionHandler:
@@ -682,7 +692,7 @@ class KVTransportAdapter:
             return
         try:
             self.audit.append(event_type, payload)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("audit append failed for '%s': %s", event_type, exc)
 
 # __HANDLER_END_SENTINEL__

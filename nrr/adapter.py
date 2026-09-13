@@ -12,11 +12,14 @@ render/scene request with a not_supported result -- auditable and fail-closed.
 from typing import Any, Dict, List, Optional
 
 import json as _json
+import logging
 import time
 
 from mobile_nodes import node_supports_workload
 from nrr.descriptor import NRRFrameDescriptor, NRRMotionRequest
 from security import sanitize_text
+
+logger = logging.getLogger(__name__)
 
 import nrr.protocol as proto
 from nrr.result import (
@@ -255,8 +258,8 @@ class NRRTransportAdapter:
             return
         try:
             self.audit.append(event_type, payload)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("audit append failed for '%s': %s", event_type, exc)
 
 
 
@@ -384,8 +387,8 @@ class NRRRenderWorker:
             return
         try:
             self.audit.append(event_type, payload)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("audit append failed for '%s': %s", event_type, exc)
 
 
 

@@ -108,5 +108,49 @@ class TestNrrAndroidPortWiring(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(CPP, "nrr_probe.cpp")))
 
 
+class TestCameraFaultIsVisible(unittest.TestCase):
+    """A camera that is bound but never delivers frames must be reported.
+
+    On the A51 the HAL refuses the front camera ("Camera 1 disabled by
+    policy"). `bindToLifecycle()` still succeeds and the camera then closes
+    asynchronously, so nothing failed loudly: VisionProvider sat at zero frames
+    and the SENSORS tab showed a healthy "Granted · Idle" forever. These guards
+    keep that from regressing back into silence.
+    """
+
+    JAVA = os.path.join(ROOT, "platforms", "android", "app", "src", "main",
+                        "java", "com", "samurai", "shugocore")
+
+    def test_vision_provider_publishes_a_fault(self):
+        src = read(os.path.join(self.JAVA, "runtime", "VisionProvider.kt"))
+        self.assertIn("cameraFault", src)
+        self.assertIn("PerceptionState.cameraFault = cameraFault", src)
+        # The watchdog must exist -- binding success alone is not evidence.
+        self.assertIn("firstFrameSeen", src)
+        self.assertIn("no camera frames after", src)
+
+    def test_perception_state_exposes_the_note(self):
+        src = read(os.path.join(self.JAVA, "runtime", "PerceptionState.kt"))
+        self.assertIn("fun unavailableVisionNote()", src)
+        self.assertIn("cameraFault", src)
+        self.assertIn("visionHasFrames", src)
+
+    def test_sensors_tab_surfaces_it_for_the_camera(self):
+        cap = read(os.path.join(self.JAVA, "runtime",
+                                "SensorCapabilityManager.kt"))
+        self.assertIn('"camera" -> PerceptionState.unavailableVisionNote()', cap)
+        pane = read(os.path.join(self.JAVA, "ui", "SensorsPane.kt"))
+        self.assertIn("not delivering", pane)
+
+    def test_camera_path_is_wired_end_to_end_for_nrr(self):
+        """VisionProvider -> PerceptionState -> the NRR camera render probe."""
+        prov = read(os.path.join(self.JAVA, "runtime", "VisionProvider.kt"))
+        self.assertIn("PerceptionState.stampFrameRgba(w, h, rgba)", prov)
+        state = read(os.path.join(self.JAVA, "runtime", "PerceptionState.kt"))
+        self.assertIn("fun latestFrameRgba(maxAgeMs: Long)", state)
+        svc = read(os.path.join(self.JAVA, "ShugoCoreService.kt"))
+        self.assertIn("renderLatestCameraFrame", svc)
+
+
 if __name__ == "__main__":
     unittest.main()

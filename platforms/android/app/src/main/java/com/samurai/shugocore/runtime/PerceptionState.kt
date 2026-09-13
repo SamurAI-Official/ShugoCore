@@ -114,6 +114,31 @@ object PerceptionState {
         lastFrameRgbaMs = System.currentTimeMillis()
     }
 
+    // -- v1.29 vision availability ------------------------------------------
+
+    /**
+     * Set by [VisionProvider] when the camera is bound but never delivers
+     * frames (e.g. the HAL refuses the device: "Camera 1 disabled by policy").
+     * Empty means no problem is known.
+     */
+    @Volatile var cameraFault: String = ""
+
+    /** Set true once the vision provider has analysed a frame. */
+    @Volatile var visionHasFrames: Boolean = false
+
+    /**
+     * A short note for the SENSORS tab when vision is known to be unusable,
+     * else "".
+     *
+     * Only reports once the fault is established: a camera that simply has not
+     * produced its first frame yet (right after a bind) is not an error.
+     */
+    fun unavailableVisionNote(): String {
+        val fault = cameraFault
+        if (fault.isEmpty() || visionHasFrames) return ""
+        return fault
+    }
+
     // -- v1.22 device mesh signals ---
     @Volatile var meshPeerCount: Int = 0
     @Volatile var meshPeersJson: String = "[]"

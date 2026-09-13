@@ -144,6 +144,20 @@ Consequences:
   camera would report the room as the user. Making the selector configurable is
   a product decision, not a porting one.
 
+### Not just logcat: the SENSORS tab now shows it
+
+`VisionProvider.cameraFault` is published to `PerceptionState`, which
+`SensorCapabilityManager.detail("camera")` surfaces via
+`unavailableVisionNote()`. The camera row therefore reads
+
+```
+⚠ Granted · not delivering · camera not delivering frames (state=CLOSED, error=null)
+```
+
+instead of a healthy `✓ Granted · ○ Idle`. Only reported once the fault is
+established, and cleared when frames start arriving or the provider stops, so a
+camera that is merely still binding is not flagged as broken.
+
 
 Verified against `main` (NRR `1.0.0-dev`); Phase 13 had never been compiled.
 

@@ -157,6 +157,10 @@ class SensorCapabilityManager(private val context: Context) {
         "imu" -> "accel+gyro+rotvec"
         "accelerometer" -> "SENSOR_DELAY_NORMAL"
         "gyroscope" -> "SENSOR_DELAY_NORMAL"
+        // camera: binding succeeds even when the HAL then refuses the device
+        // (front camera "disabled by policy" on some hardware), so report the
+        // fault here instead of leaving the row at "Granted · Idle" forever.
+        "camera" -> PerceptionState.unavailableVisionNote()
         else -> ""
     }
 

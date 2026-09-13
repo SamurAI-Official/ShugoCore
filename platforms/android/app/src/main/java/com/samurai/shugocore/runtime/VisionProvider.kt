@@ -62,6 +62,22 @@ class VisionProvider(private val context: Context) {
 
     @Volatile private var boundCamera: androidx.camera.core.Camera? = null
 
+    /**
+     * Human-readable reason the camera is not delivering frames, or "" when it
+     * is fine (or too early to tell).
+     *
+     * The provider calls `bindToLifecycle()` successfully even when the HAL
+     * then refuses the device ("Camera 1 disabled by policy" on this hardware),
+     * so binding success is NOT evidence that perception works. The UI reads
+     * this so a never-delivering camera is reported instead of showing
+     * "Granted · Idle" forever.
+     */
+    @Volatile var cameraFault: String = ""
+        private set
+
+    /** True when at least one frame has been analysed. */
+    val hasFrames: Boolean get() = firstFrameSeen.get()
+
 
     /** A permanently-RESUMED owner: the camera lives as long as the service. */
     private val lifecycleOwner = object : LifecycleOwner {
@@ -129,10 +145,13 @@ class VisionProvider(private val context: Context) {
                                 @Suppress("UNCHECKED_CAST")
                                 val st = boundCamera?.cameraInfo
                                     ?.cameraState?.value
+                                cameraFault = "camera not delivering frames " +
+                                    "(state=${st?.type}, error=${st?.error?.code})"
+                                PerceptionState.cameraFault = cameraFault
                                 android.util.Log.w("VisionProvider",
                                     "no camera frames after ${WATCHDOG_MS / 1000}s " +
-                                    "(state=${st?.type}, error=${st?.error?.code}) " +
-                                    "- vision + NRR camera frames unavailable")
+                                    "($cameraFault) - vision + NRR camera " +
+                                    "frames unavailable")
                             }
                         }, WATCHDOG_MS)
                     } catch (e: Exception) {
@@ -163,6 +182,11 @@ class VisionProvider(private val context: Context) {
             cameraProvider = null
             PerceptionState.lastCameraFrameMs = 0L
             PerceptionState.lastFaceCount = -1
+            // A stopped camera is not a faulty one: clear the fault so the UI
+            // does not show a stale "not delivering frames" note.
+            cameraFault = ""
+            PerceptionState.cameraFault = ""
+            PerceptionState.visionHasFrames = false
             LogBus.log(LogBus.Category.SENSOR, "vision provider stopped")
         }
     }
@@ -183,6 +207,9 @@ class VisionProvider(private val context: Context) {
             if (now - lastAnalyzeMs < interval) return
             lastAnalyzeMs = now
             firstFrameSeen.set(true)
+            cameraFault = ""
+            PerceptionState.cameraFault = ""
+            PerceptionState.visionHasFrames = true
             if (analyzeLogged.compareAndSet(false, true)) {
                 android.util.Log.i("VisionProvider",
                     "first frame analysed (${proxy.width}x${proxy.height}, " +

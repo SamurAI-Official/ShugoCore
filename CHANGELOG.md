@@ -106,6 +106,18 @@ contract layer stays binary-free.
 - Deliberately unchanged: the front-camera selector. Person-presence semantics
   depend on the front camera, and silently switching to the back camera would
   report the room as the user — a product decision, not a porting one.
+- **Surfaced in the UI too, not just logcat**: `VisionProvider.cameraFault` is
+  published to `PerceptionState` and consumed by
+  `SensorCapabilityManager.detail("camera")`, so the SENSORS row reads
+  `⚠ Granted · not delivering · camera not delivering frames (state=CLOSED...)`
+  instead of a healthy `✓ Granted · ○ Idle`. Reported only once the fault is
+  established, and cleared when frames arrive or the provider stops.
+
+### Tests
+- `tests/test_nrr_android_port.py`: guards that the camera fault is published,
+  exposed via `PerceptionState.unavailableVisionNote()`, surfaced by the
+  SENSORS tab, and that the camera path stays wired end-to-end to the NRR
+  render probe.
 
 ### Version
 - `versionCode` 16 -> 17, `versionName` 1.28.2 -> 1.29.0 in version.py,

@@ -158,15 +158,23 @@ class SensorsPane(context: Context, private val host: ControlPlaneHost) :
             })
             row.value.text = when {
                 !hardware -> "unavailable"
+                // v1.29: a granted camera that never delivers frames must not
+                // read as a healthy "Idle" -- that hid a real failure on
+                // hardware where the HAL refuses the front camera.
+                permission == "GRANTED" && stream != "ACTIVE" &&
+                    detail.isNotEmpty() -> "⚠ Granted · not delivering · $detail"
                 permission == "GRANTED" ->
                     (if (stream == "ACTIVE") "✓ Granted · ● Active" else "✓ Granted · ○ Idle") +
                         (if (detail.isNotEmpty()) " · $detail" else "")
                 permission == "DENIED" -> "✗ Denied — tap to grant"
                 else -> "no permission needed"
             }
-            row.value.setTextColor(when (permission) {
-                "GRANTED" -> if (stream == "ACTIVE") Ui.OK else Ui.WARN
-                "DENIED" -> Ui.BAD
+            row.value.setTextColor(when {
+                !hardware -> Ui.DIM
+                permission == "GRANTED" && stream != "ACTIVE" &&
+                    detail.isNotEmpty() -> Ui.BAD
+                permission == "GRANTED" -> if (stream == "ACTIVE") Ui.OK else Ui.WARN
+                permission == "DENIED" -> Ui.BAD
                 else -> Ui.DIM
             })
         }

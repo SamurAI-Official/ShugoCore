@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from mobile_nodes import (MobileComputeBroker, MobileNodeRegistry,
                           node_supports_workload)
+from nrr.schema import SCHEMA_VERSION
 from policy import CapabilityRegistry
 from ros2_interface import StubROS2Interface
 
@@ -35,7 +36,7 @@ class DescriptorSchemaTest(unittest.TestCase):
         back = NRRFrameDescriptor.from_dict(d)
         self.assertEqual(back.frame_id, "f1")
         self.assertEqual(back.frame_index, 7)
-        self.assertEqual(back.schema_version, 1)
+        self.assertEqual(back.schema_version, SCHEMA_VERSION)
 
     def test_bad_resolution_rejected(self):
         with self.assertRaises(ValueError):
@@ -166,6 +167,103 @@ class AdapterRoutingTest(unittest.TestCase):
         out = NRRTransportAdapter.worker_stub(
             {"request_id": "r1", "descriptor": {"frame_id": ""}})
         self.assertEqual(out["result"]["status"], "not_supported")
+
+
+class RenderWorkerTest(unittest.TestCase):
+    """The real (injectable) peripheral worker that replaces the stub.
+
+    Nothing here touches a device: frame_source and renderer are fakes, which
+    is the point of injecting them.
+    """
+
+    @staticmethod
+    def _rgba(w=4, h=4):
+        return bytes(w * h * 4)
+
+    @staticmethod
+    def _rgb(w=4, h=4):
+        return bytes(w * h * 3)
+
+    def _worker(self, renderer=True, frame_source=True, caps=None):
+        from nrr.adapter import NRRRenderWorker
+        r = (lambda w, h, rgba: self._rgb(w, h)) if renderer is True else renderer
+        f = (lambda w, h: self._rgba(w, h)) if frame_source is True else frame_source
+        return NRRRenderWorker(renderer=r, frame_source=f,
+                               capabilities_provider=caps)
+
+    def _request(self, frame_id="f1", width=4, height=4):
+        return {"request_id": "req-9",
+                "descriptor": describe_frame(frame_id, width, height)}
+
+    def test_unavailable_worker_answers_not_supported(self):
+        out = self._worker(renderer=None, frame_source=None).render(
+            self._request())
+        self.assertEqual(proto.msg_type(out), "NRRResult")
+        self.assertEqual(out["result"]["status"], "not_supported")
+
+    def test_happy_path_returns_ok_with_stats(self):
+        out = self._worker().render(self._request())
+        result = out["result"]
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["frame_id"], "f1")
+        self.assertEqual(result["width"], 4)
+        self.assertEqual(result["height"], 4)
+        self.assertIn("stats", result)
+        self.assertGreaterEqual(result["stats"]["render_time_ms"], 0.0)
+
+    def test_no_pixel_bytes_in_the_envelope(self):
+        """The mesh contract is absolute: handles only, never pixels."""
+        out = self._worker().render(self._request())
+        blob = repr(out)
+        self.assertNotIn("\\x00", blob)
+        self.assertNotIn("bytes", str(type(out["result"].get("output_handle"))))
+
+    def test_invalid_descriptor_refused_before_rendering(self):
+        called = []
+        w = self._worker(renderer=lambda *a: called.append(1) or self._rgb())
+        out = w.render({"request_id": "r", "descriptor": {"frame_id": ""}})
+        self.assertEqual(out["result"]["status"], "not_supported")
+        self.assertEqual(called, [], "renderer must not run on a bad descriptor")
+
+    def test_missing_frame_is_not_supported(self):
+        out = self._worker(frame_source=lambda w, h: None).render(
+            self._request())
+        self.assertEqual(out["result"]["status"], "not_supported")
+        self.assertIn("frame", out["result"]["error"])
+
+    def test_renderer_exception_is_contained(self):
+        def boom(*_a):
+            raise RuntimeError("kernel exploded")
+        out = self._worker(renderer=boom).render(self._request())
+        self.assertEqual(out["result"]["status"], "not_supported")
+        self.assertIn("render failed", out["result"]["error"])
+
+    def test_frame_source_exception_is_contained(self):
+        def boom(*_a):
+            raise RuntimeError("no camera")
+        out = self._worker(frame_source=boom).render(self._request())
+        self.assertEqual(out["result"]["status"], "not_supported")
+
+    def test_compute_caps_empty_when_unavailable(self):
+        self.assertEqual(self._worker(renderer=None,
+                                      frame_source=None).compute_caps(), {})
+
+    def test_compute_caps_advertise_workload_only_when_ready(self):
+        caps = self._worker().compute_caps()
+        self.assertEqual(caps["workloads"], ["nrr_render"])
+        self.assertTrue(node_supports_workload({"compute_caps": caps},
+                                               "nrr_render"))
+
+    def test_compute_caps_merges_provider_and_survives_failure(self):
+        def boom():
+            raise RuntimeError("bridge gone")
+        caps = self._worker(caps=boom).compute_caps()
+        self.assertEqual(caps["workloads"], ["nrr_render"])
+
+    def test_android_factory_returns_none_off_device(self):
+        """Off Android there is no Chaquopy `java` module: fail closed."""
+        from nrr.adapter import android_native_worker
+        self.assertIsNone(android_native_worker("/nonexistent/model.onnx"))
 
 
 class CapabilityRoutingTest(unittest.TestCase):

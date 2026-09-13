@@ -1,3 +1,12 @@
 [submodule "platforms/android/app/src/main/cpp/llama.cpp"]
 	path = platforms/android/app/src/main/cpp/llama.cpp
 	url = https://github.com/ggerganov/llama.cpp
+[submodule "platforms/android/app/src/main/cpp/nrr"]
+	path = platforms/android/app/src/main/cpp/nrr
+	url = https://github.com/SamurAI-Official/NRR.git
+	# ShugoCore carries required fixes as a patch series (patches/nrr/, applied
+	# by scripts/apply_nrr_patches.sh). `ignore = dirty` keeps `git status`
+	# quiet about that intentional divergence; the pinned commit is what the
+	# parent repo actually records, and the port-wiring test proves the patch
+	# series still reproduces the fixes.
+	ignore = dirty

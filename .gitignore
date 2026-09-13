@@ -37,3 +37,9 @@ platforms/android/build/
 .cxx/
 *.apk
 *.aab
+
+# ONNX Runtime for Android is extracted from the official Maven AAR by
+# scripts/fetch_ort_android.sh at build time (~19-23 MB per ABI; regenerate,
+# don't commit). The C headers come from the same AAR so they always match.
+platforms/android/app/src/main/cpp/onnxruntime/include/
+platforms/android/app/src/main/cpp/onnxruntime/lib/

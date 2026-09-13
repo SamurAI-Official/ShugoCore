@@ -69,6 +69,17 @@ android {
             useLegacyPackaging false
         }
     }
+
+    // ONNX Runtime for the NRR native runtime. The .so files are extracted
+    // from the official Maven AAR by scripts/fetch_ort_android.sh (gitignored)
+    // and packaged straight from source, so there is no separate Maven
+    // dependency and the CMake link target and the APK payload are the same
+    // file. One AAR is ~19-23 MB per ABI; only the filtered ABIs ship.
+    sourceSets {
+        main {
+            jniLibs.srcDirs += 'src/main/cpp/onnxruntime/lib'
+        }
+    }
 }
 
 chaquopy {

@@ -1,7 +1,7 @@
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
-from nrr.schema import SCHEMA_VERSION
+from nrr.schema import SCHEMA_VERSION, Coordinate3D, DHCandidate, SceneEntity, NRRSensorEvent
 
 
 @dataclass
@@ -62,21 +62,147 @@ class NRRRenderResult:
         )
 
 
-def make_not_supported_result(frame_id: str,
-                              reason: str = "") -> Dict[str, Any]:
-    """Peripheral worker stub response until the NRR runtime matures."""
+@dataclass
+class NRRSceneResult:
+    """Structured perception result from the peripheral worker."""
+    frame_id: str
+    status: str = "ok"
+    source_device_id: str = ""
+    sensor_provenance: str = ""
+    schema_version: int = SCHEMA_VERSION
+    scene_version: int = 1
+    entities: List[SceneEntity] = field(default_factory=list)
+    motion_events: List[NRRSensorEvent] = field(default_factory=list)
+    motion_summary: Dict[str, Any] = field(default_factory=dict)
+    model_contribution: Dict[str, Any] = field(default_factory=dict)
+    error: str = ""
+
+    def validate(self) -> None:
+        if not self.frame_id or len(self.frame_id) > 128:
+            raise ValueError("frame_id required")
+        if not self.source_device_id or len(self.source_device_id) > 128:
+            raise ValueError("source_device_id required")
+        if len(self.sensor_provenance) > 128:
+            raise ValueError("sensor_provenance too long")
+        if not self.entities:
+            raise ValueError("at least one scene entity required")
+        for e in self.entities:
+            if not isinstance(e, SceneEntity):
+                raise ValueError("entities must be SceneEntity")
+            e.validate()
+        for ev in self.motion_events:
+            if not isinstance(ev, NRRSensorEvent):
+                raise ValueError("motion_events must be NRRSensorEvent")
+            ev.validate()
+        if not isinstance(self.motion_summary, dict):
+            raise ValueError("motion_summary must be a dict")
+        if not isinstance(self.model_contribution, dict):
+            raise ValueError("model_contribution must be a dict")
+        if not (0.0 <= self.motion_summary.get("motion_score", 0.0) <= 1.0):
+            raise ValueError("motion_summary.motion_score out of range")
+        if len(self.error) > 256:
+            raise ValueError("error too long")
+
+    def to_dict(self) -> Dict[str, Any]:
+        self.validate()
+        return {
+            "frame_id": self.frame_id,
+            "status": self.status,
+            "source_device_id": self.source_device_id,
+            "sensor_provenance": self.sensor_provenance,
+            "schema_version": self.schema_version,
+            "scene_version": self.scene_version,
+            "entities": [e.to_dict() for e in self.entities],
+            "motion_events": [ev.to_dict() for ev in self.motion_events],
+            "motion_summary": dict(self.motion_summary),
+            "model_contribution": dict(self.model_contribution),
+            "error": self.error,
+        }
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> "NRRSceneResult":
+        entities = []
+        for ed in (data.get("entities") or []):
+            if isinstance(ed, dict):
+                entities.append(SceneEntity.from_dict(ed))
+        events = []
+        for ed in (data.get("motion_events") or []):
+            if isinstance(ed, dict):
+                events.append(NRRSensorEvent.from_dict(ed))
+        return NRRSceneResult(
+            frame_id=str(data.get("frame_id", "")),
+            status=str(data.get("status", "ok")),
+            source_device_id=str(data.get("source_device_id", ""))[:128],
+            sensor_provenance=str(data.get("sensor_provenance", ""))[:128],
+            schema_version=int(data.get("schema_version", SCHEMA_VERSION)),
+            scene_version=int(data.get("scene_version", 1)),
+            entities=entities,
+            motion_events=events,
+            motion_summary=dict(data.get("motion_summary") or {}),
+            model_contribution=dict(data.get("model_contribution") or {}),
+            error=str(data.get("error", ""))[:256],
+        )
+
+    @staticmethod
+    def not_supported(frame_id: str, reason: str = "") -> "NRRSceneResult":
+        return NRRSceneResult(frame_id=frame_id, status="not_supported",
+                              error=str(reason)[:256])
+
+
+def make_scene_result(
+    frame_id: str,
+    entities: List[SceneEntity],
+    motion_events: Optional[List[NRRSensorEvent]] = None,
+    motion_score: Optional[float] = None,
+    motion_region: Optional[Coordinate3D] = None,
+    model_contribution: Optional[Dict[str, Any]] = None,
+    source_device_id: str = "",
+    sensor_provenance: str = "",
+    status: str = "ok",
+) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {}
+    if motion_score is not None:
+        summary["motion_score"] = float(motion_score)
+    if motion_region is not None and isinstance(motion_region, Coordinate3D):
+        summary["motion_region"] = motion_region.to_dict()
+    mc: Dict[str, Any] = {}
+    if model_contribution is not None:
+        mc.update(model_contribution)
+    return NRRSceneResult(
+        frame_id=frame_id, entities=list(entities),
+        motion_events=list(motion_events) if motion_events else [],
+        motion_summary=summary, model_contribution=mc,
+        source_device_id=source_device_id, sensor_provenance=sensor_provenance,
+        status=status,
+    ).to_dict()
+
+
+def make_not_supported_scene_result(frame_id: str, reason: str = "") -> Dict[str, Any]:
+    """Refusal payload for a scene request (no entities, no validate trip).
+
+    Built directly rather than through NRRSceneResult.to_dict(): a refusal
+    carries no entities, and validate() requires them only for real scenes.
+    """
+    return {
+        "frame_id": frame_id,
+        "status": "not_supported",
+        "source_device_id": "",
+        "sensor_provenance": "",
+        "schema_version": SCHEMA_VERSION,
+        "scene_version": 1,
+        "entities": [],
+        "motion_events": [],
+        "motion_summary": {},
+        "model_contribution": {},
+        "error": str(reason)[:256],
+    }
+
+
+def make_not_supported_result(frame_id: str, reason: str = "") -> Dict[str, Any]:
+    """Refusal payload for a render request (primary-side convenience)."""
     return NRRRenderResult.not_supported(frame_id, reason).to_dict()
 
 
-def describe_frame(frame_id: str, width: int, height: int,
-                   pixel_format: str = "RGB8", model_id: str = "",
-                   reference_id: str = "", frame_index: int = 0,
-                   delta_time: float = 0.0,
-                   quality_hint: str = "balanced") -> Dict[str, Any]:
-    """Build + validate a descriptor dict in one call (primary side)."""
-    from nrr.descriptor import NRRFrameDescriptor
-    return NRRFrameDescriptor(
-        frame_id=frame_id, width=width, height=height,
-        pixel_format=pixel_format, model_id=model_id,
-        reference_id=reference_id, frame_index=frame_index,
-        delta_time=delta_time, quality_hint=quality_hint).to_dict()
+# Primary-side descriptor builder, re-exported so callers have one import
+# surface for the contract: nrr.result covers describe + result.
+from nrr.descriptor import describe_frame  # noqa: E402  (no cycle: descriptor -> schema only)

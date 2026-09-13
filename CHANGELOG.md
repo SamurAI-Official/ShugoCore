@@ -4,6 +4,85 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [Unreleased] — native NRR runtime on Android (upstream Phase 13 port)
+
+### Vendored NRR C++ runtime (`platforms/android/app/src/main/cpp/nrr`) — submodule
+- `SamurAI-Official/NRR` added as a git submodule (mirrors the llama.cpp
+  pattern). The Android build compiles its C++ runtime + Phase 13 mobile
+  sources into `nrr_runtime` (static), so a paired node can execute
+  `nrr_render` natively instead of answering `not_supported`.
+- Compiled from our own `CMakeLists.txt` rather than upstream's
+  `add_subdirectory()`: upstream gates `NRR_HAVE_ONNXRUNTIME` on the Windows
+  layout (`lib/onnxruntime.lib` + `.dll`) with non-`CACHE` `set()`s, so the
+  ORT-enabled path is unreachable on Android from outside.
+- ONNX Runtime is **required**: upstream's ORT-less "placeholder" path does
+  not compile (`onnx_runtime.cpp` uses `provider_note_`, which
+  `onnx_runtime.h` declares only under `NRR_HAVE_ONNXRUNTIME`). Configure
+  fails fast with instructions instead of degrading misleadingly.
+
+### ONNX Runtime from the official Maven AAR (`scripts/fetch_ort_android.sh`)
+- Extracts the version-matched C headers *and* per-ABI `libonnxruntime.so`
+  from `onnxruntime-android` (default 1.23.2; ~19 MB arm64-v8a, ~22 MB
+  x86_64). Gitignored; regenerate with the script.
+- Gradle packages that directory via `jniLibs.srcDirs`, so the `.so` CMake
+  links is the exact file shipped in the APK.
+
+### Upstream bugs found (Phase 13 had never been compiled)
+- ORT-less path does not compile (`provider_note_` outside its `#ifdef`).
+- ORT path is Windows-only (`windows.h`/`MultiByteToWideChar` inside the
+  `NRR_HAVE_ONNXRUNTIME` block); patched to use `ORTCHAR_T` semantics.
+- `nrr_power_manager.cpp` calls four Android hooks
+  (`android_get_battery_level`, `android_get_battery_status`,
+  `android_get_thermal_headroom`, `android_is_low_power`) that upstream
+  neither declares nor defines. Supplied by ShugoCore
+  (`nrr_android_platform.cpp`, sysfs battery/thermal reads).
+- macOS is unbuildable (`backend_apple.cpp` pulls ObjC framework headers into
+  a `.cpp`; `backend_apple.h` lacks the declarations `backend_registry.cpp`
+  references under `__APPLE__`). Host CI compiles those TUs with `__APPLE__`
+  undefined, matching the Windows/Linux behavior upstream supports.
+- **Vendor auto-selection trap:** `is_supported()` never probes for the
+  vendor GPU and Adreno (60) outranks CPU (10), so auto-selection resolves to
+  Adreno on every SoC and then fails detection, killing `nrr_device_create()`.
+  All callers must pass an explicit `preferred_backend`.
+
+### Durable upstream patches (`patches/nrr/`, `scripts/apply_nrr_patches.sh`)
+- The parent repo records only the submodule SHA, so the required in-submodule
+  fixes would be lost on a fresh clone. They now live as an idempotent patch
+  series re-applied after `git submodule update --init`; the port-wiring test
+  fails if the series or the apply script goes missing.
+
+### App-side native layers
+- `nrr_jni.cpp` (`libnrr_jni.so`): JNI bindings for create/destroy session,
+  `renderFrame`, capabilities and power status — same handle-passing and
+  `__ANDROID__`-guard conventions as `llama_jni.cpp`.
+- `NRRBridge.kt` in `.../inference/`, mirroring `LlamaCppBridge`.
+- `nrr/adapter.py`: `NRRRenderWorker` (injectable `frame_source` + `renderer`;
+  the step up from `worker_stub`) and `android_native_worker()` — a factory
+  that binds the worker to `NRRBridge` through Chaquopy and returns `None`
+  when unavailable, so callers keep the fail-closed stub.
+- `NRRRenderWorker.compute_caps()` advertises `nrr_render` only when the
+  worker can serve it, so `nodes_for_workload()` routing never sends pixel
+  work to a node that would answer `not_supported`.
+
+### `nrr_probe` diagnostic — verified on device
+- End-to-end NRR check (device → model → RGBA8 texture → `execute_frame` →
+  download) printing JSON; runs on-device via adb without Gradle.
+- Galaxy A51 (Exynos 1380, arm64-v8a): `onnxruntime: true`,
+  `active_backend: "CPU"`, `model_loaded: true`, `execute_frame: true`,
+  `output_distinct_bytes: 17`, `ok: true`. Capabilities report honestly
+  (`active_ep: "CPU"`, `neural_acceleration: "absent"`) — NNAPI is *not*
+  advertised, because upstream's `apply_provider()` only understands
+  `cpu`/`cuda`/`directml` and would otherwise claim an EP it never appended.
+- See `docs/nrr_android_port.md`.
+- Full app APK (debug) built and installed on the A51; the 9-phase device
+  harness passes 9/9 in a cold-start round (`recursive_loop_training.py`,
+  verdict STABLE, 1 attempt), so the added native runtime does not regress the
+  existing on-device agent.
+
+### Tests
+- `tests/test_nrr_android_port.py`: structural guards for the port wiring
+  (submodule, hard ORT requirement, upstream patches, Gradle packaging).
+
 ## [1.28.2] - 2026-09-09 — NRR contract shim + capability routing + 16 KB budget + governor + kv-mesh transport
 
 ### 16 KB sanitizer budget (`mobile_nodes.py`) — Android compatibility

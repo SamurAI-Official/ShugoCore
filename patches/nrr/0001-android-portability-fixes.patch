@@ -1,0 +1,130 @@
+diff --git a/runtime/mobile/nrr_power_manager.cpp b/runtime/mobile/nrr_power_manager.cpp
+index 3c52d01..7ddfd2d 100644
+--- a/runtime/mobile/nrr_power_manager.cpp
++++ b/runtime/mobile/nrr_power_manager.cpp
+@@ -126,25 +126,35 @@ float power_manager_get_resolution_scale(NRRDevice* device) {
+ }
+ 
+ } // namespace mobile
++} // namespace nrr
++
++// C API wrappers.
++//
++// The declarations live in mobile/nrr_power_manager.h inside a global
++// `extern "C"` block (the public C API), but upstream defined them inside
++// `namespace nrr`, giving them C++ linkage under a mangled name.  Callers
++// only ever use unqualified names from nested namespaces, so they happened
++// to link; the C ABI the header promises did not exist.  Definitions now
++// match their own header.
++extern "C" {
+ 
+-// C API wrappers
+ NRRResult nrr_power_manager_init(NRRDevice* device, const NRRPowerSettings* settings) {
+-    return mobile::power_manager_init(device, settings);
++    return nrr::mobile::power_manager_init(device, settings);
+ }
+ NRRResult nrr_power_manager_shutdown(NRRDevice* device) {
+-    return mobile::power_manager_shutdown(device);
++    return nrr::mobile::power_manager_shutdown(device);
+ }
+ NRRResult nrr_power_manager_update(NRRDevice* device) {
+-    return mobile::power_manager_update(device);
++    return nrr::mobile::power_manager_update(device);
+ }
+ NRRResult nrr_power_manager_get_status(NRRDevice* device, NRRPowerStatus* status) {
+-    return mobile::power_manager_get_status(device, status);
++    return nrr::mobile::power_manager_get_status(device, status);
+ }
+ NRRResult nrr_power_manager_set_profile(NRRDevice* device, NRRPowerProfile profile) {
+-    return mobile::power_manager_set_profile(device, profile);
++    return nrr::mobile::power_manager_set_profile(device, profile);
+ }
+ float nrr_power_manager_get_resolution_scale(NRRDevice* device) {
+-    return mobile::power_manager_get_resolution_scale(device);
++    return nrr::mobile::power_manager_get_resolution_scale(device);
+ }
+ 
+-} // namespace nrr
+\ No newline at end of file
++} // extern "C"
+diff --git a/runtime/onnx_runtime.cpp b/runtime/onnx_runtime.cpp
+index f1bf08b..c2ef7da 100644
+--- a/runtime/onnx_runtime.cpp
++++ b/runtime/onnx_runtime.cpp
+@@ -8,6 +8,13 @@
+ #include <cstdio>
+ 
+ #ifdef NRR_HAVE_ONNXRUNTIME
++// ORT's CreateSession takes a path whose type is ORTCHAR_T: wchar_t on
++// Windows, char elsewhere. Upstream hard-codes the Windows form
++// (windows.h + MultiByteToWideChar) inside the NRR_HAVE_ONNXRUNTIME block,
++// so the ORT-enabled build fails on every non-Windows target (Android
++// included). Windows keeps the wide path; elsewhere the narrow path is the
++// ORTCHAR_T itself.
++#if defined(_WIN32)
+ #define WIN32_LEAN_AND_MEAN
+ #define NOMINMAX
+ #include <windows.h>
+@@ -20,6 +27,13 @@ static std::wstring utf8_to_wide(const std::string& s) {
+     MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &w[0], n);
+     return w;
+ }
++
++// ORTCHAR_T is wchar_t here.
++static std::wstring ort_path(const std::string& s) { return utf8_to_wide(s); }
++#else
++// ORTCHAR_T is char here (ORTCHAR_T == char off Windows).
++static std::string ort_path(const std::string& s) { return s; }
++#endif
+ #endif
+ 
+ namespace nrr {
+@@ -149,8 +163,8 @@ bool ONNXRuntime::load_model(const std::string& model_path) {
+ 
+     apply_provider(preferred_provider_);
+ 
+-    std::wstring wpath = utf8_to_wide(model_path);
+-    if (!check(api_->CreateSession(env_, wpath.c_str(), session_options_,
++    auto npath = ort_path(model_path);
++    if (!check(api_->CreateSession(env_, npath.c_str(), session_options_,
+                                    &session_),
+                "CreateSession")) return fail(ort_error_);
+     if (!check(api_->GetAllocatorWithDefaultOptions(&allocator_),
+diff --git a/runtime/platform/android/nrr_android.h b/runtime/platform/android/nrr_android.h
+index ec0be08..121ec34 100644
+--- a/runtime/platform/android/nrr_android.h
++++ b/runtime/platform/android/nrr_android.h
+@@ -35,4 +35,32 @@ size_t android_get_available_memory();
+ } // namespace android
+ } // namespace nrr
+ 
++// ---------------------------------------------------------------------------
++// Power-manager platform hooks.
++//
++// runtime/mobile/nrr_power_manager.cpp calls these four (guarded by
++// __ANDROID__) from inside `namespace nrr::mobile`, but nothing upstream
++// declared or defined them, so the Android power-manager path has never
++// compiled. They are declared in the namespace the call sites resolve in and
++// implemented by the consuming app (see nrr_android_platform.cpp).
++// ---------------------------------------------------------------------------
++namespace nrr {
++namespace mobile {
++
++// Battery charge 0.0..1.0, or -1 when the device exposes no battery supply.
++float android_get_battery_level();
++
++// 1 charging, 0 discharging, -1 unknown.
++int android_get_battery_status();
++
++// Thermal headroom 0.0 (critical) .. 1.0 (nominal). Reports 1.0 when no
++// thermal zone is readable, so an unknown reading never triggers throttling.
++float android_get_thermal_headroom();
++
++// 1 while the OS battery-saver is on, else 0.
++int android_is_low_power();
++
++} // namespace mobile
++} // namespace nrr
++
+ #endif
+\ No newline at end of file

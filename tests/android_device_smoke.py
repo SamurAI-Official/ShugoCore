@@ -417,8 +417,20 @@ def step_memory_question(serial: str, logger: List[str]) -> bool:
 def step_fact_survives_restart(serial: str, logger: List[str]) -> bool:
     """Seed a fact, force-stop, restart, ask, and confirm the fact survives."""
     ensure_service_started(serial)
+    # Seed inject must land on a live agent loop: after a prior phase's
+    # force-stop+restart the runtime re-init drops observations ("no
+    # agent"), and a stale ack left in logcat from an earlier phase would
+    # false-ack the store check.  wait_for_agent_loop clears logcat and
+    # blocks until the loop is live (same guard the recall path uses).
+    if not wait_for_agent_loop(serial, within_s=restart_window()):
+        _log_red(logger, "  agent loop not live before seed inject")
+        return False
     inject_scanout(serial, "remember that my favorite color is midnight blue")
-    if not expect_in_logs(serial, "I'll remember", within_s=ack_window()):
+    # The store ack can queue behind pending decisions on the measured
+    # cadence (~50 s on device): a single ack_window (2.5x cadence) is not
+    # enough; allow 4 cadences (same hardening as full_teardown_announced).
+    first_ack = max(ack_window() * 2.0, _CADENCE_S * 4.0)
+    if not expect_in_logs(serial, "I'll remember", within_s=first_ack):
         _log_red(logger, "  fact not stored before teardown")
         return False
     run("-s", serial, "shell", "am", "force-stop", SHUGOCORE_PACKAGE)
@@ -448,6 +460,12 @@ def step_full_teardown_announced(serial: str, logger: List[str]) -> bool:
     by the live loop, and the restart has nothing missed to announce.
     """
     ensure_service_started(serial)
+    # Same seed-inject hardening as fact_survives_restart: wait for a live
+    # agent loop (which also clears logcat) so the seed cannot be dropped
+    # during re-init and the ack check cannot hit a stale ack.
+    if not wait_for_agent_loop(serial, within_s=restart_window()):
+        _log_red(logger, "  agent loop not live before seed inject")
+        return False
     inject_scanout(serial, "remember that my middle name is June")
     # First ack after the cadence measurement: the measurement injects its own
     # transcripts, so this ack can queue behind 1-2 pending decisions.  On a

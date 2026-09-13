@@ -4,7 +4,11 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
-## [Unreleased] — native NRR runtime on Android (upstream Phase 13 port)
+## [1.29.0] - 2026-09-12 — native NRR neural rendering on Android (upstream Phase 13 port)
+
+Upstream NRR's C++ runtime now runs on-device: a paired node can execute
+`nrr_render` natively instead of answering `not_supported`. The Python `nrr/`
+contract layer stays binary-free.
 
 ### Vendored NRR C++ runtime (`platforms/android/app/src/main/cpp/nrr`) — submodule
 - `SamurAI-Official/NRR` added as a git submodule (mirrors the llama.cpp
@@ -83,6 +87,29 @@ frozen: no breaking changes across any 1.x release.
 - Full harness re-run after the port: **10/10 phases pass**, verdict STABLE
   (1 round, 1 attempt, no flaky phases) — the native runtime does not regress
   the existing on-device agent.
+
+### Live camera frames — wired, with a device limitation found
+- `PerceptionState` now carries the latest analysed camera frame as RGBA8
+  (filled by `VisionProvider` from the bitmap it already decodes for face
+  detection: one `getPixels` per *analysed* frame, not per camera frame).
+  `ShugoCoreService` renders the freshest frame in a bounded startup probe;
+  pixels stay in-process.
+- **The A51 test unit cannot open its front camera.** `dumpsys media.camera`
+  records `Camera "1" disabled by policy` for every attempt; the system camera
+  app only works by falling back to the back camera. `DEFAULT_FRONT_CAMERA`
+  resolves to camera 1, so `VisionProvider` has never received a frame on this
+  hardware — and the failure was **silent** (binding "succeeds", then the
+  camera closes asynchronously).
+- `VisionProvider` now logs that once, with the CameraX state, so the operator
+  can see vision-backed perception is unavailable instead of guessing:
+  `no camera frames after 20s (state=CLOSED, error=null)`.
+- Deliberately unchanged: the front-camera selector. Person-presence semantics
+  depend on the front camera, and silently switching to the back camera would
+  report the room as the user — a product decision, not a porting one.
+
+### Version
+- `versionCode` 16 -> 17, `versionName` 1.28.2 -> 1.29.0 in version.py,
+  pyproject.toml, build.gradle and the README badge.
 
 ### `nrr_probe` diagnostic — verified on device
 - End-to-end NRR check (device → model → RGBA8 texture → `execute_frame` →

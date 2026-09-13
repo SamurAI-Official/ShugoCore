@@ -46,6 +46,23 @@ class VisionProvider(private val context: Context) {
         private const val GAZE_YAW_THRESHOLD = 20  // v1.20: degrees off-center for "gaze toward camera"
     }
 
+    /** One-shot logcat flags: the NRR frame capture is best-effort and silent
+     * on success, so log only the first of each outcome. */
+    private val frameLogged = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val frameErrorLogged = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val analyzeLogged = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val frameConvertFailedLogged =
+        java.util.concurrent.atomic.AtomicBoolean(false)
+    private val analyzeErrorLogged = java.util.concurrent.atomic.AtomicBoolean(false)
+    /** Set on the first analysed frame; read by the no-frames watchdog. */
+    private val firstFrameSeen = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val WATCHDOG_MS = 20_000L
+    private val probeHandler =
+        android.os.Handler(android.os.Looper.getMainLooper())
+
+    @Volatile private var boundCamera: androidx.camera.core.Camera? = null
+
+
     /** A permanently-RESUMED owner: the camera lives as long as the service. */
     private val lifecycleOwner = object : LifecycleOwner {
         private val registry = LifecycleRegistry(this)
@@ -93,15 +110,36 @@ class VisionProvider(private val context: Context) {
                             .build()
                         analysis.setAnalyzer(analyzerExecutor, ::analyze)
                         provider.unbindAll()
-                        provider.bindToLifecycle(
+                        val camera = provider.bindToLifecycle(
                             lifecycleOwner, CameraSelector.DEFAULT_FRONT_CAMERA,
                             analysis)
+                        boundCamera = camera
                         LogBus.log(LogBus.Category.SENSOR,
                             "vision provider: front camera bound " +
                                 "(~1 fps person presence)")
+                        android.util.Log.i("VisionProvider",
+                            "front camera bound (~1 fps)")
+                        // Watchdog: binding "succeeding" does NOT mean frames
+                        // arrive. On this hardware the front camera is refused
+                        // asynchronously ("Camera 1 disabled by policy"), so the
+                        // provider used to sit silently at zero frames forever.
+                        // Surface that once, with the CameraX error code.
+                        probeHandler.postDelayed({
+                            if (!firstFrameSeen.get()) {
+                                @Suppress("UNCHECKED_CAST")
+                                val st = boundCamera?.cameraInfo
+                                    ?.cameraState?.value
+                                android.util.Log.w("VisionProvider",
+                                    "no camera frames after ${WATCHDOG_MS / 1000}s " +
+                                    "(state=${st?.type}, error=${st?.error?.code}) " +
+                                    "- vision + NRR camera frames unavailable")
+                            }
+                        }, WATCHDOG_MS)
                     } catch (e: Exception) {
                         LogBus.log(LogBus.Category.SENSOR,
                             "vision provider failed: ${e.message}", isError = true)
+                        android.util.Log.w("VisionProvider",
+                            "camera bind failed: ${e.message}")
                         isRunning = false
                     }
                 }, ContextCompat.getMainExecutor(context))
@@ -144,8 +182,54 @@ class VisionProvider(private val context: Context) {
             val interval = if (attentionMode) ANALYZE_INTERVAL_ATTENTION_MS else ANALYZE_INTERVAL_MS
             if (now - lastAnalyzeMs < interval) return
             lastAnalyzeMs = now
-            val bitmap = frameToRgb565(proxy, ANALYSIS_WIDTH) ?: return
+            firstFrameSeen.set(true)
+            if (analyzeLogged.compareAndSet(false, true)) {
+                android.util.Log.i("VisionProvider",
+                    "first frame analysed (${proxy.width}x${proxy.height}, " +
+                    "rotation=${proxy.imageInfo.rotationDegrees})")
+            }
+            val bitmap = frameToRgb565(proxy, ANALYSIS_WIDTH)
+            if (bitmap == null) {
+                if (frameConvertFailedLogged.compareAndSet(false, true)) {
+                    android.util.Log.w("VisionProvider",
+                        "frame conversion returned null (format=" +
+                        "${proxy.format}, ${proxy.width}x${proxy.height})")
+                }
+                return
+            }
             PerceptionState.lastCameraFrameMs = now
+
+            // v1.29: publish the same frame as RGBA8 for the NRR render path.
+            // Reuses the bitmap already decoded for face detection, so the only
+            // added cost is one getPixels per ANALYSED frame (throttled above),
+            // not per camera frame. Best-effort: a failure here must never
+            // break vision. First success/failure is logged to logcat (once
+            // each) because the NRR camera probe depends on this stamp.
+            try {
+                val w = bitmap.width
+                val h = bitmap.height
+                val pixels = IntArray(w * h)
+                bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+                val rgba = ByteArray(w * h * 4)
+                for (i in pixels.indices) {
+                    val c = pixels[i]
+                    val o = i * 4
+                    rgba[o] = ((c shr 16) and 0xFF).toByte()      // R
+                    rgba[o + 1] = ((c shr 8) and 0xFF).toByte()   // G
+                    rgba[o + 2] = (c and 0xFF).toByte()           // B
+                    rgba[o + 3] = 0xFF.toByte()                   // A (opaque)
+                }
+                PerceptionState.stampFrameRgba(w, h, rgba)
+                if (frameLogged.compareAndSet(false, true)) {
+                    android.util.Log.i("VisionProvider",
+                        "first camera frame published for NRR: ${w}x$h")
+                }
+            } catch (e: Exception) {
+                if (frameErrorLogged.compareAndSet(false, true)) {
+                    android.util.Log.w("VisionProvider",
+                        "NRR frame capture failed: ${e.message}")
+                }
+            }
 
             // v1.24: store a JPEG preview of the camera frame for the UI.
             try {
@@ -195,6 +279,10 @@ class VisionProvider(private val context: Context) {
         } catch (e: Exception) {
             LogBus.log(LogBus.Category.SENSOR,
                 "vision analysis failed: ${e.message}", isError = true)
+            if (analyzeErrorLogged.compareAndSet(false, true)) {
+                android.util.Log.w("VisionProvider",
+                    "analyse failed: ${e.message}")
+            }
         } finally {
             proxy.close()  // every proxy closes: skipped frames too
         }

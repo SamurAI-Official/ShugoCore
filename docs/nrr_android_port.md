@@ -103,7 +103,47 @@ I ShugoCoreService: NRR self-test ok: 768 bytes, 17 distinct, 4.3ms
 exactly. This is also covered by the `nrr_native_ready` phase of
 `tests/android_device_smoke.py`, which restarts the app and asserts the line.
 
-## Upstream bugs found while porting
+## Live camera frames (and a device limitation)
+
+The NRR render path takes its frame from `PerceptionState.lastFrameRgba`, which
+`VisionProvider` fills from the very bitmap it already decodes for face
+detection (one `getPixels` per *analysed* frame, throttled to the analysis
+interval — not per camera frame). `ShugoCoreService` runs a bounded camera
+probe (polls every 5 s for ~75 s) that renders the freshest frame and logs the
+geometry. Nothing about this crosses the mesh.
+
+**On the Galaxy A51 test unit the front camera cannot be opened at all.**
+`dumpsys media.camera` records, for every attempt:
+
+```
+REJECT device 1 client for package com.samurai.shugocore, reason:
+  '6: connectHelper:2269: Camera "1" disabled by policy'
+```
+
+The device exposes camera 0 (back) plus several others; the *system* camera app
+works only because it falls back to the back camera. `CameraSelector
+.DEFAULT_FRONT_CAMERA` resolves to camera 1, which the HAL refuses, so
+`VisionProvider` has never received a frame on this hardware — and the failure
+used to be **silent** (binding "succeeds", the camera then closes
+asynchronously).
+
+`VisionProvider` now watches for that and logs it once:
+
+```
+W VisionProvider: front camera bound (~1 fps)
+W VisionProvider: no camera frames after 20s (state=CLOSED, error=null)
+                  - vision + NRR camera frames unavailable
+```
+
+Consequences:
+
+- The synthetic self-test and `nrr_probe` remain the deterministic proofs that
+  the render path works; the camera path is wired but not verifiable here.
+- Deliberately **not** changed: `DEFAULT_FRONT_CAMERA`. Person-presence
+  semantics depend on the front camera; silently falling back to the back
+  camera would report the room as the user. Making the selector configurable is
+  a product decision, not a porting one.
+
 
 Verified against `main` (NRR `1.0.0-dev`); Phase 13 had never been compiled.
 

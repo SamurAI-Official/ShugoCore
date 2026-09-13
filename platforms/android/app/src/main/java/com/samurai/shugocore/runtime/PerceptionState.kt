@@ -73,6 +73,47 @@ object PerceptionState {
     /** Latest camera frame as JPEG bytes (null until first frame). */
     @Volatile var lastPreviewJpeg: ByteArray? = null
 
+    // -- v1.29 NRR renderer input -------------------------------------------
+    /**
+     * Latest analysed camera frame as packed RGBA8 (null until first frame).
+     *
+     * Written by [VisionProvider] from the very bitmap it already decodes for
+     * face detection, so capturing it costs one `getPixels` per analysed frame
+     * (throttled to the analysis interval, not the camera's frame rate).
+     *
+     * This is the local frame source for the NRR render path: pixels are
+     * consumed in-process and never leave the device.
+     */
+    @Volatile var lastFrameRgba: ByteArray? = null
+    @Volatile var lastFrameWidth: Int = 0
+    @Volatile var lastFrameHeight: Int = 0
+    @Volatile var lastFrameRgbaMs: Long = 0L
+
+    /**
+     * The most recent camera frame in RGBA8, or null when none arrived within
+     * [maxAgeMs]. Returns a triple of (width, height, rgba) so callers cannot
+     * mismatch the buffer with its geometry.
+     */
+    fun latestFrameRgba(maxAgeMs: Long):
+        Triple<Int, Int, ByteArray>? {
+        val rgba = lastFrameRgba ?: return null
+        val w = lastFrameWidth
+        val h = lastFrameHeight
+        if (w <= 0 || h <= 0 || rgba.size != w * h * 4) return null
+        val age = System.currentTimeMillis() - lastFrameRgbaMs
+        if (lastFrameRgbaMs <= 0L || age >= maxAgeMs) return null
+        return Triple(w, h, rgba)
+    }
+
+    /** Publish an analysed frame for the NRR render path. */
+    fun stampFrameRgba(width: Int, height: Int, rgba: ByteArray) {
+        if (width <= 0 || height <= 0 || rgba.size != width * height * 4) return
+        lastFrameRgba = rgba
+        lastFrameWidth = width
+        lastFrameHeight = height
+        lastFrameRgbaMs = System.currentTimeMillis()
+    }
+
     // -- v1.22 device mesh signals ---
     @Volatile var meshPeerCount: Int = 0
     @Volatile var meshPeersJson: String = "[]"

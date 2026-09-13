@@ -332,6 +332,43 @@ class ShugoCoreService : Service() {
                 } catch (t: Throwable) {
                     Log.w(TAG, "NRR setup failed: ${t.message}")
                 }
+                // Bounded camera-frame probe. The camera provider starts on its
+                // own schedule (and only while the UI lifecycle is alive), so a
+                // single shot easily misses the window. Polls every 5s for up
+                // to ~75s, then gives up with one honest line. Diagnostic only.
+                if (nrrBridge != null) {
+                    val probeHandler =
+                        android.os.Handler(android.os.Looper.getMainLooper())
+                    val maxAttempts = 12
+                    var attempt = 0
+                    val probe = object : Runnable {
+                        override fun run() {
+                            val renderer = nrrBridge ?: return
+                            attempt++
+                            val stats = try {
+                                NrrRendererBridge(renderer)
+                                    .renderLatestCameraFrame(8_000L)
+                            } catch (t: Throwable) {
+                                Log.w(TAG, "NRR camera probe failed: ${t.message}")
+                                null
+                            }
+                            when {
+                                stats != null -> Log.i(TAG,
+                                    "NRR camera frame render ok: " +
+                                    "${stats["in_width"]}x${stats["in_height"]} -> " +
+                                    "${stats["output_bytes"]} bytes, " +
+                                    "${stats["distinct_bytes"]} distinct, " +
+                                    "%.1fms".format(stats["render_time_ms"]))
+                                attempt >= maxAttempts -> Log.i(TAG,
+                                    "NRR camera frame unavailable after " +
+                                    "$attempt attempts (camera off or " +
+                                    "permission not granted)")
+                                else -> probeHandler.postDelayed(this, 5_000L)
+                            }
+                        }
+                    }
+                    probeHandler.postDelayed(probe, 15_000L)
+                }
                 audioProvider?.onSpeechOnset = {
                     if (!PerceptionState.ttsSpeaking &&
                         android.os.SystemClock.elapsedRealtime() -
@@ -1054,5 +1091,29 @@ class ShugoCoreService : Service() {
 
         fun renderFrame(width: Int, height: Int, rgba: ByteArray): ByteArray? =
             bridge.render(width, height, rgba)
+
+        /**
+         * Render the most recent analysed camera frame.
+         *
+         * Returns a stats map (as [Map]) or null when there is no fresh frame
+         * (camera off / permission not granted) or the render failed. Pixels
+         * are read from [PerceptionState] in-process and never leave the
+         * device.
+         */
+        fun renderLatestCameraFrame(maxAgeMs: Long): Map<String, Any>? {
+            val frame = com.samurai.shugocore.runtime.PerceptionState
+                .latestFrameRgba(maxAgeMs) ?: return null
+            val (w, h, rgba) = frame
+            val started = System.nanoTime()
+            val rgb = bridge.render(w, h, rgba) ?: return null
+            val elapsedMs = (System.nanoTime() - started) / 1_000_000.0
+            return mapOf(
+                "in_width" to w,
+                "in_height" to h,
+                "output_bytes" to rgb.size,
+                "distinct_bytes" to rgb.toSortedSet().size,
+                "render_time_ms" to elapsedMs,
+            )
+        }
     }
 }

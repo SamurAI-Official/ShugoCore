@@ -84,9 +84,15 @@ contract layer stays binary-free.
   4.3ms` logged by `ShugoCoreService` on a clean start (`768 == 16*16*3`, and
   the distinct-byte count matches `nrr_probe`). New `nrr_native_ready` phase in
   `tests/android_device_smoke.py` asserts it across a restart.
-- Full harness re-run after the port: **10/10 phases pass**, verdict STABLE
-  (1 round, 1 attempt, no flaky phases) — the native runtime does not regress
-  the existing on-device agent.
+- **Verified with a LIVE camera frame**: the camera came up on the A51 and the
+  service logged
+  `NRR camera frame render ok: 320x426 -> 408960 bytes, 88 distinct, 11.0ms`
+  — `408960 == 320*426*3` (RGB8) and 88 distinct byte values, i.e. a real
+  image through ONNX Runtime, not a synthetic fill. `nrr_camera_render` is now
+  a harness phase.
+- Full harness re-run after the port: **11/11 phases pass**, verdict STABLE
+  (1 round, 1 attempt, no flaky phases) on 1.29.0 / versionCode 17 — the native
+  runtime does not regress the existing on-device agent.
 
 ### Live camera frames — wired, with a device limitation found
 - `PerceptionState` now carries the latest analysed camera frame as RGBA8

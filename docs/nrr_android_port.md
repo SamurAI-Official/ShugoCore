@@ -103,60 +103,68 @@ I ShugoCoreService: NRR self-test ok: 768 bytes, 17 distinct, 4.3ms
 exactly. This is also covered by the `nrr_native_ready` phase of
 `tests/android_device_smoke.py`, which restarts the app and asserts the line.
 
-## Live camera frames (and a device limitation)
+## Live camera frames
 
 The NRR render path takes its frame from `PerceptionState.lastFrameRgba`, which
 `VisionProvider` fills from the very bitmap it already decodes for face
 detection (one `getPixels` per *analysed* frame, throttled to the analysis
 interval — not per camera frame). `ShugoCoreService` runs a bounded camera
-probe (polls every 5 s for ~75 s) that renders the freshest frame and logs the
-geometry. Nothing about this crosses the mesh.
+probe (polls every 5 s for ~75 s, starting 15 s after NRR init) that renders
+the freshest frame and logs the geometry. Nothing about this crosses the mesh.
 
-**On the Galaxy A51 test unit the front camera cannot be opened at all.**
-`dumpsys media.camera` records, for every attempt:
+Verified on the A51 with a real image:
+
+```
+I VisionProvider: first frame analysed (640x480, rotation=270)
+I VisionProvider: first camera frame published for NRR: 320x426
+I ShugoCoreService: NRR camera frame render ok: 320x426 -> 408960 bytes,
+                    88 distinct, 10.4ms
+```
+
+`408960 == 320*426*3` (RGB8) and 88 distinct byte values means real image
+content reached ONNX Runtime and real pixels came back. `nrr_camera_render`
+asserts this across a restart in `tests/android_device_smoke.py`.
+
+### Front camera can be refused by policy (intermittent on the A51)
+
+During part of this work the front camera could not be opened at all; the
+camera service recorded, for every attempt:
 
 ```
 REJECT device 1 client for package com.samurai.shugocore, reason:
   '6: connectHelper:2269: Camera "1" disabled by policy'
 ```
 
-The device exposes camera 0 (back) plus several others; the *system* camera app
-works only because it falls back to the back camera. `CameraSelector
-.DEFAULT_FRONT_CAMERA` resolves to camera 1, which the HAL refuses, so
-`VisionProvider` has never received a frame on this hardware — and the failure
-used to be **silent** (binding "succeeds", the camera then closes
-asynchronously).
+The device exposes camera 0 (back) plus several others, and the *system* camera
+app then works only because it falls back to the back camera.
+`CameraSelector.DEFAULT_FRONT_CAMERA` resolves to camera 1. The condition later
+cleared on its own (no app change), so it is a device state rather than a code
+path — but the important part is that it used to fail **silently**:
+`bindToLifecycle()` "succeeds" and the camera closes asynchronously, so
+`VisionProvider` sat at zero frames and the SENSORS tab showed a healthy
+`Granted · Idle` indefinitely.
 
-`VisionProvider` now watches for that and logs it once:
+That is now surfaced in two places:
 
 ```
-W VisionProvider: front camera bound (~1 fps)
 W VisionProvider: no camera frames after 20s (state=CLOSED, error=null)
                   - vision + NRR camera frames unavailable
 ```
 
-Consequences:
-
-- The synthetic self-test and `nrr_probe` remain the deterministic proofs that
-  the render path works; the camera path is wired but not verifiable here.
-- Deliberately **not** changed: `DEFAULT_FRONT_CAMERA`. Person-presence
-  semantics depend on the front camera; silently falling back to the back
-  camera would report the room as the user. Making the selector configurable is
-  a product decision, not a porting one.
-
-### Not just logcat: the SENSORS tab now shows it
-
-`VisionProvider.cameraFault` is published to `PerceptionState`, which
-`SensorCapabilityManager.detail("camera")` surfaces via
-`unavailableVisionNote()`. The camera row therefore reads
+and the SENSORS row, which reads
 
 ```
 ⚠ Granted · not delivering · camera not delivering frames (state=CLOSED, error=null)
 ```
 
-instead of a healthy `✓ Granted · ○ Idle`. Only reported once the fault is
-established, and cleared when frames start arriving or the provider stops, so a
-camera that is merely still binding is not flagged as broken.
+A fault is only claimed once the watchdog expires and is cleared when frames
+arrive or the provider stops, so a camera that is merely still binding is not
+flagged broken.
+
+Deliberately **not** changed: `DEFAULT_FRONT_CAMERA`. Person-presence
+semantics depend on the front camera; silently falling back to the back camera
+would report the room as the user. Making the selector configurable is a
+product decision, not a porting one.
 
 ## Upstream bugs found while porting
 

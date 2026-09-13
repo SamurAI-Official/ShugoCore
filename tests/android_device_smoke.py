@@ -302,6 +302,11 @@ PHASES: List[Dict[str, Any]] = [
         "tags": ("nrr", "native", "restart"),
     },
     {
+        "name": "nrr_camera_render",
+        "desc": "NRR renders a frame captured from the live camera",
+        "tags": ("nrr", "camera", "restart"),
+    },
+    {
         "name": "personality_model_genesis",
         "desc": "first production model paragraph exists in SQLite",
         "tags": ("personality", "genesis"),
@@ -379,6 +384,46 @@ def step_nrr_native_ready(serial: str, logger: List[str]) -> bool:
     for ln in log_lines_containing(serial, "NRR self-test ok")[:1]:
         _log(logger, "  " + ln.strip()[:160])
     return expect_in_logs(serial, "nrr_jni", within_s=5.0)
+
+
+def step_nrr_camera_render(serial: str, logger: List[str]) -> bool:
+    """The NRR runtime renders a frame from the LIVE camera.
+
+    Stronger than `nrr_native_ready` (which renders a synthetic gradient):
+    this drives the real pipeline -- VisionProvider captures an analysed frame,
+    publishes it as RGBA8 in PerceptionState, and ShugoCoreService renders the
+    freshest one through the native runtime. The log line proves the geometry
+    and the content:
+
+        NRR camera frame render ok: 320x426 -> 408960 bytes, 88 distinct
+        (408960 == 320*426*3 RGB8; 88 distinct bytes == a real image)
+
+    NOTE: this is gated on the camera actually delivering frames. On hardware
+    where the HAL refuses the device ("Camera 1 disabled by policy" -- seen
+    intermittently on the A51 test unit) the service honestly logs
+    "camera frame unavailable" and this phase fails, which is the correct
+    signal: vision-backed NRR genuinely is not available then.
+    """
+    clear_logcat(serial)
+    run("-s", serial, "shell", "am", "force-stop", SHUGOCORE_PACKAGE)
+    time.sleep(2.0)
+    ensure_service_started(serial)
+    # The camera provider binds on its own schedule and the service's probe
+    # polls every 5s for up to ~75s, so allow a generous window.
+    window = max(150.0, restart_window() * 3.0)
+    if expect_in_logs(serial, "NRR camera frame render ok", within_s=window):
+        for ln in log_lines_containing(serial, "NRR camera frame render ok")[:1]:
+            _log(logger, "  " + ln.strip()[:160])
+        return True
+
+    if log_lines_containing(serial, "camera frame unavailable"):
+        _log_red(logger, "  camera delivered no frames (HAL refused it?)")
+    elif log_lines_containing(serial, "no camera frames after"):
+        for ln in log_lines_containing(serial, "no camera frames after")[:1]:
+            _log_red(logger, "  " + ln.strip()[:160])
+    else:
+        _log_red(logger, "  no NRR camera render line at all")
+    return False
 
 
 def step_service_alive(serial: str, logger: List[str]) -> bool:
@@ -718,6 +763,7 @@ STEP_BY_NAME: Dict[str, Callable[[str, List[str]], bool]] = {
     "fact_survives_restart": step_fact_survives_restart,
     "full_teardown_announced": step_full_teardown_announced,
     "nrr_native_ready": step_nrr_native_ready,
+    "nrr_camera_render": step_nrr_camera_render,
     "personality_model_genesis": step_personality_model_genesis,
     "personality_growth_log": step_personality_growth_log,
 }

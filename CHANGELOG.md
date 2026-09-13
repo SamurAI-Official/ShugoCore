@@ -79,8 +79,10 @@ frozen: no breaking changes across any 1.x release.
 - **Verified in-app** on the A51: `NRR self-test ok: 768 bytes, 17 distinct,
   4.3ms` logged by `ShugoCoreService` on a clean start (`768 == 16*16*3`, and
   the distinct-byte count matches `nrr_probe`). New `nrr_native_ready` phase in
-  `tests/android_device_smoke.py` asserts it across a restart; the training
-  orchestrator now drives a 10-phase harness.
+  `tests/android_device_smoke.py` asserts it across a restart.
+- Full harness re-run after the port: **10/10 phases pass**, verdict STABLE
+  (1 round, 1 attempt, no flaky phases) — the native runtime does not regress
+  the existing on-device agent.
 
 ### `nrr_probe` diagnostic — verified on device
 - End-to-end NRR check (device → model → RGBA8 texture → `execute_frame` →

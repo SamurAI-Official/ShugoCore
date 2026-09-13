@@ -64,6 +64,24 @@ frozen: no breaking changes across any 1.x release.
   worker can serve it, so `nodes_for_workload()` routing never sends pixel
   work to a node that would answer `not_supported`.
 
+### Reachable from inside the app
+- `ShugoCoreService` builds the NRR bridge at startup, attaches it to
+  `LocalApiServer`, registers it with the Python agent
+  (`register_nrr_renderer`) and runs a startup self-test.
+- The model ships in `assets/nrr/` and `NRRBridge.extractAssetModel()` copies it
+  into `filesDir` (ONNX Runtime needs a real path; `*.onnx` is `noCompress` so
+  the length check can skip a redundant copy).
+- `LocalApiServer` serves `GET /nrr/info` and `GET|POST /nrr/selftest`.
+- `shugocore_agent.py` gains `register_nrr_renderer()`, `nrr_status_json()`
+  and `nrr_worker()`; `nrr/adapter.py::android_native_worker` now binds to the
+  registered renderer object (the device owns construction, since it needs a
+  Context and the packaged asset).
+- **Verified in-app** on the A51: `NRR self-test ok: 768 bytes, 17 distinct,
+  4.3ms` logged by `ShugoCoreService` on a clean start (`768 == 16*16*3`, and
+  the distinct-byte count matches `nrr_probe`). New `nrr_native_ready` phase in
+  `tests/android_device_smoke.py` asserts it across a restart; the training
+  orchestrator now drives a 10-phase harness.
+
 ### `nrr_probe` diagnostic — verified on device
 - End-to-end NRR check (device → model → RGBA8 texture → `execute_frame` →
   download) printing JSON; runs on-device via adb without Gradle.

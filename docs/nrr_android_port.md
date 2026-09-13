@@ -71,13 +71,37 @@ script goes missing, and if the applied patches stop being present.
 | Layer | Purpose |
 |---|---|
 | `nrr_jni.cpp` | JNI bindings (`libnrr_jni.so`): create/destroy session, `renderFrame`, capabilities, power status. Same handle-passing and `__ANDROID__`-guard conventions as `llama_jni.cpp`. |
-| `NRRBridge.kt` | Kotlin wrapper in `.../inference/`, mirroring `LlamaCppBridge`. Loads `nrr_jni`, exposes `render()` / `capabilities()` / `powerStatus()`. |
+| `NRRBridge.kt` | Kotlin wrapper in `.../inference/`, mirroring `LlamaCppBridge`. Loads `nrr_jni`, exposes `render()` / `capabilities()` / `powerStatus()` / `selfTest()`, and `extractAssetModel()` (copies the packaged model into `filesDir` — ONNX Runtime needs a real path, and `*.onnx` is marked `noCompress`). |
+| `ShugoCoreService` | Builds the bridge at startup, attaches it to `LocalApiServer`, registers it with the Python agent (`register_nrr_renderer`), and runs the startup self-test. |
+| `LocalApiServer` | Serves `GET /nrr/info` and `GET|POST /nrr/selftest` on the existing loopback Ollama-compatible server. |
+| `shugocore_agent.py` | `register_nrr_renderer()`, `nrr_status_json()`, `nrr_worker()` — the agent-side hooks. |
 | `nrr/adapter.py::NRRRenderWorker` | Peripheral worker: the step up from `worker_stub`. Injected `frame_source` + `renderer`, so it is device-free and unit-tested. |
-| `nrr/adapter.py::android_native_worker` | Factory that binds `NRRRenderWorker` to `NRRBridge` through Chaquopy. Returns `None` when unavailable, so callers keep the fail-closed stub. |
+| `nrr/adapter.py::android_native_worker` | Binds `NRRRenderWorker` to the registered renderer object. Returns `None` when there is no ready renderer, so callers keep the fail-closed stub. |
+
+Device owns construction (it needs a `Context` and the packaged asset); Python
+only ever receives a ready object.
 
 `NRRRenderWorker.compute_caps()` advertises `nrr_render` **only** when the
 worker can actually serve it, so the primary's `nodes_for_workload()` routing
 never sends pixel work to a node that would answer `not_supported`.
+
+## In-app verification
+
+The service renders a 16x16 synthetic frame at startup and logs the outcome,
+so the runtime is verifiable from logcat even when no local GGUF is present
+(and therefore the local API server is not running):
+
+```
+adb logcat | grep -E 'nrr_jni|NRR self-test'
+I nrr_jni : JNI_OnLoad
+I nrr_jni : nativeCreate: backend=CPU model=loaded
+I NRRBridge: NRR ready: backend=CPU model=true
+I ShugoCoreService: NRR self-test ok: 768 bytes, 17 distinct, 4.3ms
+```
+
+`768 == 16*16*3` (RGB8), and the distinct-byte count matches `nrr_probe`
+exactly. This is also covered by the `nrr_native_ready` phase of
+`tests/android_device_smoke.py`, which restarts the app and asserts the line.
 
 ## Upstream bugs found while porting
 

@@ -44,6 +44,7 @@ class ShugoCoreService : Service() {
     private var python: Python? = null
     private var pyAgent: PyObject? = null
     private var llamaBridge: LlamaCppBridge? = null
+    private var nrrBridge: NRRBridge? = null
     private var apiServer: LocalApiServer? = null
     private var thermalMonitor: ThermalMonitor? = null
     private var capabilityDetector: CapabilityDetector? = null
@@ -285,6 +286,52 @@ class ShugoCoreService : Service() {
                 // short echo dead time after; the human still wins the
                 // channel once the utterance completes.
                 pyAgent?.callAttr("register_speak_listener", SpeakBridge())
+                // NRR native rendering: register the bridge with the Python
+                // agent (the same reverse-callback pattern as SpeakBridge) and
+                // attach it to the local API server, so /nrr/info and
+                // /nrr/selftest report the real runtime. Fail-open with a log:
+                // the agent runs fine without NRR.
+                try {
+                    val nrrModelPath = NRRBridge.extractAssetModel(
+                        this@ShugoCoreService, "nrr/nrr_upscaler_v0.1.onnx")
+                    if (nrrModelPath != null) {
+                        val nrr = NRRBridge(nrrModelPath)
+                        if (nrr.initialize()) {
+                            nrrBridge = nrr
+                            // Prove the whole native path FIRST, before any
+                            // Python call: rendering a 16x16 synthetic frame is
+                            // cheap (a few ms) and gives logcat-verifiable
+                            // evidence even when no local GGUF is present (so
+                            // the local API server is not running) and even if
+                            // a later reverse-callback blocks on the Python GIL.
+                            val probe = try { nrr.selfTest() } catch (t: Throwable) {
+                                Log.w(TAG, "NRR self-test threw: ${t.message}")
+                                null
+                            }
+                            if (probe != null) {
+                                Log.i(TAG, "NRR self-test ok: " +
+                                    "${probe["output_bytes"]} bytes, " +
+                                    "${probe["distinct_bytes"]} distinct, " +
+                                    "%.1fms".format(probe["render_time_ms"]))
+                            } else {
+                                Log.w(TAG, "NRR self-test FAILED (no frame returned)")
+                            }
+                            apiServer?.attachNrr(nrr)
+                            pyAgent?.callAttr("register_nrr_renderer",
+                                              NrrRendererBridge(nrr))
+                            LogBus.log(LogBus.Category.AGENT,
+                                "NRR runtime ready (${nrr.activeBackend()}, " +
+                                "model=${nrr.isModelLoaded})")
+                        } else {
+                            nrr.close()
+                            Log.w(TAG, "NRR initialize failed; rendering off")
+                        }
+                    } else {
+                        Log.w(TAG, "NRR model asset missing; rendering off")
+                    }
+                } catch (t: Throwable) {
+                    Log.w(TAG, "NRR setup failed: ${t.message}")
+                }
                 audioProvider?.onSpeechOnset = {
                     if (!PerceptionState.ttsSpeaking &&
                         android.os.SystemClock.elapsedRealtime() -
@@ -932,6 +979,8 @@ class ShugoCoreService : Service() {
         agentRunning = false
         apiServer?.stop()
         llamaBridge?.close()
+        nrrBridge?.close()
+        nrrBridge = null
         executor.shutdown()
         // Phase 4: full teardown — flush engine memory to disk so facts,
         // timers and episodic state survive the process going away. Falls
@@ -973,5 +1022,37 @@ class ShugoCoreService : Service() {
                     if (ok) "SPEAKING" else "dropped", isError = !ok)
             return ok
         }
+    }
+
+    /**
+     * The NRR renderer Python calls (Chaquopy reverse callback, same pattern
+     * as SpeakBridge). Python holds this object and calls:
+     *
+     *   renderer.isAvailable()          -> Boolean
+     *   renderer.isModelLoaded()        -> Boolean
+     *   renderer.backendName()          -> String
+     *   renderer.capabilitiesJson()     -> String (JSON)
+     *   renderer.powerStatusJson()      -> String (JSON)
+     *   renderer.renderFrame(w, h, rgb) -> ByteArray (RGB8) or null
+     *
+     * Pixels stay local: renderFrame takes a frame the device already holds
+     * and returns the rendered result in-process. Keep these names in sync
+     * with nrr/adapter.py::android_native_worker.
+     */
+    class NrrRendererBridge(private val bridge: NRRBridge) {
+        fun isAvailable(): Boolean = bridge.isReady
+
+        fun isModelLoaded(): Boolean = bridge.isModelLoaded
+
+        fun backendName(): String = bridge.activeBackend()
+
+        fun capabilitiesJson(): String =
+            org.json.JSONObject(bridge.capabilities()).toString()
+
+        fun powerStatusJson(): String =
+            org.json.JSONObject(bridge.powerStatus()).toString()
+
+        fun renderFrame(width: Int, height: Int, rgba: ByteArray): ByteArray? =
+            bridge.render(width, height, rgba)
     }
 }

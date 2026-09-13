@@ -119,6 +119,77 @@ class NRRBridge(
         isInitialized.set(false)
     }
 
+    /**
+     * Render a deterministic synthetic frame as a self-test.
+     *
+     * Renders a 16x16 gradient locally and reports what came back, so the
+     * whole native path (device -> ONNX session -> kernel -> output texture)
+     * can be exercised without a camera. Returns null when the bridge is not
+     * ready or the render failed.
+     */
+    fun selfTest(): Map<String, Any>? {
+        if (!isReady) return null
+        val w = 16
+        val h = 16
+        val rgba = ByteArray(w * h * 4)
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val i = (y * w + x) * 4
+                rgba[i] = (x * 255 / (w - 1)).toByte()
+                rgba[i + 1] = (y * 255 / (h - 1)).toByte()
+                rgba[i + 2] = 128.toByte()
+                rgba[i + 3] = 255.toByte()
+            }
+        }
+        val started = System.nanoTime()
+        val rgb = render(w, h, rgba) ?: return null
+        val elapsedMs = (System.nanoTime() - started) / 1_000_000.0
+        return mapOf(
+            "width" to w,
+            "height" to h,
+            "output_bytes" to rgb.size,
+            "distinct_bytes" to rgb.toSortedSet().size,
+            "render_time_ms" to elapsedMs,
+        )
+    }
+
+    companion object {
+        /**
+         * Extract an NRR model from `assets` into app-private storage.
+         *
+         * ONNX Runtime's CreateSession needs a real filesystem path; an asset
+         * is a compressed stream inside the APK, so it is copied once into
+         * filesDir and reused while the asset is unchanged (size check).
+         * Returns the path, or null when the asset is missing.
+         */
+        fun extractAssetModel(context: android.content.Context,
+                              assetPath: String): String? {
+            val target = java.io.File(context.filesDir,
+                                      assetPath.substringAfterLast('/'))
+            // Prefer the uncompressed length (build.gradle marks *.onnx
+            // noCompress); assets.openFd() throws when an asset IS compressed,
+            // so fall back to "copy when absent" rather than failing.
+            val expected: Long = try {
+                context.assets.openFd(assetPath).use { it.length }
+            } catch (t: Throwable) {
+                -1L
+            }
+            if (target.isFile && target.length() > 0 &&
+                (expected < 0L || target.length() == expected)) {
+                return target.absolutePath
+            }
+            return try {
+                context.assets.open(assetPath).use { input ->
+                    target.outputStream().use { output -> input.copyTo(output) }
+                }
+                target.absolutePath
+            } catch (t: Throwable) {
+                Log.w("NRRBridge", "could not extract asset $assetPath", t)
+                null
+            }
+        }
+    }
+
     private fun parseJson(raw: String): Map<String, Any> = try {
         val obj = JSONObject(raw)
         obj.keys().asSequence().associateWith { key -> obj.get(key) }

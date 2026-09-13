@@ -41,6 +41,15 @@ android {
     buildFeatures {
         buildConfig = true
     }
+
+    // The NRR model ships as an asset but must be readable at a real
+    // filesystem path by ONNX Runtime, so NRRBridge extracts it into
+    // filesDir. Keeping .onnx uncompressed means assets.openFd() reports its
+    // true length (so the extraction can be skipped when already current) and
+    // avoids an in-memory decompression of the whole graph.
+    androidResources {
+        noCompress 'onnx'
+    }
     buildTypes {
         release {
             minifyEnabled false

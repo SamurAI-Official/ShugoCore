@@ -51,6 +51,62 @@ class LocalApiServer(
     private val tokensTotal = AtomicLong(0)
     @Volatile private var lastLatencyMs = 0L
 
+    // NRR neural rendering (optional). Attached once the native runtime comes
+    // up; null means "not available", which the nrr endpoints report honestly
+    // rather than pretending to render.
+    @Volatile private var nrrBridge: NRRBridge? = null
+
+    /** Attach (or clear) the NRR native renderer used by the nrr endpoints. */
+    fun attachNrr(bridge: NRRBridge?) {
+        nrrBridge = bridge
+    }
+
+    private fun nrrInfoJson(): JSONObject {
+        val b = nrrBridge
+        val out = JSONObject()
+        if (b == null || !b.isReady) {
+            return out.put("available", false)
+                .put("reason", "nrr native runtime not initialized")
+        }
+        out.put("available", true)
+        out.put("backend", b.activeBackend())
+        out.put("model_loaded", b.isModelLoaded)
+        try {
+            out.put("capabilities", JSONObject(b.capabilities()))
+        } catch (t: Throwable) {
+            out.put("capabilities", JSONObject())
+        }
+        try {
+            out.put("power", JSONObject(b.powerStatus()))
+        } catch (t: Throwable) {
+            out.put("power", JSONObject())
+        }
+        return out
+    }
+
+    private fun nrrSelfTestJson(): JSONObject {
+        val b = nrrBridge
+        val out = JSONObject()
+        if (b == null || !b.isReady) {
+            return out.put("ok", false)
+                .put("reason", "nrr native runtime not initialized")
+        }
+        val result = try {
+            b.selfTest()
+        } catch (t: Throwable) {
+            Log.w(TAG, "nrr selftest failed", t)
+            null
+        }
+        if (result == null) {
+            return out.put("ok", false).put("reason", "render returned no frame")
+        }
+        val r = JSONObject()
+        for ((k, v) in result) r.put(k, v)
+        return out.put("ok", true).put("result", r)
+            .put("backend", b.activeBackend())
+            .put("model_loaded", b.isModelLoaded)
+    }
+
     fun start() {
         if (running.get()) return
         // Bind the documented IPv4 loopback explicitly. InetAddress
@@ -157,6 +213,12 @@ class LocalApiServer(
                 method == "GET" && path == "/api/tags" -> respondJson(socket, 200, tagsJson())
                 method == "POST" && path == "/api/generate" -> handleGenerate(socket, request)
                 method == "POST" && path == "/api/chat" -> handleChat(socket, request)
+                // NRR neural rendering (native runtime). Local-only, like the
+                // rest of this server: a frame goes in and pixels come back
+                // over loopback, never across the mobile mesh.
+                method == "GET" && path == "/nrr/info" -> respondJson(socket, 200, nrrInfoJson())
+                (method == "POST" || method == "GET") && path == "/nrr/selftest" ->
+                    respondJson(socket, 200, nrrSelfTestJson())
                 else -> respondJson(socket, 404, JSONObject().put("error", "not found: $path"))
             }
         } catch (e: Exception) {

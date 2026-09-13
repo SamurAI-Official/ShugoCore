@@ -130,6 +130,9 @@ class AndroidAgent:
         # register_speak_listener(); the internal speak action executes
         # through it. The decision core never imports the provider.
         self._speak_listener: Optional[Any] = None
+        # v1.29: native NRR renderer, attached by the Kotlin service via
+        # register_nrr_renderer(); None when the runtime is absent.
+        self._nrr_renderer: Optional[Any] = None
         # v1.29: conversation state + personality for responsive dialogue.
         self._last_transcript_ts: float = 0.0
         self._last_transcript: str = ""
@@ -667,6 +670,57 @@ class AndroidAgent:
         The decision core stays provider-agnostic: it only ever proposes the
         internal ``speak`` action; this listener is the executor."""
         self._speak_listener = listener
+
+    # -- NRR neural rendering ------------------------------------------------
+
+    def register_nrr_renderer(self, renderer: Any) -> None:
+        """Attach the native NRR renderer (the Kotlin NrrRendererBridge).
+
+        Construction stays on the Kotlin side because it needs a Context and
+        the packaged model asset; Python only receives the ready object. The
+        presence of this object is what makes the ``nrr_render`` workload
+        genuinely serveable -- nrr/adapter.py advertises the workload off
+        exactly this.
+        """
+        self._nrr_renderer = renderer
+
+    def nrr_status_json(self) -> str:
+        """JSON form of the NRR renderer state (primitive-only for Chaquopy).
+
+        Safe to call when NRR is absent: reports available=false rather than
+        raising, so the UI/diagnostics can show the truth.
+        """
+        r = self._nrr_renderer
+        if r is None:
+            return _json.dumps({"available": False,
+                                "reason": "no native NRR renderer registered"})
+        try:
+            if not r.isAvailable():
+                return _json.dumps({"available": False,
+                                    "reason": "native NRR renderer not ready"})
+            return _json.dumps({
+                "available": True,
+                "model_loaded": bool(r.isModelLoaded()),
+                "backend": str(r.backendName()),
+                "capabilities": _json.loads(str(r.capabilitiesJson())),
+            })
+        except Exception as exc:
+            return _json.dumps({"available": False,
+                                "reason": "nrr probe failed: %s" % str(exc)[:120]})
+
+    def nrr_worker(self, frame_source: Any = None) -> Any:
+        """Build the NRR render worker bound to the registered native renderer.
+
+        Returns None when NRR is unavailable, so callers keep the fail-closed
+        ``worker_stub`` path instead of degrading silently.
+        """
+        try:
+            from nrr.adapter import android_native_worker
+        except Exception:
+            return None
+        return android_native_worker(self._nrr_renderer,
+                                     frame_source=frame_source,
+                                     audit=getattr(self, "audit", None))
 
     def _execute_speak(self, decision: Dict[str, Any]) -> Dict[str, Any]:
         """Executor for the internal speak action. Text is sanitized and

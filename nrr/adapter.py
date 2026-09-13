@@ -11,6 +11,7 @@ render/scene request with a not_supported result -- auditable and fail-closed.
 """
 from typing import Any, Dict, List, Optional
 
+import json as _json
 import time
 
 from mobile_nodes import node_supports_workload
@@ -388,33 +389,29 @@ class NRRRenderWorker:
 
 
 
-def android_native_worker(model_path: str, frame_source=None,
-                          backend: str = "CPU", audit=None):
+def android_native_worker(renderer_bridge, frame_source=None, audit=None):
     """Build an :class:`NRRRenderWorker` backed by the native Android runtime.
 
-    Returns ``None`` when the native bridge is unavailable -- not on Android,
-    Chaquopy absent, ``libnrr_jni.so`` missing, device creation failed, or the
-    model would not load.  Callers keep the fail-closed ``worker_stub`` in
-    that case rather than degrading silently.
+    ``renderer_bridge`` is the object the Kotlin service registered via
+    ``AndroidAgent.register_nrr_renderer`` (an ``NrrRendererBridge``). The
+    device owns construction -- it needs a Context and the packaged model
+    asset -- so Python only ever receives a ready object, and returns ``None``
+    when it is missing or not ready. Callers keep the fail-closed
+    ``worker_stub`` in that case rather than degrading silently.
 
     ``frame_source(width, height) -> bytes`` supplies local RGBA8 pixels
     (camera/screen capture); pixels never leave the device.
     """
-    try:
-        from java import jclass  # provided by Chaquopy on Android
-    except Exception:
+    if renderer_bridge is None:
         return None
-
     try:
-        bridge_cls = jclass("com.samurai.shugocore.inference.NRRBridge")
-        bridge = bridge_cls(model_path, backend)
-        if not bridge.initialize():
+        if not renderer_bridge.isAvailable():
             return None
     except Exception:
         return None
 
     def _render(width: int, height: int, rgba):
-        return bridge.render(width, height, rgba)
+        return renderer_bridge.renderFrame(width, height, rgba)
 
     def _caps():
         """Advertise only what the runtime actually does.
@@ -424,8 +421,10 @@ def android_native_worker(model_path: str, frame_source=None,
         derived from that rather than from a vendor backend's wish list.
         """
         try:
-            caps = dict(bridge.capabilities())
+            caps = _json.loads(str(renderer_bridge.capabilitiesJson()))
         except Exception:
+            return {}
+        if not isinstance(caps, dict):
             return {}
         out: Dict[str, Any] = {}
         out["int8"] = caps.get("int8") in ("basic", "optimized", "full")
@@ -439,7 +438,13 @@ def android_native_worker(model_path: str, frame_source=None,
             out["vram_mb"] = 0
         return out
 
+    backend = "cpu"
+    try:
+        backend = str(renderer_bridge.backendName()).lower() or "cpu"
+    except Exception:
+        pass
+
     return NRRRenderWorker(renderer=_render, frame_source=frame_source,
-                           backend=backend.lower(),
-                           capabilities_provider=_caps, audit=audit)
+                           backend=backend, capabilities_provider=_caps,
+                           audit=audit)
 

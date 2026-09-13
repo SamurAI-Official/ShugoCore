@@ -297,6 +297,11 @@ PHASES: List[Dict[str, Any]] = [
         "tags": ("lifecycle",),
     },
     {
+        "name": "nrr_native_ready",
+        "desc": "native NRR runtime initializes in-app and renders a frame",
+        "tags": ("nrr", "native", "restart"),
+    },
+    {
         "name": "personality_model_genesis",
         "desc": "first production model paragraph exists in SQLite",
         "tags": ("personality", "genesis"),
@@ -342,6 +347,38 @@ def step_timer_set(serial: str, logger: List[str]) -> bool:
 
 def _sep(logger: List[str]) -> None:
     _log(logger, "=" * 78)
+
+
+def step_nrr_native_ready(serial: str, logger: List[str]) -> bool:
+    """The native NRR runtime initializes in-app and renders a frame.
+
+    Unlike the other phases this needs no transcripts: the service performs a
+    16x16 synthetic render at startup and logs the outcome, so a clean restart
+    is enough to prove the whole native path (device -> ONNX Runtime session ->
+    mobile kernel -> output texture) works inside the shipped app.
+
+    This is also the only check that covers the packaged model asset, the
+    extracted filesDir copy, and libnrr_jni/libonnxruntime loading.
+    """
+    clear_logcat(serial)
+    run("-s", serial, "shell", "am", "force-stop", SHUGOCORE_PACKAGE)
+    time.sleep(2.0)
+    ensure_service_started(serial)
+
+    # "NRR self-test ok: 768 bytes, 17 distinct, 5.1ms"
+    # 768 == 16*16*3 (RGB8 at the probe's fixed geometry).
+    ok = expect_in_logs(serial, "NRR self-test ok", within_s=restart_window())
+    if not ok:
+        missing = log_lines_containing(serial, "NRR self-test FAILED")
+        if missing:
+            _log_red(logger, "  NRR self-test ran but returned no frame")
+        else:
+            _log_red(logger, "  no NRR self-test line (asset/lib missing?)")
+        return False
+
+    for ln in log_lines_containing(serial, "NRR self-test ok")[:1]:
+        _log(logger, "  " + ln.strip()[:160])
+    return expect_in_logs(serial, "nrr_jni", within_s=5.0)
 
 
 def step_service_alive(serial: str, logger: List[str]) -> bool:
@@ -680,6 +717,7 @@ STEP_BY_NAME: Dict[str, Callable[[str, List[str]], bool]] = {
 
     "fact_survives_restart": step_fact_survives_restart,
     "full_teardown_announced": step_full_teardown_announced,
+    "nrr_native_ready": step_nrr_native_ready,
     "personality_model_genesis": step_personality_model_genesis,
     "personality_growth_log": step_personality_growth_log,
 }

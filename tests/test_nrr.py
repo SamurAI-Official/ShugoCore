@@ -260,10 +260,60 @@ class RenderWorkerTest(unittest.TestCase):
         caps = self._worker(caps=boom).compute_caps()
         self.assertEqual(caps["workloads"], ["nrr_render"])
 
-    def test_android_factory_returns_none_off_device(self):
-        """Off Android there is no Chaquopy `java` module: fail closed."""
+    def test_android_factory_returns_none_without_a_bridge(self):
+        """No registered renderer -> fail closed, keep worker_stub."""
         from nrr.adapter import android_native_worker
-        self.assertIsNone(android_native_worker("/nonexistent/model.onnx"))
+        self.assertIsNone(android_native_worker(None))
+
+    def test_android_factory_binds_a_registered_bridge(self):
+        """Mirrors NrrRendererBridge: the app owns construction, Python gets
+        a ready object and can then advertise + render."""
+        from nrr.adapter import android_native_worker
+
+        class FakeRendererBridge:
+            def isAvailable(self):
+                return True
+
+            def isModelLoaded(self):
+                return True
+
+            def backendName(self):
+                return "CPU"
+
+            def capabilitiesJson(self):
+                return ('{"execution_provider":"CPU","supports_nnapi":false,'
+                        '"fp16":"basic","int8":"absent","vram_mb":0}')
+
+            def renderFrame(self, w, h, rgba):
+                return bytes(w * h * 3)
+
+        worker = android_native_worker(FakeRendererBridge(),
+                                       frame_source=lambda w, h: bytes(w * h * 4))
+        self.assertIsNotNone(worker)
+        self.assertTrue(worker.available)
+
+        out = worker.render({"request_id": "r",
+                             "descriptor": describe_frame("f9", 4, 4)})
+        self.assertEqual(out["result"]["status"], "ok")
+        self.assertEqual(out["result"]["stats"]["backend"], "cpu")
+
+        # Honest advertisement: NNAPI is not claimed, so neither is
+        # neural_acceleration -- but the workload IS offered, because it works.
+        caps = worker.compute_caps()
+        self.assertEqual(caps["workloads"], ["nrr_render"])
+        self.assertEqual(caps["neural_acceleration"], "absent")
+        self.assertEqual(caps["execution_provider"], "CPU")
+        self.assertFalse(caps["int8"])
+        self.assertTrue(caps["fp16"])
+
+    def test_android_factory_rejects_an_unavailable_bridge(self):
+        from nrr.adapter import android_native_worker
+
+        class NotReady:
+            def isAvailable(self):
+                return False
+
+        self.assertIsNone(android_native_worker(NotReady()))
 
 
 class CapabilityRoutingTest(unittest.TestCase):

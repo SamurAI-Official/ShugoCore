@@ -158,6 +158,10 @@ instead of a healthy `✓ Granted · ○ Idle`. Only reported once the fault is
 established, and cleared when frames start arriving or the provider stops, so a
 camera that is merely still binding is not flagged as broken.
 
+## Upstream bugs found while porting
+
+A ready-to-file write-up of all six build breakers and three lower-severity
+findings lives in [`nrr_upstream_bug_report.md`](nrr_upstream_bug_report.md).
 
 Verified against `main` (NRR `1.0.0-dev`); Phase 13 had never been compiled.
 

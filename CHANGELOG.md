@@ -123,6 +123,17 @@ contract layer stays binary-free.
 - `versionCode` 16 -> 17, `versionName` 1.28.2 -> 1.29.0 in version.py,
   pyproject.toml, build.gradle and the README badge.
 
+### Build size note
+- The NRR runtime ships `libonnxruntime.so` (19.3 MB arm64-v8a / 23.2 MB
+  x86_64) plus the model asset, so both debug and release APKs grow by roughly
+  42 MB across the two filtered ABIs. `libnrr_jni.so` itself is only ~192 KB
+  (stripped). Mitigations if this matters: ABI splits, or `onnxruntime-mobile`
+  (smaller, but frozen at 1.18.0 with reduced operator coverage).
+- Verified: both `assembleDebug` and `assembleRelease` succeed; the release APK
+  carries `libnrr_jni.so`, `libonnxruntime.so` (both ABIs) and
+  `assets/nrr/nrr_upscaler_v0.1.onnx`, with `libllama_jni.so` unchanged at
+  5.0 MB.
+
 ### `nrr_probe` diagnostic — verified on device
 - End-to-end NRR check (device → model → RGBA8 texture → `execute_frame` →
   download) printing JSON; runs on-device via adb without Gradle.

@@ -108,6 +108,12 @@ class VisionProvider(private val context: Context) {
             context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
         if (!granted || isRunning) return
         isRunning = true
+        // New session: re-evaluate frame delivery and clear any prior fault, so
+        // the watchdog judges this attempt rather than the last one.
+        firstFrameSeen.set(false)
+        cameraFault = ""
+        PerceptionState.cameraFault = ""
+        PerceptionState.visionHasFrames = false
         // CameraX lifecycle mutations belong on the main thread; the
         // housekeeping tick calls start() from a background executor.
         ContextCompat.getMainExecutor(context).execute {
@@ -141,7 +147,10 @@ class VisionProvider(private val context: Context) {
                         // provider used to sit silently at zero frames forever.
                         // Surface that once, with the CameraX error code.
                         probeHandler.postDelayed({
-                            if (!firstFrameSeen.get()) {
+                            // Guard on isRunning: a watchdog posted before
+                            // stop() must not resurrect a fault after the
+                            // camera was intentionally shut down.
+                            if (isRunning && !firstFrameSeen.get()) {
                                 @Suppress("UNCHECKED_CAST")
                                 val st = boundCamera?.cameraInfo
                                     ?.cameraState?.value

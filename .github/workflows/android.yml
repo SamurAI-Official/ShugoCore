@@ -71,6 +71,14 @@ jobs:
           echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/shugocore-release.jks"
           echo "SHUGOCORE_KEYSTORE_FILE=$RUNNER_TEMP/shugocore-release.jks" >> "$GITHUB_ENV"
 
+      - name: Set up Python 3.13 (Chaquopy build interpreter)
+        # Chaquopy's buildPython must match the target runtime version, which
+        # this app bundles as Python 3.13; the runner's default python3 is
+        # older and the build rejects it.
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
       - name: Build + sign the release APK
         env:
           SHUGOCORE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}

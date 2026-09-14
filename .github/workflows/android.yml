@@ -29,11 +29,14 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Set up JDK 17
+      - name: Set up JDK (JetBrains Runtime 21)
+        # The Gradle daemon is pinned by gradle-daemon-jvm.properties to
+        # toolchainVendor=jetbrains / toolchainVersion=21 (the Android Studio
+        # runtime), so the CI JDK must match exactly.
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: '17'
+          distribution: jetbrains
+          java-version: '21'
 
       - name: Set up Android SDK + NDK + CMake
         env:

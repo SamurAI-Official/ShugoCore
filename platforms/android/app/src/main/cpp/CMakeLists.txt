@@ -30,28 +30,53 @@ if(ANDROID AND CMAKE_BUILD_TYPE MATCHES "^[Dd][Ee][Bb][Uu][Gg]$")
     set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
-# Portable arm64 baseline by default.
+# ---------------------------------------------------------------------------
+# On-device CPU kernels: ONE APK, runtime-selected variant set (arm64-v8a)
+# ---------------------------------------------------------------------------
+# ggml can build each arm64 kernel set into its own backend library
+# (libggml-cpu-android_armv8.0_1.so, ..._armv8.2_2.so, ...). Every one exports
+# ggml_backend_score(), which returns 0 when the running CPU lacks the features
+# that variant was compiled for (detected via getauxval(AT_HWCAP/AT_HWCAP2)),
+# and ggml_backend_load_best("cpu") dlopens them all and loads the highest
+# scorer. So a single APK ships the portable armv8.0 kernels *and* the
+# dotprod / i8mm / sve ones, and each device picks its own at startup.
 #
-# Forcing -march=armv8.2-a+dotprod compiles the *baseline* ggml CPU backend
-# with dotprod (SDOT/UDOT) and those kernels are NOT runtime-gated: any arm64
-# SoC without FEAT_DotProd then takes SIGILL. Observed on the SM-S515DL test
-# unit (Exynos 9611; /proc/cpuinfo has no `asimddp`):
+# Why this exists: forcing -march=armv8.2-a+dotprod into the *baseline* backend
+# compiled dotprod instructions into kernels that are not runtime gated, so any
+# arm64 SoC without FEAT_DotProd took SIGILL (observed on the Exynos 9611 test
+# unit, whose /proc/cpuinfo has no `asimddp`):
 #   Fatal signal 4 (SIGILL), code 1 (ILL_ILLOPC)
 #   #00 libllama_jni.so (ggml_vec_dot_q5_0_q8_0+236)
-# on the first Q4_K_M matmul -- every model call failed, so the Python
-# backend logged URLError and the agent fell back to rules indefinitely.
-# Devices that DO expose asimddp (e.g. the SM-X518U) run it fine, but one
-# APK must not crash on the rest of the fleet.
+# Shipping only the portable baseline avoids the crash but gives up dotprod on
+# capable SoCs; ALL_VARIANTS removes that trade-off.
 #
-# Upstream's safe-and-fast path is GGML_CPU_ALL_VARIANTS (per-arch backend
-# variants + runtime dispatch), which requires GGML_BACKEND_DL /
-# BUILD_SHARED_LIBS and does not fit this static single-library layout. Until
-# that is adopted, ship the portable baseline; dotprod-capable fleets opt in:
-#     ./gradlew assembleDebug -Pshugocore.dotprod=true
+# GGML_CPU_ALL_VARIANTS requires GGML_BACKEND_DL, which requires
+# BUILD_SHARED_LIBS, and it is mutually exclusive with GGML_CPU_ARM_ARCH.
+# x86_64 stays single-variant on purpose: it is an emulator-only ABI and
+# ALL_VARIANTS would add ~13 more backends for no benefit.
+#
+# Escape hatch to build the old single-library layout:
+#   ./gradlew assembleDebug -Pshugocore.singlearch=true
+option(SHUGOCORE_CPU_VARIANTS
+       "Ship every runtime-selectable arm64 CPU kernel variant in one APK" ON)
 option(SHUGOCORE_ARM_DOTPROD
-       "Compile the baseline ggml backend for armv8.2-a+dotprod (SIGILL on CPUs without FEAT_DotProd)" OFF)
-if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a" AND SHUGOCORE_ARM_DOTPROD)
+       "Single-arch builds only: compile the baseline for armv8.2-a+dotprod (SIGILL on CPUs without FEAT_DotProd)" OFF)
+
+if(ANDROID AND SHUGOCORE_CPU_VARIANTS)
+    # ggml dlopens its backend libraries, so they cannot be static.
+    set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
+    set(GGML_BACKEND_DL ON CACHE BOOL "" FORCE)
+    if(ANDROID_ABI STREQUAL "arm64-v8a")
+        set(GGML_CPU_ALL_VARIANTS ON CACHE BOOL "" FORCE)
+    endif()
+elseif(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a" AND SHUGOCORE_ARM_DOTPROD)
     set(GGML_CPU_ARM_ARCH "armv8.2-a+dotprod" CACHE STRING "" FORCE)
+endif()
+
+# Android 15+ 16 KB page compatibility applies to every shared object we ship,
+# not just llama_jni (the ggml backend variants are shared modules as well).
+if(ANDROID)
+    add_link_options(-Wl,-z,max-page-size=16384)
 endif()
 
 if(SHUGOCORE_VULKAN)
@@ -63,7 +88,10 @@ set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_SERVER   OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TOOLS    OFF CACHE BOOL "" FORCE)
-set(BUILD_SHARED_LIBS    OFF CACHE BOOL "" FORCE) # static llama/ggml linked into llama_jni
+# BUILD_SHARED_LIBS is decided by the CPU-variant block above: GGML_BACKEND_DL
+# requires shared libraries, so the historical static single-library layout is
+# only used when SHUGOCORE_CPU_VARIANTS is off (the singlearch escape hatch).
+set(BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS} CACHE BOOL "" FORCE)
 
 add_subdirectory(${LLAMA_CPP_DIR} llama_build EXCLUDE_FROM_ALL)
 

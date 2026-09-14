@@ -14,8 +14,8 @@ android {
         applicationId "com.samurai.shugocore"
         minSdk 28
         targetSdk 34
-        versionCode 17
-        versionName "1.29.1"
+        versionCode 18
+        versionName "1.30.1"
 
         ndk {
             // arm64-v8a: 2020+ devices; x86_64: emulator testing
@@ -32,9 +32,14 @@ android {
                 // 0.5B Q4 model vs ~10 tok/s / seconds with -O3). Java-side
                 // debuggability of the debug APK is unaffected.
                 arguments "-DANDROID_STL=c++_shared", "-DCMAKE_BUILD_TYPE=Release",
-                          // ggml ARM kernels: portable baseline by default.
-                          // -Pshugocore.dotprod=true opts into armv8.2-a+dotprod
-                          // (SIGILL on arm64 CPUs without FEAT_DotProd).
+                          // Runtime-selectable arm64 CPU kernel variants: one APK
+                          // that self-determines dotprod/i8mm/sve vs the portable
+                          // baseline on each device (see cpp/CMakeLists.txt).
+                          "-DSHUGOCORE_CPU_VARIANTS=" +
+                                  (project.hasProperty("shugocore.singlearch") ? "OFF" : "ON"),
+                          // Only meaningful with SHUGOCORE_CPU_VARIANTS=OFF: forces
+                          // armv8.2-a+dotprod baseline kernels, which SIGILL on
+                          // arm64 CPUs without FEAT_DotProd.
                           "-DSHUGOCORE_ARM_DOTPROD=" +
                                   (project.hasProperty("shugocore.dotprod") ? "ON" : "OFF")
             }
@@ -55,10 +60,32 @@ android {
     androidResources {
         noCompress 'onnx'
     }
+    signingConfigs {
+        release {
+            // Key material comes from the environment so nothing secret is ever
+            // committed. CI decodes the keystore from the ANDROID_KEYSTORE_BASE64
+            // secret and exports the four SHUGOCORE_KEYSTORE_* variables; a
+            // local release build exports the same four variables.
+            def ksFile = System.getenv("SHUGOCORE_KEYSTORE_FILE")
+            if (ksFile) {
+                storeFile file(ksFile)
+                storePassword System.getenv("SHUGOCORE_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("SHUGOCORE_KEY_ALIAS")
+                keyPassword System.getenv("SHUGOCORE_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // Signed only when key material is supplied (CI, or a local
+            // export); otherwise the release build stays unsigned and the
+            // debug key remains the fallback for local testing.
+            if (System.getenv("SHUGOCORE_KEYSTORE_FILE")) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 
@@ -80,7 +107,18 @@ android {
 
     packagingOptions {
         jniLibs {
-            useLegacyPackaging false
+            // Extract native libraries into the app's lib directory instead of
+            // mapping them straight out of the APK.
+            //
+            // ggml discovers its CPU backend variants by enumerating
+            // nativeLibraryDir and dlopen()ing each libggml-cpu-*.so path
+            // (ggml_backend_load_best). With useLegacyPackaging=false those
+            // files exist only inside the APK, so that directory is empty, no
+            // CPU backend registers and llama fails with "no backends are
+            // loaded" (verified on-device against the A51). Extraction makes
+            // the directory real, the variants discoverable, and the runtime
+            // CPU feature scoring selects the correct kernel set.
+            useLegacyPackaging true
         }
     }
 

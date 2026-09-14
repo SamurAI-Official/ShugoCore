@@ -298,13 +298,16 @@ The Android node runs the model locally, and constrains it to a schema:
   parsing (and a replayed grammar step can never be silently skipped).
   Conversational output stays free text. Ollama's `format: "json"` is also
   honoured, mapped to a generic JSON-object grammar.
-- **Portable CPU baseline by default.** ARMv8.2 `+dotprod` kernels are opt-in
-  via `./gradlew assembleDebug -Pshugocore.dotprod=true`, because forcing them
-  compiles dotprod instructions into kernels that are *not* runtime-gated — a
-  `SIGILL` crash on any arm64 SoC without `FEAT_DotProd` (e.g. Exynos 9611).
-  Opt in on devices that do expose `asimddp` (e.g. Exynos 1380-class).
-- **Measured.** A51 (Exynos 9611, 0.5B Q4_K_M, baseline): ~30 s/decision.
-  Tab S9 FE (dotprod, 1.5B Q4_K_M): ~23 s/decision.
+- **One APK, self-determining.** The build ships *every* arm64 CPU kernel
+  variant (portable `armv8.0`, dotprod, dotprod+fp16, i8mm, sve, sme) as its
+  own dlopen'ed backend library; at startup ggml scores each against the
+  running CPU (`getauxval(AT_HWCAP[2])`) and loads the best. So the same APK
+  runs the portable kernels on an Exynos 9611 and the dotprod+fp16 set on an
+  Exynos 1380-class device — no per-device builds, no `SIGILL`. (Force the
+  historical single-arch layout with
+  `./gradlew assembleDebug -Pshugocore.singlearch=true`.)
+- **Measured.** A51 (Exynos 9611, 0.5B Q4_K_M, portable variant): ~30
+  s/decision. Tab S9 FE (dotprod+fp16 variant, 1.5B Q4_K_M): ~23 s/decision.
 
 ### Desktop server mode (no high-end phone needed)
 

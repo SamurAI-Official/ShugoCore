@@ -11,7 +11,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * The native side owns a ShugoSession (model + context + vocab + KV state);
  * every native call here passes [sessionPtr] as its first argument.
  */
-class LlamaCppBridge(val modelPath: String) : AutoCloseable {
+class LlamaCppBridge(val modelPath: String,
+                     nativeLibDir: String? = null) : AutoCloseable {
     private val TAG = "LlamaCppBridge"
     private val isInitialized = AtomicBoolean(false)
     private var sessionPtr: Long = 0
@@ -33,6 +34,14 @@ class LlamaCppBridge(val modelPath: String) : AutoCloseable {
 
     init {
         System.loadLibrary("llama_jni")
+        // ggml's own search paths (executable dir, cwd, GGML_BACKEND_DIR) do not
+        // include Android's native library directory, so hand it over before
+        // any model work: this is what lets the dlopen'ed arm64 CPU kernel
+        // variants (android_armv8.0_1 ... android_armv9.2_2) be discovered and
+        // scored against this device's CPU features.
+        if (!nativeLibDir.isNullOrEmpty()) {
+            nativeSetBackendPath(nativeLibDir)
+        }
     }
 
     val isReady: Boolean
@@ -211,6 +220,14 @@ class LlamaCppBridge(val modelPath: String) : AutoCloseable {
     }
 
     // --- Native methods (all take the session pointer first) ---
+
+    /**
+     * Sets the directory ggml searches for its CPU backend libraries (the app's
+     * nativeLibraryDir). Must be called before [initialize] so the runtime CPU
+     * feature scoring picks the right kernel variant.
+     */
+    private external fun nativeSetBackendPath(dir: String)
+
     private external fun nativeInit(
         modelPath: String,
         nCtx: Int,

@@ -40,6 +40,7 @@
 #endif
 
 #include "llama.h"
+#include "ggml-backend.h"
 
 #define TAG "llama_jni"
 
@@ -65,6 +66,27 @@ std::mutex g_session_mutex; // serializes inference on the single session
 
 ShugoSession* as_session(jlong ptr) {
     return reinterpret_cast<ShugoSession*>(static_cast<intptr_t>(ptr));
+}
+
+// Report which CPU backend ggml selected. The arm64 build ships every kernel
+// variant (android_armv8.0_1 ... android_armv9.2_2) as its own dlopen'ed
+// backend library, and each one exports ggml_backend_score() that returns 0
+// when the running CPU lacks its required features (getauxval HWCAP). ggml
+// loads the highest scorer, so this line is the on-device proof of which
+// kernel set is actually live.
+void log_cpu_backend() {
+    ggml_backend_dev_t dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    if (dev == nullptr) {
+        LOGE("no CPU backend registered: ggml_cpu variants were not found "
+             "(check the backend search path)");
+        return;
+    }
+    const char* desc = ggml_backend_dev_description(dev);
+    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+    LOGI("CPU backend selected: %s (registry=%s, %zu backend(s) loaded)",
+         desc ? desc : "?",
+         reg ? ggml_backend_reg_name(reg) : "?",
+         ggml_backend_reg_count());
 }
 
 #ifdef __ANDROID__
@@ -170,14 +192,67 @@ bool decode_tokens(ShugoSession* s, const llama_token* tokens, int32_t n_tokens)
 } // namespace
 
 
+#ifdef __ANDROID__
+// Forward ggml's own logging into logcat. Its INFO lines are how we see which
+// CPU backend variant ggml chose, e.g.
+//   ggml: ggml_backend_reg_load: loaded CPU backend from
+//         /data/app/.../lib/arm64/libggml-cpu-android_armv8.0_1.so
+// (Per-variant scores are logged at DEBUG, which a Release build compiles out.)
+static void android_ggml_log(enum ggml_log_level level, const char * text, void * /*user_data*/) {
+    if (text == nullptr) return;
+    int prio = ANDROID_LOG_INFO;
+    switch (level) {
+        case GGML_LOG_LEVEL_ERROR: prio = ANDROID_LOG_ERROR; break;
+        case GGML_LOG_LEVEL_WARN:  prio = ANDROID_LOG_WARN;  break;
+        case GGML_LOG_LEVEL_DEBUG: prio = ANDROID_LOG_DEBUG; break;
+        default: break;
+    }
+    // ggml terminates its messages with a newline; logcat adds its own.
+    std::string msg(text);
+    while (!msg.empty() && (msg.back() == '\n' || msg.back() == '\r')) {
+        msg.pop_back();
+    }
+    __android_log_print(prio, TAG, "ggml: %s", msg.c_str());
+}
+#endif
+
 extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM*, void*) {
     LOGI("JNI_OnLoad");
+#ifdef __ANDROID__
+    ggml_log_set(android_ggml_log, nullptr);
+#endif
     return JNI_VERSION_1_6;
 }
 
 // ---------------------------------------------------------------------------
 // Session lifecycle
 // ---------------------------------------------------------------------------
+
+// Point ggml at the directory holding its CPU backend libraries.
+//
+// On Android the defaults are useless: ggml_backend_load_best() searches
+// GGML_BACKEND_DIR (unset), get_executable_path() (/proc/self/exe, i.e. the
+// zygote binary) and the process cwd -- none of which is the app's native
+// library directory, so without this the CPU backend never registers and
+// llama reports "no backends are loaded".
+//
+// llama_backend_init() only auto-loads when the registry is empty, so calling
+// this first (before any model work) both supplies the right path and skips
+// ggml's default-path scan. Idempotent: ggml caches loaded backends by path.
+extern "C" JNIEXPORT void JNICALL
+Java_com_samurai_shugocore_inference_LlamaCppBridge_nativeSetBackendPath(
+        JNIEnv* env, jobject, jstring dir) {
+    if (!dir) return;
+    const char* raw = env->GetStringUTFChars(dir, nullptr);
+    if (!raw) return;
+    std::string path(raw);
+    env->ReleaseStringUTFChars(dir, raw);
+    if (path.empty()) return;
+    ggml_backend_load_all_from_path(path.c_str());
+    LOGI("backend search path: %s (%zu backend(s) loaded)",
+         path.c_str(), ggml_backend_reg_count());
+    log_cpu_backend();
+}
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_samurai_shugocore_inference_LlamaCppBridge_nativeInit(
@@ -203,6 +278,8 @@ Java_com_samurai_shugocore_inference_LlamaCppBridge_nativeInit(
 
     std::lock_guard<std::mutex> lock(g_session_mutex);
     llama_backend_init();
+    // Which arm64 kernel variant this CPU earned (see log_cpu_backend).
+    log_cpu_backend();
 
     llama_model_params mparams = llama_model_default_params();
     mparams.n_gpu_layers = n_gpu_layers; // negative = all layers on GPU

@@ -436,7 +436,7 @@ class ShugoCoreService : Service() {
         if (apiServer != null) return llamaBridge?.modelPath
         val modelPath = findModelFile() ?: return null
         llamaBridge?.close()
-        val bridge = LlamaCppBridge(modelPath).apply {
+        val bridge = LlamaCppBridge(modelPath, applicationInfo.nativeLibraryDir).apply {
             nGpuLayers = CapabilityDetector.getGpuLayers(soc)
             // nThreads is already set by LlamaCppBridge.detectPerformanceCores()
             // to the device's *performance* core count. Do NOT override it with

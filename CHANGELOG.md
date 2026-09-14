@@ -4,6 +4,49 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.30.1] - 2026-09-14 — one APK, self-determining CPU kernels
+
+The fleet needed a single installable that is safe on every arm64 SoC and still
+fast where the silicon allows it. This release makes that the default.
+
+### Runtime-selectable CPU kernel variants (`platforms/android`)
+- **`GGML_CPU_ALL_VARIANTS` + `GGML_BACKEND_DL` are now the Android default.**
+  ggml builds each arm64 kernel set into its own dlopen'ed backend library
+  (`libggml-cpu-android_armv8.0_1.so` … `android_armv9.2_2.so`). Each exports
+  `ggml_backend_score()`, which returns **0** when the running CPU lacks that
+  variant's features (detected via `getauxval(AT_HWCAP/AT_HWCAP2)`), and
+  `ggml_backend_load_best("cpu")` loads the highest scorer — so the same APK
+  picks the portable `armv8.0` kernels on an Exynos 9611 and the
+  dotprod+fp16 set on an Exynos 1380, with no per-device builds.
+- **`llama_jni`** now holds the shared llama/ggml libraries and gained
+  `nativeSetBackendPath()`: ggml's own search paths (executable dir, cwd,
+  `GGML_BACKEND_DIR`) never include Android's native library directory, so the
+  app passes `applicationInfo.nativeLibraryDir` in before any model work —
+  otherwise no CPU backend registers and every model call fails.
+- **`extractNativeLibs`/`useLegacyPackaging` is now `true`.** With the libs
+  packed uncompressed inside the APK they are not enumerated by
+  `fs::directory_iterator`, so the variants are invisible (verified: 0
+  backends found on the A51). Extraction makes the directory real.
+- **16 KB page alignment** applies to every shipped shared object, not just
+  `llama_jni` (global `add_link_options`).
+- **Escape hatch:** `-Pshugocore.singlearch=true` restores the historical
+  static single-library layout (with the `-Pshugocore.dotprod` override).
+- **Verified on two devices with one APK:** A51 (no `asimddp`) →
+  `libggml-cpu-android_armv8.0_1.so`; Tab S9 FE (`asimddp`+fp16) →
+  `libggml-cpu-android_armv8.2_2.so`. Both models load, zero crashes.
+
+### Decision-prompt steering (`subconscious.py`)
+- The decision prompt now says to prefer `record_observation` for routine
+  self-maintenance and that side-effecting actions (send/query/sync, device or
+  hardware control) need operator approval — reducing the rate at which the
+  small model proposes gated actions for nothing.
+
+### Signing / release
+- The release APK is signed from environment key material
+  (`SHUGOCORE_KEYSTORE_FILE` + password/alias vars), never committed; CI
+  restores it from the `ANDROID_KEYSTORE_BASE64` secret and attaches the
+  signed APK to the release (`.github/workflows/android.yml`).
+
 ## [1.30.0] - 2026-09-13 — fleet memory mesh + on-device structured inference
 
 Two capabilities that were previously a façade are now real, and the on-device

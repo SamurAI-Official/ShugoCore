@@ -73,7 +73,10 @@ jobs:
           SHUGOCORE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           SHUGOCORE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           SHUGOCORE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: ./gradlew :app:assembleRelease --console=plain --stacktrace
+        run: |
+          test -f platforms/android/gradlew
+          cd platforms/android
+          ./gradlew :app:assembleRelease --console=plain --stacktrace
 
       - name: Name the APK after the tag
         run: |

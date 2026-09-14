@@ -32,12 +32,29 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
+/**
+ * Generic "any JSON object" GBNF grammar — llama.cpp's canonical json.gbnf,
+ * trimmed to the rules a decision payload needs. Used for Ollama-compatible
+ * `format: "json"` requests so asking for JSON can never yield prose.
+ */
+private val JSON_OBJECT_GBNF = """
+root   ::= object
+value  ::= object | array | string | number | ("true" | "false" | "null") ws
+object ::= "{" ws ( string ":" ws value ("," ws string ":" ws value)* )? "}" ws
+array  ::= "[" ws ( value ("," ws value)* )? "]" ws
+string ::= "\"" ( [^"\\\x7F\x00-\x1F] | "\\" (["\\bfnrt] | "u" [0-9a-fA-F]{4}) )* "\"" ws
+number ::= ("-"? ([0-9] | [1-9] [0-9]{0,15})) ("." [0-9]+)? ([eE] [-+]? [0-9] [1-9]{0,15})? ws
+ws     ::= | " " | "\n" [ \t]{0,20}
+""".trimIndent()
+
 class LocalApiServer(
     private val bridge: LlamaCppBridge,
     private val modelName: String = "shugocore-local",
     private val port: Int = 11434
 ) {
     private val TAG = "LocalApiServer"
+    // Defensive bound on a client-supplied grammar (bytes of GBNF).
+    private val maxGrammarChars = 8192
     private val running = AtomicBoolean(false)
     private var serverSocket: ServerSocket? = null
     private val executor: ExecutorService = Executors.newCachedThreadPool()
@@ -232,6 +249,35 @@ class LocalApiServer(
     // Handlers: real generation via LlamaCppBridge
     // -------------------------------------------------------------------------
 
+    /**
+     * Resolve the request's grammar-constrained-decoding constraint.
+     *
+     *  - `grammar`: a GBNF string (llama.cpp dialect) forwarded verbatim.
+     *  - `format: "json"`: Ollama-compatible JSON mode -> [JSON_OBJECT_GBNF].
+     *
+     * Returns null when nothing usable was requested. The constraint is
+     * advisory: an oversized or malformed grammar is dropped/logged rather
+     * than failing the request, and the native layer falls back to
+     * unconstrained sampling if llama.cpp rejects it.
+     */
+    private fun resolveGrammar(req: JSONObject): String? {
+        val gbnf = req.optString("grammar", "")
+        if (gbnf.isNotBlank()) {
+            if (gbnf.length > maxGrammarChars) {
+                Log.w(TAG, "grammar dropped: ${gbnf.length} chars > $maxGrammarChars")
+            } else {
+                Log.i(TAG, "grammar: caller GBNF (${gbnf.length} chars)")
+                return gbnf
+            }
+        }
+        val format = req.opt("format")
+        if (format is String && format.equals("json", ignoreCase = true)) {
+            Log.i(TAG, "grammar: generic JSON (format=json)")
+            return JSON_OBJECT_GBNF
+        }
+        return null
+    }
+
     private fun handleGenerate(socket: Socket, request: HttpRequest) {
         if (!generateBusy.compareAndSet(false, true)) {
             Log.w(TAG, "generate rejected: engine already busy")
@@ -269,6 +315,9 @@ class LocalApiServer(
             }
             else -> listOf(options.optString("stop")).filter { it.isNotEmpty() }
         }
+
+        // Grammar-constrained decoding: caller GBNF, or Ollama's format=json.
+        val grammar = resolveGrammar(req)
 
         val startNs = System.nanoTime()
         var tokenCount = 0
@@ -315,6 +364,7 @@ class LocalApiServer(
                 repeatPenalty = repeatPenalty,
                 seed = seed,
                 stops = stops,
+                grammar = grammar,
                 callback = callback
             )
         } catch (e: Exception) {
@@ -407,6 +457,9 @@ val elapsedNs = System.nanoTime() - startNs
         val maxTokens = options.optInt("num_predict", 256).coerceIn(1, 2048)
         val stream = req.optBoolean("stream", false)
 
+        // Same grammar contract as /api/generate.
+        val grammar = resolveGrammar(req)
+
         val startNs = System.nanoTime()
         var tokenCount = 0
         val collected = StringBuilder()
@@ -445,6 +498,7 @@ val elapsedNs = System.nanoTime() - startNs
                 topP = topP,
                 repeatPenalty = repeatPenalty,
                 seed = seed,
+                grammar = grammar,
                 callback = callback
             )
         } catch (e: Exception) {

@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <stdexcept>
 
 #ifdef __ANDROID__
 #include <android/log.h>
@@ -52,6 +53,12 @@ struct ShugoSession {
     uint32_t           n_batch = 512;
     int32_t            n_past = 0;
     std::string        pending; // partial UTF-8 bytes awaiting completion
+    // Persistent GBNF grammar sampler. The per-token chain built in
+    // nativeGenerateToken is stateless and rebuilt every token, but a grammar
+    // sampler carries parser state across tokens: it is added to that chain
+    // first (so it masks the raw logits) and llama_sampler_sample() advances it
+    // by accepting the sampled token on the chain.
+    llama_sampler*     grammar = nullptr;
 };
 
 std::mutex g_session_mutex; // serializes inference on the single session
@@ -238,11 +245,45 @@ Java_com_samurai_shugocore_inference_LlamaCppBridge_nativeFree(
     auto* s = as_session(session_ptr);
     if (!s) return;
     std::lock_guard<std::mutex> lock(g_session_mutex);
+    if (s->grammar) llama_sampler_free(s->grammar);
     if (s->ctx)   llama_free(s->ctx);
     if (s->model) llama_model_free(s->model);
     delete s;
     llama_backend_free();
     LOGI("session freed");
+}
+
+// Install (or clear) a GBNF grammar constraining every token sampled until the
+// next nativeReset()/nativeSetGrammar(). An empty or unparseable grammar simply
+// clears it: a bad grammar must degrade to unconstrained sampling, never break
+// generation (llama_sampler_init_grammar returns null on a parse error).
+extern "C" JNIEXPORT void JNICALL
+Java_com_samurai_shugocore_inference_LlamaCppBridge_nativeSetGrammar(
+        JNIEnv* env, jobject, jlong session_ptr, jstring gbnf) {
+    auto* s = as_session(session_ptr);
+    if (!s || !s->vocab) return;
+    std::lock_guard<std::mutex> lock(g_session_mutex);
+    if (s->grammar) {
+        llama_sampler_free(s->grammar);
+        s->grammar = nullptr;
+    }
+    if (!gbnf) return;
+    const char* raw = env->GetStringUTFChars(gbnf, nullptr);
+    if (!raw) return;
+    std::string text(raw);
+    env->ReleaseStringUTFChars(gbnf, raw);
+    if (text.empty()) {
+        LOGI("grammar cleared");
+        return;
+    }
+    llama_sampler* g = llama_sampler_init_grammar(s->vocab, text.c_str(), "root");
+    if (!g) {
+        LOGE("grammar rejected by llama.cpp (len=%zu); sampling unconstrained",
+             text.size());
+        return;
+    }
+    s->grammar = g;
+    LOGI("grammar installed (len=%zu)", text.size());
 }
 
 
@@ -348,22 +389,61 @@ Java_com_samurai_shugocore_inference_LlamaCppBridge_nativeGenerateToken(
     llama_sampler* chain = llama_sampler_chain_init(sparams);
     if (!chain) return -1;
 
-    // Canonical chain order: penalties -> top_k -> top_p -> temp -> dist.
+    // Grammar goes FIRST. llama.cpp's reference sampler applies the grammar to
+    // the raw logits before the probability samplers (common_sampler_sample's
+    // `grammar_first`); applying it after temp/top_p lets a token softmax
+    // already scored slip past the -INF mask, and the grammar then rejects it
+    // while the chain accepts the sample -> uncaught throw (SIGABRT on-device).
+    // Order: grammar -> penalties -> top_k -> top_p -> temp -> dist, with
+    // ``grammar_idx`` tracking its slot so it can be detached again (the chain
+    // takes ownership of everything added to it).
+    int n_added = 0;
+    int grammar_idx = -1;
+    if (s->grammar) {
+        grammar_idx = n_added;
+        llama_sampler_chain_add(chain, s->grammar);
+        ++n_added;
+    }
     llama_sampler_chain_add(chain, llama_sampler_init_penalties(
             /*n_vocab=*/llama_vocab_n_tokens(s->vocab),
             repeat_last_n, repeat_penalty, /*frequency=*/0.0f, /*presence=*/0.0f));
+    ++n_added;
     if (top_k > 0) {
         llama_sampler_chain_add(chain, llama_sampler_init_top_k(top_k));
+        ++n_added;
     }
     if (top_p < 1.0f) {
         llama_sampler_chain_add(chain, llama_sampler_init_top_p(top_p, /*min_keep=*/1));
+        ++n_added;
     }
     llama_sampler_chain_add(chain, llama_sampler_init_temp(temperature));
+    ++n_added;
     const uint32_t useed = (seed < 0) ? LLAMA_DEFAULT_SEED
                                       : static_cast<uint32_t>(seed);
     llama_sampler_chain_add(chain, llama_sampler_init_dist(useed));
+    ++n_added;
 
-    const llama_token id = llama_sampler_sample(chain, s->ctx, /*idx=*/-1);
+    // llama_sampler_sample() accepts the sampled token on the chain itself
+    // (llama-sampler.cpp), which advances the persistent grammar sampler -- it
+    // must NOT be accepted again here. A finished grammar offers only EOG and
+    // accepting EOG exhausts the grammar stacks, which llama.cpp reports as a
+    // std::runtime_error: that is the normal end of a constrained generation,
+    // so end the sequence instead of taking the process down.
+    llama_token id = LLAMA_TOKEN_NULL;
+    try {
+        id = llama_sampler_sample(chain, s->ctx, /*idx=*/-1);
+    } catch (const std::exception & exc) {
+        if (grammar_idx >= 0) {
+            llama_sampler_chain_remove(chain, grammar_idx);
+        }
+        llama_sampler_free(chain);
+        LOGI("grammar ended generation: %s", exc.what());
+        return -2;
+    }
+    if (grammar_idx >= 0) {
+        // Detach before freeing: the chain owns (and frees) its children.
+        llama_sampler_chain_remove(chain, grammar_idx);
+    }
     llama_sampler_free(chain);
 
     if (llama_vocab_is_eog(s->vocab, id)) return -2;
@@ -380,6 +460,12 @@ Java_com_samurai_shugocore_inference_LlamaCppBridge_nativeReset(
     if (!s || !s->ctx) return;
     std::lock_guard<std::mutex> lock(g_session_mutex);
     LOGI("reset: clearing KV (n_past=%d)", s->n_past);
+    // Grammar state belongs to the previous request: drop it so a request that
+    // supplies no grammar is never constrained by a stale one.
+    if (s->grammar) {
+        llama_sampler_free(s->grammar);
+        s->grammar = nullptr;
+    }
     llama_memory_clear(llama_get_memory(s->ctx), /*data=*/true);
     s->n_past = 0;
     s->pending.clear();

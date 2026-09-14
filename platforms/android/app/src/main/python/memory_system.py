@@ -495,6 +495,67 @@ class SemanticMemory:
                 self.reinforce(row[0])
         return results
 
+    # -- fleet memory sharing (deterministic export / dedupe) ----------------
+
+    def facts_since(self, since_iso: Optional[str] = None,
+                    limit: int = 200) -> List[Dict[str, Any]]:
+        """Export facts created after ``since_iso`` (fleet memory sharing).
+
+        Unlike :meth:`search` this is not similarity-ranked: it is the
+        deterministic, bounded enumeration a peer uses to pull what a remote
+        agent has learned since a timestamp. Ordered oldest-first so the
+        caller can advance a watermark by the last ``created_at``.
+        """
+        capped = max(1, min(int(limit), 1000))
+        with self._lock:
+            if since_iso:
+                rows = self._conn.execute(
+                    f"SELECT {self._SELECT_COLUMNS} FROM facts "
+                    "WHERE created_at > ? ORDER BY created_at ASC, id ASC "
+                    "LIMIT ?",
+                    (str(since_iso), capped),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    f"SELECT {self._SELECT_COLUMNS} FROM facts "
+                    "ORDER BY created_at ASC, id ASC LIMIT ?",
+                    (capped,),
+                ).fetchall()
+        return [self._row_to_fact(row) for row in rows]
+
+    def content_exists(self, content: str) -> bool:
+        """True when an identical (sanitized) fact is already stored.
+
+        The dedupe primitive for shared facts: a peer that re-sends the same
+        knowledge must never create a second row.
+        """
+        text = str(sanitize_text(content, 2000))
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM facts WHERE content = ? LIMIT 1", (text,)
+            ).fetchone()
+        return row is not None
+
+    def count_shared(self, source: Optional[str] = None) -> int:
+        """Durable count of facts imported from mesh peers (survives restart).
+
+        Unlike a process-local import counter, this reads the persisted
+        ``shared_from`` provenance, so it is the real size of the combined
+        knowledge this agent holds from the mesh.
+        """
+        if source:
+            pattern = f'%"shared_from": "{sanitize_text(source, 64)}"%'
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) FROM facts WHERE metadata LIKE ?",
+                    (pattern,)).fetchone()
+        else:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) FROM facts "
+                    "WHERE metadata LIKE '%\"shared_from\"%'").fetchone()
+        return int(row[0]) if row else 0
+
     def reinforce(self, fact_id: int, boost: float = 0.25, cap: float = 10.0) -> None:
         """Strengthen a memory because it was re-accessed."""
         with self._lock:
@@ -972,7 +1033,7 @@ class MemoryManager:
         self._write_gates = {
             "tier0": {"scratchpad"},  # Only Scratchpad.write()
             "tier1": {"episodic"},    # Only EpisodicMemory.record()
-            "tier2": {"consolidation", "maintenance"},  # Only consolidation worker
+            "tier2": {"consolidation", "maintenance", "shugonet"},  # consolidation worker or fleet import
             "tier3": {"dream", "promote_invariant"},  # Only dream or explicit promotion
         }
 
@@ -1119,6 +1180,86 @@ class MemoryManager:
         return {"semantic": semantic_hits, "graph": graph_hits,
                 "episodic": episodic}
 
+    # -- fleet memory sharing (ShugoNet mesh; Tier 2 only) -------------------
+
+    def export_shared_facts(self, since: Optional[str] = None,
+                            limit: int = 200) -> List[Dict[str, Any]]:
+        """Export Tier 2 knowledge for a peer (ShugoNet memory mesh).
+
+        Isolation invariant: only Tier 2 crosses the mesh. Tier 0/1 are
+        per-agent private and Tier 3 is read-only identity, so neither may
+        leave the node. Returns plain fact dicts (embeddings stripped).
+        """
+        exporter = getattr(self.tier2, "facts_since", None)
+        if exporter is None:
+            return []
+        facts = exporter(since, limit=limit)
+        return [self._shareable_fact(f) for f in facts]
+
+    def import_shared_facts(self, facts: List[Dict[str, Any]],
+                            source: str) -> Dict[str, int]:
+        """Merge peer facts into Tier 2, idempotently, with provenance.
+
+        Identical content is never duplicated (a peer that re-sends the same
+        knowledge is safe); each imported fact records ``shared_from`` /
+        ``shared_at`` metadata so the origin of every belief is auditable.
+        Returns ``{"imported", "skipped", "duplicates"}`` where
+        ``duplicates`` counts already-known content (the input to the
+        ``memory_sync_conflict_storm`` guard).
+        """
+        self.enforce_write("tier2", "shugonet")
+        origin = sanitize_text(source, 64) or "unknown"
+        imported = skipped = duplicates = 0
+        for fact in facts or []:
+            if not isinstance(fact, dict):
+                skipped += 1
+                continue
+            content = sanitize_text(fact.get("content") or fact.get("fact") or "", 2000)
+            if not content:
+                skipped += 1
+                continue
+            exists = getattr(self.tier2, "content_exists", None)
+            if exists is not None and exists(content):
+                duplicates += 1
+                continue
+            metadata = dict(fact.get("metadata") or {})
+            metadata["shared_from"] = origin
+            metadata["shared_at"] = _utc_now_iso()
+            try:
+                salience = max(0.0, min(10.0, float(fact.get("salience", 0.8))))
+            except (TypeError, ValueError):
+                salience = 0.8
+            self.tier2.store_fact(
+                content,
+                kind=sanitize_text(fact.get("kind") or "fact", 32) or "fact",
+                salience=salience,
+                metadata=metadata,
+            )
+            imported += 1
+        return {"imported": imported, "skipped": skipped,
+                "duplicates": duplicates}
+
+    def count_shared_facts(self, source: Optional[str] = None) -> int:
+        """Durable count of peer facts held in Tier 2 (survives restart)."""
+        counter = getattr(self.tier2, "count_shared", None)
+        if counter is None:
+            return 0
+        try:
+            return int(counter(source))
+        except Exception as exc:
+            logger.warning("shared-fact count failed: %s", exc)
+            return 0
+
+    @staticmethod
+    def _shareable_fact(fact: Dict[str, Any]) -> Dict[str, Any]:
+        """Project a Tier 2 row onto the wire form (no embeddings/ids)."""
+        return {
+            "content": fact.get("content"),
+            "kind": fact.get("kind", "fact"),
+            "salience": fact.get("salience", 1.0),
+            "created_at": fact.get("created_at"),
+            "metadata": fact.get("metadata") or {},
+        }
 
     # -- consolidation pipeline (compression -> promotion -> decay) ----------
 

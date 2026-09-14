@@ -98,7 +98,11 @@ class BaseBackend:
 
     name = "base"
 
-    def generate(self, model_id: str, prompt: str, timeout: float = 30.0) -> str:
+    def generate(self, model_id: str, prompt: str, timeout: float = 30.0,
+                 grammar: Optional[str] = None) -> str:
+        """Generate text. ``grammar`` is an optional GBNF constraint; backends
+        without native GBNF support map it to their closest structured-output
+        mode (and may ignore it)."""
         raise NotImplementedError
 
     def list_models(self) -> List[str]:
@@ -114,12 +118,19 @@ class OllamaBackend(BaseBackend):
         self.base_url = _validated_base_url(base_url)
         self.timeout = float(timeout)
 
-    def generate(self, model_id: str, prompt: str, timeout: float = None) -> str:
+    def generate(self, model_id: str, prompt: str, timeout: float = None,
+                 grammar: Optional[str] = None) -> str:
         if not validate_model_name(model_id):
             raise BackendError(f"invalid model name: {model_id!r}")
+        body: Dict[str, Any] = {"model": model_id, "prompt": str(prompt),
+                                "stream": False}
+        if grammar:
+            # Ollama has no GBNF channel; its JSON mode is the closest
+            # structured-output constraint.
+            body["format"] = "json"
         with requests.post(
             f"{self.base_url}/api/generate",
-            json={"model": model_id, "prompt": str(prompt), "stream": False},
+            json=body,
             timeout=timeout or self.timeout,
             allow_redirects=False,
             stream=True,
@@ -156,15 +167,22 @@ class OpenAICompatibleBackend(BaseBackend):
         self.api_key_env = str(api_key_env)
         self.timeout = float(timeout)
 
-    def generate(self, model_id: str, prompt: str, timeout: float = None) -> str:
+    def generate(self, model_id: str, prompt: str, timeout: float = None,
+                 grammar: Optional[str] = None) -> str:
         api_key = os.environ.get(self.api_key_env)
         if not api_key:
             raise BackendError(f"environment variable {self.api_key_env} is not set")
+        body: Dict[str, Any] = {
+            "model": model_id, "stream": False,
+            "messages": [{"role": "user", "content": str(prompt)}],
+        }
+        if grammar:
+            # Closest OpenAI-compatible structured-output mode.
+            body["response_format"] = {"type": "json_object"}
         with requests.post(
             f"{self.base_url}/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}"},
-            json={"model": model_id, "stream": False,
-                  "messages": [{"role": "user", "content": str(prompt)}]},
+            json=body,
             timeout=timeout or self.timeout,
             allow_redirects=False,
             stream=True,
@@ -189,7 +207,8 @@ class StubBackend(BaseBackend):
 
     name = "stub"
 
-    def generate(self, model_id: str, prompt: str, timeout: float = None) -> str:
+    def generate(self, model_id: str, prompt: str, timeout: float = None,
+                 grammar: Optional[str] = None) -> str:
         return json.dumps({
             "action_type": None,
             "params": {},

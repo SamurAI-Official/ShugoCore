@@ -66,9 +66,15 @@ class AndroidBackend(BaseBackend):
         model_id: str,
         prompt: str,
         timeout: float = 30.0,
+        grammar: Optional[str] = None,
         **kwargs,
     ) -> str:
-        """Generate text using the local llama.cpp server."""
+        """Generate text using the local llama.cpp server.
+
+        ``grammar`` is an optional GBNF string; LocalApiServer forwards it to
+        llama.cpp's grammar sampler so structured callers get JSON the model
+        physically cannot deviate from (instead of best-effort prose).
+        """
         payload = {
             "model": model_id,
             "prompt": prompt,
@@ -86,7 +92,10 @@ class AndroidBackend(BaseBackend):
                 "top_k": kwargs.get("top_k", 40),
             },
         }
-        print(f"ANDROID_INFERENCE generate called: model_id={model_id} prompt_len={len(prompt)}")
+        if grammar:
+            payload["grammar"] = grammar
+        print(f"ANDROID_INFERENCE generate called: model_id={model_id} "
+              f"prompt_len={len(prompt)} grammar={'on' if grammar else 'off'}")
         data = _http_post(
             f"{self.base_url}/api/generate", payload, timeout or self.timeout
         )
@@ -101,6 +110,7 @@ class AndroidBackend(BaseBackend):
         model_id: str,
         messages: List[Dict[str, str]],
         timeout: float = 30.0,
+        grammar: Optional[str] = None,
         **kwargs,
     ) -> str:
         """Chat completion using the local llama.cpp server."""
@@ -114,6 +124,8 @@ class AndroidBackend(BaseBackend):
                 "top_p": kwargs.get("top_p", 0.9),
             },
         }
+        if grammar:
+            payload["grammar"] = grammar
         data = _http_post(
             f"{self.base_url}/api/chat", payload, timeout or self.timeout
         )

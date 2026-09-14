@@ -159,6 +159,15 @@ class ExecutionLayer:
                                        "'ask_user'; actions are never "
                                        "simulated")}
                 return handler(decision)
+            # Pluggable action types: network_*, mobile_*, robotics_* and any
+            # other handler installed through register_handler(). The hardcoded
+            # chain above only covers the built-in types, but
+            # available_action_types() advertises the whole registry -- so a
+            # registered network/mobile/robotics handler was offered to the
+            # model and then rejected right here as "Unknown action type".
+            plugin = self._handlers.get(str(action_type)) if action_type else None
+            if plugin is not None:
+                return plugin(decision)
             return {"status": "error", "message": "Unknown action type"}
         except Exception as exc:  # sanitized: never leak internals to callers
             logger.error(f"Execution failed: {exc}")

@@ -30,11 +30,27 @@ if(ANDROID AND CMAKE_BUILD_TYPE MATCHES "^[Dd][Ee][Bb][Uu][Gg]$")
     set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
-# ARMv8.2 dotprod kernels for arm64-v8a: without them Q4_K_M matmuls run
-# the generic NEON path (measured ~1 tok/s prefill on Exynos 1380). The
-# device exposes asimddp on ALL cores (arm64 cpuinfo lists the feature
-# intersection), so dotprod codegen is safe on every core.
-if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a")
+# Portable arm64 baseline by default.
+#
+# Forcing -march=armv8.2-a+dotprod compiles the *baseline* ggml CPU backend
+# with dotprod (SDOT/UDOT) and those kernels are NOT runtime-gated: any arm64
+# SoC without FEAT_DotProd then takes SIGILL. Observed on the SM-S515DL test
+# unit (Exynos 9611; /proc/cpuinfo has no `asimddp`):
+#   Fatal signal 4 (SIGILL), code 1 (ILL_ILLOPC)
+#   #00 libllama_jni.so (ggml_vec_dot_q5_0_q8_0+236)
+# on the first Q4_K_M matmul -- every model call failed, so the Python
+# backend logged URLError and the agent fell back to rules indefinitely.
+# Devices that DO expose asimddp (e.g. the SM-X518U) run it fine, but one
+# APK must not crash on the rest of the fleet.
+#
+# Upstream's safe-and-fast path is GGML_CPU_ALL_VARIANTS (per-arch backend
+# variants + runtime dispatch), which requires GGML_BACKEND_DL /
+# BUILD_SHARED_LIBS and does not fit this static single-library layout. Until
+# that is adopted, ship the portable baseline; dotprod-capable fleets opt in:
+#     ./gradlew assembleDebug -Pshugocore.dotprod=true
+option(SHUGOCORE_ARM_DOTPROD
+       "Compile the baseline ggml backend for armv8.2-a+dotprod (SIGILL on CPUs without FEAT_DotProd)" OFF)
+if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a" AND SHUGOCORE_ARM_DOTPROD)
     set(GGML_CPU_ARM_ARCH "armv8.2-a+dotprod" CACHE STRING "" FORCE)
 endif()
 

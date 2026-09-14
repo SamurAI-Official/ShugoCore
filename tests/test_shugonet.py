@@ -297,6 +297,65 @@ class TestExecutionLayerIntegration(unittest.TestCase):
         for action_type in NETWORK_ACTION_TYPES | NETWORK_READ_ACTION_TYPES:
             layer.register_handler(action_type, lambda d: {})
 
+    def test_registered_handler_is_dispatched(self):
+        """A registered plugin handler must actually run via _dispatch.
+
+        Regression: _dispatch was a hardcoded if/elif chain that never
+        consulted the handler registry for network/mobile/robotics types, so
+        every registered handler was advertised by
+        DecisionEngine.available_action_types() and then rejected as
+        "Unknown action type".
+        """
+        from execution_layer import ExecutionLayer
+
+        layer = ExecutionLayer()
+        seen = []
+
+        def handler(decision):
+            seen.append(decision)
+            return {"status": "success", "action": "network_send"}
+
+        layer.register_handler("network_send", handler)
+        result = layer._dispatch({"action_type": "network_send",
+                                  "params": {"peer": "b", "topic": "t",
+                                             "payload": {}}})
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(len(seen), 1)
+
+    def test_unregistered_type_is_still_unknown(self):
+        from execution_layer import ExecutionLayer
+
+        result = ExecutionLayer()._dispatch({"action_type": "network_send",
+                                             "params": {}})
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["message"], "Unknown action type")
+
+    def test_shugonet_registration_is_dispatchable(self):
+        """register_network_handlers + _dispatch: the advertised path works."""
+        from execution_layer import ExecutionLayer
+        from shugonet_bridge import register_network_handlers
+
+        layer = ExecutionLayer()
+        register_network_handlers(layer, MockShugonetAgent())
+        result = layer._dispatch({"action_type": "network_list_agents",
+                                  "params": {}})
+        self.assertEqual(result["status"], "success")
+        self.assertIn("agent-001", result["agents"])
+
+    def test_every_registered_action_type_is_dispatchable(self):
+        """Invariant: advertised == executable (never 'Unknown action type')."""
+        from execution_layer import ExecutionLayer
+        from shugonet_bridge import register_network_handlers
+
+        layer = ExecutionLayer()
+        register_network_handlers(layer, MockShugonetAgent())
+        self.assertTrue(layer._handlers)
+        for action_type in sorted(layer._handlers):
+            result = layer._dispatch({"action_type": action_type,
+                                      "params": {}})
+            self.assertNotEqual(result.get("message"), "Unknown action type",
+                                f"{action_type} is advertised but unreachable")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,8 +3,8 @@
 > A continuous orchestration layer for synthetic functional agency.
 
 [![PyPI](https://img.shields.io/pypi/v/shugocore)](https://pypi.org/project/shugocore/)
-![Release](https://img.shields.io/badge/release-v1.29.1-blue)
-![Tests](https://img.shields.io/badge/tests-965%20passing-brightgreen)
+![Release](https://img.shields.io/badge/release-v1.30.0-blue)
+![Tests](https://img.shields.io/badge/tests-1005%20passing-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%E2%80%933.13-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android%20%28Termux%2FChaquopy%29-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -283,6 +283,29 @@ Kotlin↔Python boundary speaks JSON (`get_status_json`, `recent_logs_json`,
 `update_capabilities_json`, …) so no state is lost to crossing the runtime
 edge.
 
+### On-device structured inference (v1.30.0)
+
+The Android node runs the model locally, and constrains it to a schema:
+
+- **Model staging is required.** `ShugoCoreService` searches `files/models/`,
+  the app cache and `/data/local/tmp`, staging whatever `.gguf` it finds into
+  app-private storage. With no model the loopback server never starts and
+  every model call fails (`URLError`), leaving the rule-based fallback.
+- **Grammar-constrained decoding.** For decision tasks the engine builds a
+  GBNF grammar from its own `available_action_types()` and ships it with the
+  request; `LocalApiServer` forwards it to llama.cpp's grammar sampler, so a
+  small on-device model cannot emit the loose JSON dialects that used to fail
+  parsing (and a replayed grammar step can never be silently skipped).
+  Conversational output stays free text. Ollama's `format: "json"` is also
+  honoured, mapped to a generic JSON-object grammar.
+- **Portable CPU baseline by default.** ARMv8.2 `+dotprod` kernels are opt-in
+  via `./gradlew assembleDebug -Pshugocore.dotprod=true`, because forcing them
+  compiles dotprod instructions into kernels that are *not* runtime-gated — a
+  `SIGILL` crash on any arm64 SoC without `FEAT_DotProd` (e.g. Exynos 9611).
+  Opt in on devices that do expose `asimddp` (e.g. Exynos 1380-class).
+- **Measured.** A51 (Exynos 9611, 0.5B Q4_K_M, baseline): ~30 s/decision.
+  Tab S9 FE (dotprod, 1.5B Q4_K_M): ~23 s/decision.
+
 ### Desktop server mode (no high-end phone needed)
 
 Users with a device older than the 2020 mid/high-tier recommendation can run
@@ -335,6 +358,33 @@ codependent memory mesh.
 
 Side-effecting network actions require operator consent and approval, following
 the same pattern as other side-effecting actions.
+
+### Memory mesh semantics (v1.30.0)
+
+`network_query` and `network_sync` are backed by each agent's **living Tier 2
+memory** — not placeholders:
+
+- **`query`** answers from the peer's `MemoryManager` (hybrid semantic +
+  entity-graph recall). With no memory backend configured the reply is empty,
+  never invented.
+- **`sync`** is incremental: the caller passes a watermark, the peer returns
+  the Tier 2 facts created after it, and the caller merges them into its own
+  store and advances a per-peer watermark — so repeats transfer nothing.
+- **Only Tier 2 crosses the mesh.** Tier 0/1 are per-agent private and Tier 3
+  is read-only identity; imports are idempotent and carry `shared_from` /
+  `shared_at` provenance, so the origin of every belief is auditable.
+- **Bounded links.** Peers are re-dialed by `reconnect_peers()` (periodic and
+  bounded), so a startup dial race cannot strand a link; duplicate-heavy syncs
+  trip the `memory_sync_conflict_storm` guard.
+- **Joining a mesh.** Host nodes set `SHUGOCORE_MESH_PEERS`
+  (`id=host:port,...`); Android nodes drop `mesh_peers.json`
+  (`{"peer-id": "host:port"}`) into the app data dir. On device, the
+  deterministic command **"sync your memory with your peer"** merges a peer's
+  memory and reports the imported count.
+
+Verified across two devices (A51 + Tab S9 FE): the A51 imported **64** facts
+from its peer and the Tab imported 2 in the opposite direction, with the
+imported knowledge then recallable through each agent's own memory API.
 
 ### Quickstart
 
@@ -575,7 +625,7 @@ for fact in candidates:
 ## Testing
 
 ```bash
-python -m unittest discover -s tests -v     # 965 tests, no native deps
+python -m unittest discover -s tests -v     # 1005 tests, no native deps
 python -m compileall -q .                   # byte-compile every module
 ruff check .                                # syntax errors + undefined names
 bandit -q -r . -x ./.venv,./.llama_build,./platforms,./dist,./build,./tests -lll

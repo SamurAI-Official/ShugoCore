@@ -31,7 +31,12 @@ android {
                 // slower (measured: 0.65 tok/s decode, 273s prefill for a
                 // 0.5B Q4 model vs ~10 tok/s / seconds with -O3). Java-side
                 // debuggability of the debug APK is unaffected.
-                arguments "-DANDROID_STL=c++_shared", "-DCMAKE_BUILD_TYPE=Release"
+                arguments "-DANDROID_STL=c++_shared", "-DCMAKE_BUILD_TYPE=Release",
+                          // ggml ARM kernels: portable baseline by default.
+                          // -Pshugocore.dotprod=true opts into armv8.2-a+dotprod
+                          // (SIGILL on arm64 CPUs without FEAT_DotProd).
+                          "-DSHUGOCORE_ARM_DOTPROD=" +
+                                  (project.hasProperty("shugocore.dotprod") ? "ON" : "OFF")
             }
         }
 

@@ -15,6 +15,14 @@ a dict with at least ``type`` (the verb) and an id for request/response
 correlation. The runtime can run as a standalone peer or embedded in a
 ShugoCore agent.
 
+Memory sharing (v1.30 dev)
+--------------------------
+When constructed with a ``MemoryManager`` (``memory=``), ``query`` answers
+from the peer's real Tier 2 semantic memory and ``sync`` pulls/merges a
+peer's Tier 2 facts into local memory with provenance (``shared_from`` /
+``shared_at``) and content dedupe. Without a memory backend the runtime is
+still a valid transport (it answers empty, never a fake fact).
+
 Usage (standalone peer)::
 
     python3 agent_runtime.py --port 9000 --agent-id shugo-macbook
@@ -22,7 +30,8 @@ Usage (standalone peer)::
 Usage (embedded in a ShugoCore agent)::
 
     from agent_runtime import ShugonetAgentRuntime
-    runtime = ShugonetAgentRuntime(agent_id="agent-001", port=9000)
+    runtime = ShugonetAgentRuntime(agent_id="agent-001", port=9000,
+                                   memory=agent.memory)
     runtime.start()
     register_network_handlers(execution_layer, runtime)
 """
@@ -34,6 +43,7 @@ import socket
 import threading
 import time
 import uuid
+from collections import deque
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -53,7 +63,10 @@ class _PeerConnection:
         self.host = host
         self.port = port
         self.sock: Optional[socket.socket] = None
-        self._lock = threading.Lock()
+        # RLock, not Lock: connect() calls close() while holding the lock, and
+        # close() takes it again -- a plain Lock self-deadlocks on any real
+        # add_peer()/start() connect (latent until a peer is actually dialed).
+        self._lock = threading.RLock()
         self._connected = False
 
     def connect(self) -> bool:
@@ -114,16 +127,28 @@ class _PeerServer(threading.Thread):
         self._stop_event = threading.Event()
 
     def run(self) -> None:
+        sock = None
         try:
-            self._server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self._server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self._server_sock.bind((self._host, self._port))
-            self._server_sock.listen(5)
-            self._server_sock.settimeout(1.0)
-            logger.info("shugonet server listening on %s:%d", self._host, self._port)
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((self._host, self._port))
+            sock.listen(5)
+            sock.settimeout(1.0)
         except Exception as exc:
-            logger.error("shugonet server bind failed: %s", exc)
+            logger.error("shugonet server bind failed on %s:%s: %s",
+                         self._host, self._port, exc)
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+            # Leave _server_sock None: a socket that never bound reports
+            # getsockname() port 0, and dialing port 0 fails with
+            # EADDRNOTAVAIL instead of a clear "not listening".
+            self._server_sock = None
             return
+        self._server_sock = sock
+        logger.info("shugonet server listening on %s:%d", self._host, self._port)
 
         while not self._stop_event.is_set():
             try:
@@ -220,6 +245,11 @@ class ShugonetAgentRuntime:
         peer_map: Optional[Dict[str, tuple]] = None,
         max_frame_bytes: int = _MAX_FRAME_BYTES,
         auth_token: Optional[str] = None,
+        memory: Optional[Any] = None,
+        conflict_threshold: int = 20,
+        conflict_window_s: float = 60.0,
+        fallback_controller: Optional[Any] = None,
+        reconnect_interval: float = 5.0,
     ):
         self.agent_id = agent_id
         self._host = host
@@ -231,8 +261,24 @@ class ShugonetAgentRuntime:
         self._outbound: Dict[str, _PeerConnection] = {}
         self._pending: Dict[str, threading.Event] = {}
         self._pending_responses: Dict[str, Any] = {}
-        self._stats: Dict[str, int] = {"sent": 0, "received": 0, "errors": 0}
+        self._stats: Dict[str, int] = {"sent": 0, "received": 0, "errors": 0,
+                                       "imported": 0}
         self._server: Optional[_PeerServer] = None
+        # Memory sharing: a MemoryManager (or any object exposing
+        # export_shared_facts/import_shared_facts) makes query/sync real.
+        self._memory = memory
+        self._fallback_controller = fallback_controller
+        self._conflict_threshold = max(1, int(conflict_threshold))
+        self._conflict_window_s = max(1.0, float(conflict_window_s))
+        self._conflict_events: "deque[float]" = deque()
+        self._sync_watermarks: Dict[str, str] = {}
+        # Bounded peer reconnection. Two nodes starting together each dial the
+        # other before it is listening, so the first dial can fail; without a
+        # retry the outbound socket stays down (send() and connected_peers
+        # would report the peer as unreachable while it is actually up).
+        self._reconnect_interval = max(0.0, float(reconnect_interval))
+        self._stop_event = threading.Event()
+        self._reconnect_thread: Optional[threading.Thread] = None
         if peer_map:
             for pid, (phost, pport) in peer_map.items():
                 self.add_peer(pid, phost, pport)
@@ -247,14 +293,55 @@ class ShugonetAgentRuntime:
         self._server.start()
         for conn in list(self._outbound.values()):
             conn.connect()
+        self._start_reconnect_loop()
 
     def stop(self) -> None:
         self._started = False
+        self._stop_event.set()
+        self._reconnect_thread = None
         if self._server is not None:
             self._server.stop()
             self._server = None
         for conn in list(self._outbound.values()):
             conn.close()
+
+    def _start_reconnect_loop(self) -> None:
+        """Start the bounded peer-reconnect thread (no-op when disabled)."""
+        if self._reconnect_interval <= 0:
+            return
+        if self._reconnect_thread is not None and self._reconnect_thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._reconnect_thread = threading.Thread(
+            name="shugonet-reconnect", target=self._reconnect_loop, daemon=True)
+        self._reconnect_thread.start()
+
+    def _reconnect_loop(self) -> None:
+        while not self._stop_event.is_set():
+            if self._stop_event.wait(self._reconnect_interval):
+                return
+            try:
+                self.reconnect_peers()
+            except Exception as exc:
+                logger.warning("peer reconnect pass failed: %s", exc)
+
+    def reconnect_peers(self) -> int:
+        """Re-dial every disconnected peer; return how many are now up.
+
+        Bounded (one connect attempt per peer, each with the socket's connect
+        timeout) and safe to call on demand, e.g. before reporting status.
+        """
+        established = 0
+        for conn in list(self._outbound.values()):
+            if conn.connected:
+                established += 1
+                continue
+            try:
+                if conn.connect():
+                    established += 1
+            except Exception as exc:
+                logger.warning("peer %s reconnect failed: %s", conn.peer_id, exc)
+        return established
 
     def add_peer(self, peer_id: str, host: str, port: int) -> None:
         conn = _PeerConnection(peer_id, host, port)
@@ -278,8 +365,106 @@ class ShugonetAgentRuntime:
                 "port": self._port,
                 "peers": list(self._outbound.keys()),
                 "connected_peers": [pid for pid, c in self._outbound.items() if c.connected],
+                "memory_enabled": self._memory is not None,
+                "sync_watermarks": dict(self._sync_watermarks),
                 "stats": dict(self._stats),
             }
+
+    # -- memory sharing ------------------------------------------------------
+
+    def _memory_search(self, query: str,
+                       top_k: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Answer a peer query from real Tier 2 memory (empty if none)."""
+        memory = self._memory
+        if memory is None or not query:
+            return []
+        limit = max(1, int(top_k)) if top_k else 5
+        try:
+            if hasattr(memory, "retrieve_context"):
+                hits = memory.retrieve_context(query, top_k=limit,
+                                               include_episodic=False)
+                facts = list(hits.get("semantic", [])) + list(hits.get("graph", []))
+            elif hasattr(memory, "search"):
+                facts = memory.search(query, top_k=limit)
+            else:
+                return []
+        except Exception as exc:
+            logger.warning("shugonet memory search failed: %s", exc)
+            return []
+        results = []
+        for fact in facts:
+            if not isinstance(fact, dict):
+                continue
+            content = fact.get("content")
+            if not content:
+                continue
+            metadata = fact.get("metadata") or {}
+            results.append({
+                "fact": content,
+                "salience": fact.get("salience", 1.0),
+                "kind": fact.get("kind", "fact"),
+                # origin: the peer this fact was learned from (provenance), so
+                # a caller can tell its own knowledge from mesh-imported facts.
+                "origin": metadata.get("shared_from") or self.agent_id,
+                "source": self.agent_id,
+            })
+        return results
+
+    def _memory_export(self, since: Optional[str]) -> List[Dict[str, Any]]:
+        """Export local Tier 2 facts created after ``since`` (or [] if none)."""
+        memory = self._memory
+        if memory is None:
+            return []
+        exporter = getattr(memory, "export_shared_facts", None)
+        if exporter is None:
+            return []
+        try:
+            return exporter(since)
+        except Exception as exc:
+            logger.warning("shugonet memory export failed: %s", exc)
+            return []
+
+    def _memory_import(self, facts: List[Dict[str, Any]],
+                       source: str) -> Dict[str, int]:
+        """Merge peer facts into local memory (no-op without a backend)."""
+        memory = self._memory
+        if memory is None:
+            return {"imported": 0, "skipped": 0, "duplicates": 0}
+        importer = getattr(memory, "import_shared_facts", None)
+        if importer is None:
+            return {"imported": 0, "skipped": 0, "duplicates": 0}
+        try:
+            return importer(facts, source)
+        except Exception as exc:
+            logger.warning("shugonet memory import failed: %s", exc)
+            return {"imported": 0, "skipped": 0, "duplicates": 0}
+
+    def _note_conflicts(self, source: str, duplicates: int) -> None:
+        """Guard against a peer storming us with facts we already hold.
+
+        Duplicate content is idempotent (never duplicated), but a sustained
+        rate of duplicates means a peer is replaying its whole store. When
+        that exceeds ``conflict_threshold`` within ``conflict_window_s`` the
+        deterministic ``memory_sync_conflict_storm`` fallback fires.
+        """
+        if duplicates <= 0:
+            return
+        now = time.monotonic()
+        with self._lock:
+            for _ in range(duplicates):
+                self._conflict_events.append(now)
+            cutoff = now - self._conflict_window_s
+            while self._conflict_events and self._conflict_events[0] < cutoff:
+                self._conflict_events.popleft()
+            storm = len(self._conflict_events) >= self._conflict_threshold
+        if storm and self._fallback_controller is not None:
+            try:
+                self._fallback_controller.report_violation(
+                    "memory_sync_conflict_storm",
+                    f"{self._conflict_threshold}+ duplicate facts within "
+                    f"{self._conflict_window_s:.0f}s from '{source}'")
+            except Exception as exc:
+                logger.warning("conflict-storm report failed: %s", exc)
 
     def _stamp(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         """Attach the shared-secret token when this runtime gates inbound."""
@@ -303,38 +488,100 @@ class ShugonetAgentRuntime:
             return {"status": "success", "via": "tcp", "peer": peer}
         return {"status": "error", "message": "send failed"}
 
+    def _one_shot_request(self, conn: "_PeerConnection", msg: Dict[str, Any],
+                          timeout: float = _SOCKET_TIMEOUT
+                          ) -> Optional[Dict[str, Any]]:
+        """Send one request and read one reply on a dedicated connection.
+
+        Request/response deliberately does NOT use the persistent outbound
+        socket: a peer answers on the connection the request arrived on, so a
+        fresh short-lived socket gives a deterministic one-to-one reply with
+        no background reader thread and no shared-socket races.
+        """
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            sock.connect((conn.host, conn.port))
+        except Exception as exc:
+            logger.warning("peer %s request connect failed: %s", conn.peer_id, exc)
+            return None
+        try:
+            payload = json.dumps(self._stamp(msg), sort_keys=True) + "\n"
+            sock.sendall(payload.encode("utf-8"))
+            buf = b""
+            while b"\n" not in buf:
+                chunk = sock.recv(_RECV_SIZE)
+                if not chunk:
+                    break
+                buf += chunk
+                if len(buf) > self._max_frame_bytes:
+                    break
+            line = buf.split(b"\n", 1)[0].strip()
+            if not line:
+                return None
+            return json.loads(line.decode("utf-8"))
+        except Exception as exc:
+            logger.warning("peer %s request failed: %s", conn.peer_id, exc)
+            return None
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
     def query(self, query: str, peers=None, top_k=None) -> List[Dict[str, Any]]:
+        """Ask peers for facts matching ``query`` (real Tier 2 on each peer).
+
+        Returns the raw ``query_result`` replies, one per reachable peer.
+        """
         targets = peers if peers else list(self._outbound.keys())
         results = []
         for pid in targets:
             conn = self._outbound.get(pid)
-            if conn is None or not conn.connected:
+            if conn is None:
                 continue
             qid = str(uuid.uuid4().hex[:12])
-            msg = self._stamp({"type": "query", "from": self.agent_id, "query": query,
-                               "top_k": top_k, "id": qid})
-            ok = conn.send(msg)
-            if ok:
+            resp = self._one_shot_request(conn, {
+                "type": "query", "from": self.agent_id, "query": query,
+                "top_k": top_k, "id": qid})
+            if resp:
                 self._stats["sent"] += 1
-                resp = self._recv_response(qid, timeout=2.0)
-                if resp:
-                    results.append(resp)
+                results.append(resp)
         return results
 
     def sync(self, peer=None, since=None) -> Dict[str, Any]:
+        """Pull a peer's Tier 2 facts since ``since`` and merge them locally.
+
+        Returns ``{status, peer, received, imported, duplicates}``. Without a
+        memory backend the transfer still succeeds but imports nothing.
+        """
         pid = peer or next(iter(self._outbound.keys()), None)
         if pid is None:
             return {"status": "refused", "reason": "no peers available"}
         conn = self._outbound.get(pid)
-        if conn is None or not conn.connected:
-            return {"status": "refused", "reason": f"peer '{pid}' not connected"}
-        msg = self._stamp({"type": "sync", "from": self.agent_id, "since": since,
-                           "id": str(uuid.uuid4().hex[:12])})
-        ok = conn.send(msg)
-        if ok:
-            self._stats["sent"] += 1
-            return {"status": "success", "peer": pid}
-        return {"status": "error", "message": "sync failed"}
+        if conn is None:
+            return {"status": "refused", "reason": f"unknown peer '{pid}'"}
+        watermark = since if since is not None else self._sync_watermarks.get(pid)
+        qid = str(uuid.uuid4().hex[:12])
+        resp = self._one_shot_request(conn, {
+            "type": "sync", "from": self.agent_id,
+            "since": watermark, "id": qid})
+        if not resp:
+            return {"status": "error", "message": "sync unreachable",
+                    "peer": pid}
+        self._stats["sent"] += 1
+        facts = resp.get("facts") or []
+        merge = self._memory_import(facts, pid)
+        self._note_conflicts(pid, int(merge.get("duplicates", 0)))
+        imported = int(merge.get("imported", 0))
+        self._stats["imported"] = self._stats.get("imported", 0) + imported
+        if facts:
+            newest = facts[-1].get("created_at") if isinstance(facts[-1], dict) else None
+            if newest:
+                self._sync_watermarks[pid] = newest
+        return {"status": "success", "peer": pid, "received": len(facts),
+                "imported": imported,
+                "duplicates": int(merge.get("duplicates", 0))}
 
     def _dispatch_message(self, msg: Dict[str, Any], sock: socket.socket) -> None:
         self._stats["received"] += 1
@@ -346,12 +593,17 @@ class ShugonetAgentRuntime:
         elif msg_type == "query":
             resp = {"type": "query_result", "in_response_to": msg_id,
                     "from": self.agent_id,
-                    "results": [{"fact": f"stub from {self.agent_id}", "salience": 0.5}]}
+                    "query": msg.get("query", ""),
+                    "results": self._memory_search(msg.get("query", ""),
+                                                   msg.get("top_k"))}
             self._send_json(sock, resp)
         elif msg_type == "sync":
-            ack = {"type": "ack", "in_response_to": msg_id, "status": "synced"}
-            self._send_json(sock, ack)
-        elif msg_type in ("ack", "query_result"):
+            facts = self._memory_export(msg.get("since"))
+            resp = {"type": "sync_result", "in_response_to": msg_id,
+                    "from": self.agent_id, "since": msg.get("since"),
+                    "facts": facts, "count": len(facts)}
+            self._send_json(sock, resp)
+        elif msg_type in ("ack", "query_result", "sync_result"):
             with self._lock:
                 rid = msg.get("in_response_to", "")
                 if rid in self._pending:

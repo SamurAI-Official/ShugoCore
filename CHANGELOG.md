@@ -4,6 +4,167 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.30.0] - 2026-09-13 — fleet memory mesh + on-device structured inference
+
+Two capabilities that were previously a façade are now real, and the on-device
+agent loop is model-driven instead of rule-driven.
+
+- **ShugoNet memory sharing was a stub.** A cross-agent `query` returned an
+  invented `"stub from <agent>"` fact and `sync` merely acknowledged, so a
+  two-device "combined memory" could not be real. Both are now backed by each
+  agent's living Tier 2 memory — verified between an A51 and a Tab S9 FE:
+  A51 pulled **64** facts from its peer (provenance-tagged) and the reverse
+  direction imported 2, with the imported knowledge recallable through the
+  agent's own memory API.
+- **On-device structured inference.** With no `.gguf` staged, the loopback
+  API server never started and the model backend logged `URLError` forever;
+  and the build forced ARMv8.2 dotprod kernels that took `SIGILL` on CPUs
+  without `FEAT_DotProd`. Both are fixed, and the decision path now uses
+  **grammar-constrained decoding** so a 0.5B model cannot emit unparseable
+  output. Verified: decisions went from **100% `rule_fallback`** to
+  predominantly `proposal_source: <model>` with schema-valid JSON.
+
+### ShugoNet memory sharing is real (was a stub)
+
+### ShugoNet peer runtime (`agent_runtime.py`, mirrored to the Android tree)
+- **Real memory-backed query.** An inbound `query` is answered from the
+  peer's `MemoryManager` (`retrieve_context`) instead of a stub; with no
+  memory backend configured the reply is empty, never fabricated.
+- **Real, incremental `sync`.** An inbound `sync` exports Tier 2 facts
+  created after the caller's watermark; the caller merges the reply into its
+  own memory and advances a per-peer watermark, so repeats transfer nothing.
+  Returns `{received, imported, duplicates}`.
+- **Request/response transport fix.** `query`/`sync` now send and read their
+  reply on a dedicated short-lived connection (`_one_shot_request`); the
+  persistent outbound socket is send-only, so previously no reply could ever
+  be read.
+- **Fixed a latent self-deadlock** in `_PeerConnection.connect()` (a plain
+  `Lock` re-acquired via `close()`); the lock is now reentrant. This fired on
+  any real `add_peer()`/`start()` connect and was never exercised before.
+- **Conflict-storm guard.** Duplicate-content syncs are counted over a
+  sliding window; exceeding `conflict_threshold` reports the existing
+  deterministic `memory_sync_conflict_storm` fallback. Duplicates are always
+  idempotent (never re-stored).
+- **Bounded peer reconnection.** Two nodes starting together each dial the
+  other before it is listening, so the first dial can fail; the outbound
+  socket is now re-dialed by `reconnect_peers()` (also run periodically by a
+  bounded `reconnect_interval` thread, disable with `0`). `mesh_status`
+  re-dials before reporting, so "connected" reflects reality instead of a
+  stale startup failure.
+- **Bind-failure reporting fixed.** `_PeerServer` published its socket before
+  binding, so a failed bind left a phantom port (`getsockname()` -> 0) that
+  peers then dialed, producing a confusing `EADDRNOTAVAIL` instead of a clear
+  "not listening". The socket is now published only after a successful bind,
+  and `bind` failures are logged with host:port.
+- **Peer configuration.** `SHUGOCORE_MESH_PEERS` ("id=host:port,..."),
+  `SHUGOCORE_MESH_PORT`, and `SHUGOCORE_MESH_TOKEN` let an agent join a mesh
+  at bootstrap (`shugocore_agent._start_shugonet`). Android nodes join with
+  `mesh_peers.json` in the app data dir instead
+  (`{"peer-id": "host:port"}` or a list of `{"id","host","port"}`) — no
+  environment variables required on device.
+
+### On-device mesh control (`subsystems/intent.py`, `subsystems/command_router.py`)
+- The intent parser now classifies `sync` / `share` / `mesh` transcripts as
+  commands, and the command router routes them to a `mesh` category
+  ("sync your memory with your peer", "mesh status", "share what you know").
+- `AndroidAgent` exposes `mesh_status` / `mesh_sync` tools wired to its live
+  ShugoNet runtime, so a spoken command merges a peer's Tier 2 memory into
+  the agent's own store and reports `imported` / `already known` counts.
+
+### Tier 2 memory (`memory_system.py`, mirrored to the Android tree)
+- **`SemanticMemory.facts_since()` / `content_exists()`** — bounded,
+  deterministic export and a content dedupe primitive for shared facts.
+- **`MemoryManager.export_shared_facts()` / `import_shared_facts()`** — the
+  sharing boundary. Only Tier 2 crosses the mesh (Tier 0/1 stay private, Tier
+  3 stays read-only identity); imports are idempotent and record
+  `shared_from` / `shared_at` provenance. `shugonet` is now a sanctioned
+  Tier 2 writer in the write gate.
+- **`count_shared_facts()` / `SemanticMemory.count_shared()`** — durable,
+  provenance-aware count of retained mesh facts (survives restart), used by
+  `mesh_status`. Note: imported facts are normal Tier 2 memory, so the
+  consolidation pipeline can later compress them (e.g. `summary` -> `pattern`)
+  and provenance is not propagated through that rewrite; the retained count
+  therefore decays over time by design.
+
+### Tests / tooling
+- `tests/test_memory_sharing.py` (9 tests): primitives, provenance,
+  idempotent dedupe, the two-agent combined-memory contract over real TCP,
+  no-backend behavior, and the conflict-storm guard.
+- `tests/two_agent_memory_smoke.py`: live harness — local two-agent mode, and
+  `--remote host:port` to pair with an Android node via `adb forward`.
+
+### Android on-device inference (`platforms/android`)
+- **Portable arm64 baseline by default; dotprod is now opt-in.** The CMake
+  build forced `GGML_CPU_ARM_ARCH=armv8.2-a+dotprod` for every arm64-v8a
+  target, which compiles the *baseline* ggml CPU backend with dotprod
+  (SDOT/UDOT). Those kernels are not runtime-gated, so on any arm64 SoC
+  without FEAT_DotProd the first Q4_K_M matmul died with
+  `Fatal signal 4 (SIGILL), code 1 (ILL_ILLOPC)` inside
+  `ggml_vec_dot_q5_0_q8_0` — a native crash + restart loop, observed on the
+  Exynos 9611 test unit whose `/proc/cpuinfo` has no `asimddp`. The default is
+  now the portable baseline; dotprod-capable fleets opt in with
+  `./gradlew assembleDebug -Pshugocore.dotprod=true`. Upstream's safe-and-fast
+  multi-variant path (`GGML_CPU_ALL_VARIANTS`) requires
+  `GGML_BACKEND_DL`/shared libs and does not fit the static single-library
+  layout.
+- **On-device model staging is a hard prerequisite.** With no `.gguf` in the
+  search path, `findModelFile()` returns null, `LocalApiServer` never starts,
+  and the Python backend logs `URLError` on every model call (endless rule
+  fallback). Verified fixed by staging `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf`
+  (397 MB) where the service looks for it: the loopback API then binds
+  `127.0.0.1:11434` and real on-device generation resumes (~24-34 s per
+  decision on the A51 baseline build).
+
+### Grammar-constrained decoding (on-device structured decisions)
+The on-device 0.5B model answered but emitted loose dialects
+(`action_type: speak` with no braces, or `record_observation: {json}`) that
+`DecisionEngine._parse_proposal` could not read, so every decision fell back to
+rules even once the model was healthy.
+- **Schema-derived GBNF** (`subconscious.build_decision_grammar`): the grammar
+  is built from the engine's own `available_action_types()`, so
+  `action_type` is restricted to the real executor set (plus `null`) and the
+  proposal keys/order are pinned. Root ends at the closing brace, so a
+  satisfied grammar completes immediately instead of padding whitespace.
+- **Decision path only** — `get_model_output` passes the grammar;
+  `get_conversational_output` stays free text (speech is not JSON).
+- **Backend plumbing**: `BaseBackend.generate(..., grammar=None)`.
+  `OllamaBackend` maps it to `format: "json"`, `OpenAICompatibleBackend` to
+  `response_format: {"type": "json_object"}`, and `AndroidBackend` sends the
+  GBNF verbatim. A cached capability probe keeps older backends and test
+  doubles (whose `generate` predates the kwarg) working.
+- **`LocalApiServer`**: accepts `grammar` (bounded to 8 KiB) or Ollama's
+  `format: "json"` (→ a generic JSON-object GBNF) on `/api/generate` and
+  `/api/chat`; an unusable grammar is dropped, never fatal.
+- **`llama_jni`**: a persistent `llama_sampler` grammar on the session,
+  installed via `nativeSetGrammar` and freed on reset/free. Three llama.cpp
+  facts are load-bearing and documented in the code:
+  - the grammar must be added **first** in the per-token chain
+    (`common_sampler_sample`'s `grammar_first`), because applying it after
+    `temp`/`top_p` lets an already-softmaxed token bypass the `-INF` mask;
+  - `llama_sampler_sample()` **already accepts** the sampled token on the
+    chain, so the grammar must not be accepted again;
+  - a satisfied grammar offers only EOG, and accepting EOG exhausts the
+    grammar stacks → `std::runtime_error`. That is normal completion, so it is
+    caught and treated as end-of-sequence (previously an uncaught throw →
+    SIGABRT restart loop).
+- **Verified on the SM-S515DL**: `grammar: caller GBNF (977 chars)` →
+  `grammar installed` → model returns schema-valid JSON; decisions are
+  predominantly `proposal_source: shugocore-local`, up from 0% model-sourced
+  (was 100% `rule_fallback`).
+
+### Execution dispatch consults the handler registry (`execution_layer.py`)
+`register_handler()` has always accepted network/mobile/robotics/custom action
+types, and `DecisionEngine.available_action_types()` advertises them (it unions
+the registry, so the model prompt and the decision grammar offer them) — but
+`ExecutionLayer._dispatch()` was a hardcoded `if/elif` chain that only looked
+the registry up for `record_observation` / `speak` / `ask_user`. Every
+pluggable handler was therefore unreachable end-to-end: advertised to the
+model, gated by policy, then rejected with `Unknown action type`. Observed
+live once grammar-constrained decoding made the model actually propose
+`network_list_agents`. Dispatch now falls back to the registry for any
+registered type (unregistered types still fail closed with the same message),
+so "advertised == executable" holds again.
+
 ## [1.29.1] - 2026-09-13 — network-surface hardening
 
 Bounded the two network-facing surfaces that previously accepted unbounded or

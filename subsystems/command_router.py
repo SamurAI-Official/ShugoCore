@@ -109,6 +109,15 @@ class CommandExecutor:
             return "time"
         if "battery" in transcript:
             return "battery"
+        # Fleet memory mesh: "sync your memory with your peer", "mesh status".
+        # Checked before memory so "sync your memory" is not read as a fact op.
+        if ("mesh" in transcript
+                or "sync your memory" in transcript
+                or "sync memories" in transcript
+                or "share what you know" in transcript
+                or "share your memory" in transcript
+                or ("sync" in transcript and "peer" in transcript)):
+            return "mesh"
         # Phase 4: durable-memory commands. Checked after timer so
         # "remember to set a timer" still routes to the timer handler.
         if ("remember" in transcript or "forget" in transcript
@@ -293,6 +302,44 @@ def default_handlers(tools: Any = None) -> Dict[str, Callable[[UserIntent], Comm
                              else "memory_store_failed",
                              data={"fact": text})
 
+    def handle_mesh(intent: UserIntent) -> CommandResult:
+        """Fleet memory mesh: report peers or pull a peer's Tier 2 memory.
+
+        Backed by the ``mesh_status`` / ``mesh_sync`` tools, which the agent
+        wires to its live ShugoNet runtime. ``mesh_sync`` merges the peer's
+        Tier 2 facts into this agent's own memory (idempotent, provenance
+        tagged), so the combined knowledge is immediately recallable here.
+        """
+        if tools is None:
+            return CommandResult(
+                success=False,
+                response="I need my mesh module for that.",
+                action_taken="mesh_unavailable")
+        transcript_l = intent.transcript.lower()
+        if ("status" in transcript_l or "who" in transcript_l
+                or "peers" in transcript_l):
+            if not tools.has("mesh_status"):
+                return CommandResult(
+                    success=False,
+                    response="I need my mesh module for that.",
+                    action_taken="mesh_status_unavailable")
+            result = tools.call("mesh_status")
+            return CommandResult(
+                success=result.ok, response=result.output,
+                action_taken="mesh_status" if result.ok else "mesh_status_failed",
+                data=result.data or {})
+        if not tools.has("mesh_sync"):
+            return CommandResult(
+                success=False,
+                response="I need my mesh module for that.",
+                action_taken="mesh_sync_unavailable")
+        peer = str(intent.entities.get("peer_id") or "").strip() or None
+        result = tools.call("mesh_sync", peer=peer)
+        return CommandResult(
+            success=result.ok, response=result.output,
+            action_taken="mesh_sync" if result.ok else "mesh_sync_failed",
+            data=result.data or {})
+
     handlers["timer"] = handle_timer
     handlers["weather"] = handle_weather
     handlers["time"] = handle_time
@@ -300,4 +347,5 @@ def default_handlers(tools: Any = None) -> Dict[str, Callable[[UserIntent], Comm
     handlers["search"] = handle_search
     handlers["device"] = handle_device
     handlers["memory"] = handle_memory
+    handlers["mesh"] = handle_mesh
     return handlers

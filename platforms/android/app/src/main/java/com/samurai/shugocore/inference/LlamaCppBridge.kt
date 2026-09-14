@@ -109,6 +109,7 @@ class LlamaCppBridge(val modelPath: String) : AutoCloseable {
         repeatPenalty: Float = 1.1f,
         seed: Int = -1,
         stops: List<String> = emptyList(),
+        grammar: String? = null,
         callback: CompletionCallback? = null
     ): String {
         if (!isReady) {
@@ -118,9 +119,17 @@ class LlamaCppBridge(val modelPath: String) : AutoCloseable {
 
         synchronized(inferLock) {
             Log.d(TAG, "generate start: pLen=${prompt.length} max=$maxTokens")
-            // Fresh KV state per request.
+            // Fresh KV state per request (nativeReset also drops any grammar
+            // left over from the previous request).
             nativeReset(sessionPtr)
-            Log.d(TAG, "generate: after reset")
+            // Constrain decoding to a GBNF grammar when the caller supplied one
+            // (e.g. the decision-JSON schema). Native clears it when empty and
+            // degrades to unconstrained sampling if the grammar is rejected.
+            if (!grammar.isNullOrEmpty()) {
+                nativeSetGrammar(sessionPtr, grammar)
+            }
+            Log.d(TAG, "generate: after reset (grammar=" +
+                    (if (grammar.isNullOrEmpty()) "off" else "on") + ")")
 
             val startTime = System.currentTimeMillis()
 
@@ -234,6 +243,13 @@ class LlamaCppBridge(val modelPath: String) : AutoCloseable {
     ): Int
 
     private external fun nativeReset(sessionPtr: Long)
+
+    /**
+     * Install a GBNF grammar constraining every token sampled until the next
+     * reset. Pass "" (or omit) to clear. A malformed grammar is rejected
+     * natively and sampling continues unconstrained.
+     */
+    private external fun nativeSetGrammar(sessionPtr: Long, grammar: String)
 
     private external fun nativeFree(sessionPtr: Long)
 

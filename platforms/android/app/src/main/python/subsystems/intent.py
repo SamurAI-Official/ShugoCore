@@ -65,6 +65,8 @@ class IntentParser:
         # "do you remember my name" stays a question.
         r"^(remember|recall|forget)\b",
         r"^(?!(what|who|where|when|why|how)\b).*\b(remember|forget)\s+(that|about|to)\b",
+        # Fleet memory mesh ("sync your memory with your peer", "mesh status").
+        r"^(sync|share|mesh)\b",
     ]
 
     # Questions — wh-words and question marks
@@ -157,7 +159,7 @@ class IntentParser:
 
         # Action verb
         action_match = re.match(
-            r"^(set|create|start|stop|turn|open|close|play|pause|remind|remember|recall|forget|show|tell|find|search|send|call|text)",
+            r"^(set|create|start|stop|turn|open|close|play|pause|remind|remember|recall|forget|show|tell|find|search|send|call|text|sync|share|mesh)",
             text, re.IGNORECASE)
         if action_match:
             entities["action_verb"] = action_match.group(1).lower()

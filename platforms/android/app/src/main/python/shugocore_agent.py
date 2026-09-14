@@ -1,4 +1,5 @@
 # Android agent entrypoint (Chaquopy). Called from ShugoCoreService.
+import json
 import logging
 import os
 import threading
@@ -338,6 +339,14 @@ class AndroidAgent:
                 for name, handler in default_handlers(
                         self.tool_registry).items():
                     self.command_executor.register_handler(name, handler)
+                # v1.30: fleet memory mesh tools. They resolve the ShugoNet
+                # runtime lazily, since _start_shugonet() runs after this.
+                self.tool_registry.register_handler(
+                    "mesh_status", self._tool_mesh_status,
+                    description="List ShugoNet mesh peers and shared-memory state")
+                self.tool_registry.register_handler(
+                    "mesh_sync", self._tool_mesh_sync,
+                    description="Pull a peer agent's Tier 2 memory into mine")
             except Exception as exc:
                 self.log("AGENT", f"subsystems init failed: {exc}",
                          level="WARN")
@@ -484,6 +493,122 @@ class AndroidAgent:
             self.log("PERSONALITY", f"growth failed: {exc}", level="WARN")
             return None
 
+    @staticmethod
+    def _parse_mesh_peers(spec: str) -> List[tuple]:
+        """Parse ``SHUGOCORE_MESH_PEERS`` ("id=host:port,id2=host:port").
+
+        Returns a list of ``(peer_id, host, port)``. Malformed entries are
+        skipped so a typo in operator config can never crash the agent.
+        """
+        peers: List[tuple] = []
+        for entry in str(spec or "").split(","):
+            entry = entry.strip()
+            if not entry or "=" not in entry:
+                continue
+            peer_id, _, address = entry.partition("=")
+            host, _, port_s = address.rpartition(":")
+            peer_id, host = peer_id.strip(), host.strip()
+            try:
+                port = int(port_s)
+            except (TypeError, ValueError):
+                continue
+            if not peer_id or not host or not (0 < port < 65536):
+                continue
+            peers.append((peer_id, host, port))
+        return peers
+
+    def _load_mesh_peers_file(self) -> List[tuple]:
+        """Read ``<data_dir>/mesh_peers.json`` for fleet peers.
+
+        Accepts either ``{"peer-id": "host:port", ...}`` or a list of
+        ``{"id", "host", "port"}`` objects. This is how an Android node joins
+        a device-to-device mesh: no environment variables required, and a
+        malformed file simply means "no peers".
+        """
+        if not self.data_dir:
+            return []
+        path = Path(self.data_dir) / "mesh_peers.json"
+        try:
+            with open(str(path), "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except Exception:
+            return []
+        peers: List[tuple] = []
+        if isinstance(data, dict):
+            for pid, address in data.items():
+                host, _, port_s = str(address).rpartition(":")
+                try:
+                    port = int(port_s)
+                except (TypeError, ValueError):
+                    continue
+                if pid and host and 0 < port < 65536:
+                    peers.append((str(pid).strip(), host.strip(), port))
+        elif isinstance(data, list):
+            for entry in data:
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    port = int(entry.get("port"))
+                except (TypeError, ValueError):
+                    continue
+                pid = str(entry.get("id") or "").strip()
+                host = str(entry.get("host") or "").strip()
+                if pid and host and 0 < port < 65536:
+                    peers.append((pid, host, port))
+        return peers
+
+    def _tool_mesh_status(self):
+        """Tool: report mesh peers and shared-memory state (read-only)."""
+        from subsystems.tools import ToolResult
+        runtime = getattr(self, "shugonet_runtime", None)
+        if runtime is None:
+            return ToolResult.err_result("My mesh is not running.")
+        # Re-dial any peer whose persistent socket failed at startup, so the
+        # reported "connected" count reflects reality rather than a stale
+        # first-dial failure.
+        try:
+            runtime.reconnect_peers()
+        except Exception:
+            pass
+        status = runtime.status()
+        peers = list(status.get("peers") or [])
+        connected = len(status.get("connected_peers") or [])
+        session_imported = int((status.get("stats") or {}).get("imported", 0))
+        memory = getattr(self, "memory", None)
+        try:
+            shared = memory.count_shared_facts() if memory is not None else 0
+        except Exception:
+            shared = 0
+        status = dict(status)
+        status["shared_facts"] = shared
+        return ToolResult.ok_result(
+            f"Mesh online with {len(peers)} peer(s): "
+            f"{', '.join(peers) if peers else 'none'}; {connected} connected, "
+            f"{shared} shared fact(s) in memory "
+            f"({session_imported} imported this session).",
+            data=status)
+
+    def _tool_mesh_sync(self, peer: Optional[str] = None,
+                        since: Optional[str] = None):
+        """Tool: pull a peer's Tier 2 memory into this agent's own memory.
+
+        Idempotent and provenance-tagged; the merged facts are immediately
+        available to this agent's normal recall path.
+        """
+        from subsystems.tools import ToolResult
+        runtime = getattr(self, "shugonet_runtime", None)
+        if runtime is None:
+            return ToolResult.err_result("My mesh is not running.")
+        result = runtime.sync(peer=peer or None, since=since)
+        if result.get("status") != "success":
+            reason = result.get("reason") or result.get("message") or "unreachable"
+            return ToolResult.err_result(f"Mesh sync failed: {reason}.")
+        return ToolResult.ok_result(
+            f"Synced with {result.get('peer')}: imported "
+            f"{int(result.get('imported', 0))} shared fact(s), "
+            f"{int(result.get('duplicates', 0))} already known.",
+            data=result)
+
     def _start_shugonet(self) -> None:
         """v1.20: start the ShugoNet TCP/JSON transport runtime and register
         network handlers with the execution layer. Best-effort: failures
@@ -494,19 +619,43 @@ class AndroidAgent:
             self.log("AGENT", "shugonet runtime already running")
             return
         try:
+            import os as _os
             from agent_runtime import ShugonetAgentRuntime
             from shugonet_bridge import register_network_handlers
+            # v1.30: back the mesh query/sync with the living Tier 2 memory so
+            # a peer's combined knowledge is real (not a stub) and usable by
+            # this agent's own recall after sync.
+            shugonet_memory = getattr(self, "memory", None)
+            shugonet_fallbacks = getattr(getattr(self, "engine", None),
+                                         "fallbacks", None)
+            mesh_port = int(_os.environ.get("SHUGOCORE_MESH_PORT", "9000"))
+            mesh_token = _os.environ.get("SHUGOCORE_MESH_TOKEN") or None
             self.shugonet_runtime = ShugonetAgentRuntime(
                 agent_id=f"shugo-{self.device_caps or 'android'}",
-                host="0.0.0.0", port=9000)
+                host="0.0.0.0", port=mesh_port,
+                memory=shugonet_memory,
+                fallback_controller=shugonet_fallbacks,
+                auth_token=mesh_token)
             self.shugonet_runtime.start()
+            peers = (self._parse_mesh_peers(
+                        _os.environ.get("SHUGOCORE_MESH_PEERS", ""))
+                     + self._load_mesh_peers_file())
+            unique_peers: Dict[str, tuple] = {}
+            for peer_id, peer_host, peer_port in peers:
+                unique_peers[peer_id] = (peer_host, peer_port)
+            for peer_id, (peer_host, peer_port) in unique_peers.items():
+                self.shugonet_runtime.add_peer(peer_id, peer_host, peer_port)
             if self.engine is not None:
                 register_network_handlers(
                     self.engine.execution_layer, self.shugonet_runtime)
-            self.log("AGENT", f"shugonet runtime started on port 9000")
+            self.log("AGENT",
+                     f"shugonet runtime started on port {mesh_port} "
+                     f"(memory={'on' if shugonet_memory is not None else 'off'}, "
+                     f"peers={len(unique_peers)})")
             self._shugonet_started = True
             import sys as _sys
-            print("SHUGONET: runtime started on port 9000", file=_sys.stderr, flush=True)
+            print(f"SHUGONET: runtime started on port {mesh_port} "
+                  f"(peers={len(unique_peers)})", file=_sys.stderr, flush=True)
         except Exception as exc:
             self.log("AGENT", f"shugonet start skipped: {exc}", level="WARN")
             import sys as _sys

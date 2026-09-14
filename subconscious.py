@@ -18,6 +18,7 @@ Backwards-compatible helpers (``get_available_models``, ``call_ollama_model``,
 
 import json  # noqa: F401 - kept for callers that import it from this module
 import logging
+import inspect
 import threading
 import time
 from collections import defaultdict
@@ -41,6 +42,41 @@ _DECISION_PROMPT = (
     "add any text outside the JSON.\n"
     "Task: {task_json}"
 )
+
+
+# GBNF template constraining a decision proposal to the engine's own schema.
+# 'action' is substituted with the real executor set, so grammar-constrained
+# decoding cannot propose an action the engine does not support. A tiny model
+# then physically cannot emit the loose dialects ("action_type: speak" with no
+# braces, "name: {json}") that used to fail _parse_proposal and force the
+# rule-based fallback forever.
+_DECISION_GRAMMAR_TEMPLATE = r"""
+root       ::= "{" ws "\"action_type\"" ws ":" ws action ws "," ws "\"params\"" ws ":" ws params ws "," ws "\"confidence\"" ws ":" ws number ws "," ws "\"text\"" ws ":" ws string ws "}"
+action     ::= %s
+params     ::= "{" ws (string ws ":" ws value (ws "," ws string ws ":" ws value)*)? ws "}" ws
+value      ::= object | array | string | number | ("true" | "false" | "null") ws
+object     ::= "{" ws (string ws ":" ws value (ws "," ws string ws ":" ws value)*)? ws "}" ws
+array      ::= "[" ws (value (ws "," ws value)*)? ws "]" ws
+string     ::= "\"" ( [^"\\\x7F\x00-\x1F] | "\\" (["\\bfnrt] | "u" [0-9a-fA-F]{4}) )* "\"" ws
+number     ::= ("-"? ([0-9] | [1-9] [0-9]{0,15})) ("." [0-9]+)? ([eE] [-+]? [0-9] [1-9]{0,15})? ws
+ws         ::= | " " | "\n" [ \t]{0,20}
+"""
+
+
+def build_decision_grammar(action_schema) -> str:
+    """GBNF that forces a parseable decision proposal for ``action_schema``.
+
+    Returns "" when no action types are supplied (callers then decode
+    unconstrained, exactly as before). The grammar pins the key order the
+    decision prompt already asks for and restricts ``action_type`` to the
+    engine's real executor set plus ``null``.
+    """
+    types = sorted({str(t).strip() for t in (action_schema or [])
+                    if str(t).strip() and str(t).strip().lower() != "null"})
+    if not types:
+        return ""
+    alternatives = " | ".join('"\\"%s\\""' % t for t in types + ["null"])
+    return (_DECISION_GRAMMAR_TEMPLATE.lstrip("\n") % alternatives)
 
 
 def _build_decision_prompt(task_json: str, action_schema) -> str:
@@ -79,7 +115,11 @@ def _build_decision_prompt(task_json: str, action_schema) -> str:
         f"{types}), \"params\" (object), \"confidence\" "
         "(number between 0.0 and 1.0), and \"text\" (short explanation). "
         "\"record_observation\" is always safe and always available: it records "
-        "a short observation (put your note in params.text). Choose null only "
+        "a short observation (put your note in params.text). Prefer it for "
+        "routine self-maintenance when no other action is clearly required. "
+        "Side-effecting actions (network send/query/sync, device or hardware "
+        "control) need operator approval, so choose them only when the task "
+        "clearly asks for them. Choose null only "
         "if there is truly nothing worth recording. Keep the entire JSON "
         "object on one line with no line breaks, and do not add any text "
         "outside the JSON.\n"
@@ -110,7 +150,32 @@ class SubconsciousModel:
         self._models_cache_at = 0.0
         self._models_lock = threading.Lock()
         self._history_lock = threading.Lock()
+        # type(backend) -> whether backend.generate accepts `grammar`. Cached
+        # so the capability probe costs nothing after the first call.
+        self._grammar_support_cache: Dict[type, bool] = {}
         self.logger = logging.getLogger(__name__)
+
+    def _backend_accepts_grammar(self, backend: BaseBackend) -> bool:
+        """Whether ``backend.generate`` accepts the ``grammar`` kwarg.
+
+        Older backends and lightweight test doubles may predate the
+        grammar-constrained calling convention; probing (once per class) keeps
+        them working instead of raising TypeError on every decision.
+        """
+        key = type(backend)
+        cached = self._grammar_support_cache.get(key)
+        if cached is not None:
+            return cached
+        supported = False
+        try:
+            params = inspect.signature(backend.generate).parameters
+            supported = "grammar" in params or any(
+                param.kind == inspect.Parameter.VAR_KEYWORD
+                for param in params.values())
+        except (TypeError, ValueError):
+            supported = False
+        self._grammar_support_cache[key] = supported
+        return supported
 
     # -- backend plumbing ----------------------------------------------------
 
@@ -184,8 +249,18 @@ class SubconsciousModel:
         with get_tracer("subconscious").start_span(
                 "backend.generate", {"model": sanitize_text(model_name, 64)}) as span:
             try:
-                output = str(backend.generate(model_name, prompt,
-                                              timeout=self.request_timeout))
+                # Grammar-constrained decoding for the decision path only:
+                # conversational output (get_conversational_output) stays free
+                # text. Backends without GBNF map it to their JSON mode; the
+                # Android server forwards it to llama.cpp's grammar sampler.
+                grammar = build_decision_grammar(action_schema)
+                if grammar and self._backend_accepts_grammar(backend):
+                    output = str(backend.generate(model_name, prompt,
+                                                  timeout=self.request_timeout,
+                                                  grammar=grammar))
+                else:
+                    output = str(backend.generate(model_name, prompt,
+                                                  timeout=self.request_timeout))
                 span.set_attribute("chars", len(output))
                 self.last_call_errors.pop(str(model_name)[:64], None)
                 return output

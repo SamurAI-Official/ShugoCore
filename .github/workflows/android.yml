@@ -107,8 +107,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "$GITHUB_REF_NAME" "$APK_PATH" --clobber
-          echo "Uploaded $APK_PATH to $GITHUB_REF_NAME"
+          NAME="shugocore-${GITHUB_REF_NAME#v}.apk"
+          # A tag push does not create a GitHub release, so create it if the
+          # tag has none (auto-generated notes; refine with `gh release edit`).
+          gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1 || \
+              gh release create "$GITHUB_REF_NAME" \
+                  --title "ShugoCore ${GITHUB_REF_NAME}" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" "$NAME" --clobber
+          echo "Uploaded $NAME to $GITHUB_REF_NAME"
 
       - name: Upload as a workflow artifact too
         uses: actions/upload-artifact@v4

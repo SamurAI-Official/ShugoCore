@@ -6,6 +6,20 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased] — CSFA activity + uptime instrumentation
 
+### Android UI: the loop is visible (ACTIVITY tab, AGENT tab additions)
+
+- **New ACTIVITY tab** — the recent-cycle ring (timestamped
+  `action [outcome] via source · duration` rows), loop accounting
+  (cycles / conversational ticks / cycles-per-minute / success rate / uptime),
+  the bounded outcome ledger, and memory-mesh activity (shared facts in, by
+  provenance peer).
+- **AGENT tab additions** — a **Loop** section (uptime, cycles, rate, last
+  outcome) and **Loop stages**: all 8 CSFA stages with
+  `"age · ok / stale"` liveness, `—` when the agent has no evidence yet.
+- Everything binds the exact keys AndroidAgent.get_status() emits
+  (`loop`, `loop_stages`, `mesh_activity`, `uptime_seconds`); missing
+  evidence renders `—`, never fabricated success.
+
 The 1 Hz agent loop now accounts every pass in **bounded** structures so the
 Continuous Synthetic Functional Agency loop is verifiable, not assumed:
 

@@ -1900,27 +1900,31 @@ class AndroidAgent:
         return out
 
     def _mesh_activity(self) -> Dict[str, Any]:
-        """Fleet memory-mesh activity: shared-fact counts by provenance peer."""
-        peers = (self.last_observation.get("mesh_peers") or [])
-        counter = None
-        if self.memory is not None:
-            counter = getattr(self.memory.tier2, "count_shared", None)
+        """Fleet memory-mesh activity: shared-fact counts by provenance peer.
+
+        Sources come from durable provenance (survives restart); peers known
+        from the last observation are listed too — with 0 — so a connected
+        peer with nothing imported yet is still visible.
+        """
         entries: List[Dict[str, Any]] = []
         total = 0
-        if counter is not None:
-            for peer in peers[:16]:
+        if self.memory is not None:
+            entries = [e for e in self.memory.shared_fact_sources()
+                       if isinstance(e, dict) and e.get("peer")]
+            counter = getattr(self.memory.tier2, "count_shared", None)
+            if counter is not None:
+                try:
+                    total = int(counter(None))
+                except Exception:
+                    total = 0
+            seen = {str(e.get("peer")) for e in entries}
+            for peer in (self.last_observation.get("mesh_peers") or [])[:16]:
                 pid = (str(peer.get("device_id") or peer.get("id") or peer)[:48]
                        if isinstance(peer, dict) else str(peer)[:48])
-                try:
-                    count = int(counter(pid))
-                except Exception:
-                    count = 0
-                entries.append({"peer": pid, "shared_facts": count})
-            try:
-                total = int(counter(None))
-            except Exception:
-                total = 0
-        return {"peers": entries, "total_shared_facts": total}
+                if pid and pid not in seen:
+                    seen.add(pid)
+                    entries.append({"peer": pid, "shared_facts": 0})
+        return {"peers": entries[:16], "total_shared_facts": total}
 
     def _classify_engine_result(self, engine_result: Dict[str, Any]
                                 ) -> Tuple[str, Tuple[str, ...], str, bool, str]:

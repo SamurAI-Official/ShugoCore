@@ -179,6 +179,26 @@ class TestMemoryManagerSharing(unittest.TestCase):
         self.assertEqual(self.b.count_shared_facts("agent-a"), 1)
         self.assertEqual(self.b.count_shared_facts("someone-else"), 0)
 
+    def test_shared_sources_list_provenance_peers(self):
+        """The mesh UI needs per-peer durable counts without live peers."""
+        self.assertEqual(self.b.shared_fact_sources(), [])
+        self.a.tier2.store_fact("the pier closes at sunset")
+        self.a.tier2.store_fact("the lighthouse flashes every 7s")
+        self.b.import_shared_facts(self.a.export_shared_facts(),
+                                   source="agent-a")
+        sources = self.b.shared_fact_sources()
+        self.assertEqual(sources, [{"peer": "agent-a", "shared_facts": 2}])
+        # Durable: still listed after a fresh manager over the same db.
+        reopened = MemoryManager(
+            agent_id="agent-b-reopened",
+            semantic=SemanticMemory(
+                db_path=os.path.join(self.tmp, "b.db")),
+            auto_start=False)
+        try:
+            self.assertEqual(reopened.shared_fact_sources(), sources)
+        finally:
+            reopened.shutdown()
+
 
 
 class TestTwoAgentCombinedMemory(unittest.TestCase):

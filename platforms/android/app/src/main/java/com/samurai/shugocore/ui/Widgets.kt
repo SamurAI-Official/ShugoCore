@@ -130,4 +130,17 @@ object Ui {
     fun bool(m: Map<*, *>?, key: String): Boolean = m?.get(key) == true
 
     fun num(m: Map<*, *>?, key: String): Long = (m?.get(key) as? Number)?.toLong() ?: 0L
+
+    /** Human duration: 2h 03m 11s / 5m 42s / 13s (agent uptime, etc.). */
+    fun duration(seconds: Double): String {
+        val s = seconds.toLong()
+        val h = s / 3600
+        val m = (s % 3600) / 60
+        val sec = s % 60
+        return when {
+            h > 0 -> "%dh %02dm %02ds".format(h, m, sec)
+            m > 0 -> "%dm %02ds".format(m, sec)
+            else -> "${sec}s"
+        }
+    }
 }

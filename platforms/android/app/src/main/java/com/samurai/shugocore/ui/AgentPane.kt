@@ -25,6 +25,12 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
     private val lastAction: TextView
     private val lastEvaluation: TextView
     private val detail: TextView
+    private val uptime: TextView
+    private val cyclesTotal: TextView
+    private val cyclesPerMin: TextView
+    private val successRate: TextView
+    private val lastOutcome: TextView
+    private val loopStages = mutableMapOf<String, TextView>()
     private val pipelineDots = mutableMapOf<String, TextView>()
     private val pipelineLabels = mutableMapOf<String, TextView>()
     private val tier0: TextView
@@ -74,6 +80,16 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
         lastEvaluation = col.addKv("Last evaluation")
         detail = col.addKv("Detail")
 
+        // -- Loop (v1.30.2 instrumentation) -------------------------------------
+        // Sustained-agency accounting from AndroidAgent.get_status()["loop"]:
+        // honest counters only; an absent loop surface renders "—".
+        col.addView(Ui.section(context, "Loop"))
+        uptime = col.addKv("Uptime")
+        cyclesTotal = col.addKv("Cycles")
+        cyclesPerMin = col.addKv("Cycles / minute")
+        successRate = col.addKv("Success rate")
+        lastOutcome = col.addKv("Last outcome")
+
         // -- Pipeline ---------------------------------------------------------------
         col.addView(Ui.section(context, "Pipeline"))
         for (stage in listOf("OBSERVE", "GATE", "DECIDE",
@@ -96,6 +112,16 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
             row.addView(dot)
             row.addView(label)
             col.addView(row)
+        }
+
+        // -- Loop stages (v1.30.2) --------------------------------------------------
+        // Per-stage liveness from get_status()["loop_stages"]: "4s ago · ok".
+        // The agent reports the full OBSERVE…CONSOLIDATE trail with a last-run
+        // timestamp; "—" means no evidence yet, never fabricated success.
+        col.addView(Ui.section(context, "Loop stages"))
+        for (stage in listOf("OBSERVE", "VERIFY_ATTENTION", "GATE", "DECIDE",
+                             "EXECUTE", "EVALUATE", "RECORD", "CONSOLIDATE")) {
+            loopStages[stage] = col.addKv(stage)
         }
 
         // -- Memory ------------------------------------------------------------------
@@ -186,6 +212,50 @@ class AgentPane(context: Context, private val host: ControlPlaneHost) :
         lastEvaluation.setTextColor(Ui.colorFor(Ui.str(agent, "last_evaluation", "")))
         // Cycle outcome contract detail (why the outcome happened).
         detail.text = Ui.str(Ui.sub(agent, "last_cycle_result"), "detail").ifEmpty { "—" }
+
+        // Loop accounting + per-stage liveness (v1.30.2): sustained-agency
+        // truth from the agent's own instrumentation. "—" when the loop
+        // surface is absent (pre-bootstrap) — never fabricated.
+        val loop = Ui.sub(agent, "loop")
+        if (loop == null) {
+            uptime.text = "—"
+            cyclesTotal.text = "—"
+            cyclesPerMin.text = "—"
+            successRate.text = "—"
+            lastOutcome.text = "—"
+        } else {
+            uptime.text = Ui.duration(Ui.num(agent, "uptime_seconds").toDouble())
+            cyclesTotal.text = Ui.str(loop, "cycles")
+            cyclesPerMin.text = Ui.str(loop, "cycles_per_minute")
+            val rate = loop.get("success_rate") as? Number
+            successRate.text = if (rate == null) "—"
+            else "${(rate.toDouble() * 100).toInt()}%"
+            val lastRes = Ui.sub(agent, "last_cycle_result")
+            val outcome = Ui.str(lastRes, "outcome")
+            lastOutcome.text = outcome.ifEmpty { "—" }
+            lastOutcome.setTextColor(Ui.colorFor(outcome))
+        }
+        val stageInfo = Ui.sub(agent, "loop_stages")
+        for ((stage, view) in loopStages) {
+            val info = Ui.sub(stageInfo, stage)
+            if (info == null) {
+                view.text = "—"
+                view.setTextColor(Ui.DIM)
+                continue
+            }
+            val state = Ui.str(info, "state", "unknown")
+            val age = (info.get("age_s") as? Number)?.toDouble()
+            view.text = when {
+                state == "unknown" -> "—"
+                age == null || age <= 0.0 -> state
+                else -> "${Ui.duration(age)} ago · $state"
+            }
+            view.setTextColor(when (state) {
+                "ok" -> Ui.OK
+                "stale" -> Ui.WARN
+                else -> Ui.DIM
+            })
+        }
 
         val stages = Ui.list(agent, "pipeline_stages").map { it.toString() }
         val current = stages.lastOrNull()

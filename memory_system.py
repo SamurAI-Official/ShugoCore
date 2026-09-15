@@ -556,6 +556,31 @@ class SemanticMemory:
                     "WHERE metadata LIKE '%\"shared_from\"%'").fetchone()
         return int(row[0]) if row else 0
 
+    def shared_sources(self) -> List[Dict[str, Any]]:
+        """Distinct provenance peers with durable fact counts.
+
+        Complements ``count_shared``: instead of one peer at a time, lists
+        every ``shared_from`` source with its count, so the UI can show the
+        memory mesh without depending on live peer discovery.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT metadata FROM facts "
+                "WHERE metadata LIKE '%\"shared_from\"%' LIMIT 2000"
+            ).fetchall()
+        counts: Dict[str, int] = {}
+        for row in rows:
+            try:
+                src = (json.loads(row[0]) or {}).get("shared_from")
+            except Exception:
+                continue
+            if src:
+                key = str(src)[:64]
+                counts[key] = counts.get(key, 0) + 1
+        return [{"peer": peer, "shared_facts": count}
+                for peer, count in sorted(counts.items(),
+                                          key=lambda kv: -kv[1])[:16]]
+
     def reinforce(self, fact_id: int, boost: float = 0.25, cap: float = 10.0) -> None:
         """Strengthen a memory because it was re-accessed."""
         with self._lock:
@@ -1249,6 +1274,18 @@ class MemoryManager:
         except Exception as exc:
             logger.warning("shared-fact count failed: %s", exc)
             return 0
+
+    def shared_fact_sources(self) -> List[Dict[str, Any]]:
+        """Distinct provenance peers with durable fact counts (bounded)."""
+        sources = getattr(self.tier2, "shared_sources", None)
+        if sources is None:
+            return []
+        try:
+            out = sources()
+            return out if isinstance(out, list) else []
+        except Exception as exc:
+            logger.warning("shared-fact source listing failed: %s", exc)
+            return []
 
     @staticmethod
     def _shareable_fact(fact: Dict[str, Any]) -> Dict[str, Any]:

@@ -29,6 +29,7 @@ import com.samurai.shugocore.runtime.PermState
 import com.samurai.shugocore.runtime.SecurityState
 import com.samurai.shugocore.runtime.SensorCapabilityManager
 import com.samurai.shugocore.ui.AgentPane
+import com.samurai.shugocore.ui.ActivityPane
 import com.samurai.shugocore.ui.LogPane
 import com.samurai.shugocore.ui.NodeStatusHeader
 import com.samurai.shugocore.ui.SecurityPane
@@ -43,6 +44,7 @@ class MainActivity : AppCompatActivity(), ControlPlaneHost {
     private lateinit var container: FrameLayout
     private lateinit var serverPane: ServerPane
     private lateinit var agentPane: AgentPane
+    private lateinit var activityPane: ActivityPane
     private lateinit var sensorsPane: SensorsPane
     private lateinit var securityPane: SecurityPane
     private lateinit var logPane: LogPane
@@ -107,13 +109,16 @@ class MainActivity : AppCompatActivity(), ControlPlaneHost {
 
         serverPane = ServerPane(this, this, modelDownloader)
         agentPane = AgentPane(this, this)
+        activityPane = ActivityPane(this)
         sensorsPane = SensorsPane(this, this)
         securityPane = SecurityPane(this, this)
         logPane = LogPane(this)
         companionPane = CompanionPane(this, this)
 
-        val tabs = listOf("SERVER", "AGENT", "SENSORS", "SECURITY", "LOG", "COMPANION")
-        val panes = listOf(serverPane, agentPane, sensorsPane, securityPane, logPane, companionPane)
+        val tabs = listOf("SERVER", "AGENT", "ACTIVITY", "SENSORS",
+                          "SECURITY", "LOG", "COMPANION")
+        val panes = listOf(serverPane, agentPane, activityPane, sensorsPane,
+                           securityPane, logPane, companionPane)
         root.addView(TabBar(this, tabs) { index ->
             currentTab = index
             container.removeAllViews()
@@ -291,10 +296,11 @@ class MainActivity : AppCompatActivity(), ControlPlaneHost {
         when (currentTab) {
             0 -> serverPane.bind(snap)
             1 -> agentPane.bind(snap)
-            2 -> sensorsPane.bind(snap)
-            3 -> securityPane.bind(snap)
-            4 -> { /* LOG tab refreshes itself */ }
-            5 -> companionPane.bind(snap)
+            2 -> activityPane.bind(snap)
+            3 -> sensorsPane.bind(snap)
+            4 -> securityPane.bind(snap)
+            5 -> { /* LOG tab refreshes itself */ }
+            6 -> companionPane.bind(snap)
         }
     }
 }

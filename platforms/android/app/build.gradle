@@ -155,7 +155,7 @@ chaquopy {
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.7.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
-    implementation 'androidx.core:core-ktx:1.13.1'
+    implementation 'androidx.core:core-ktx:1.19.0'
     implementation 'org.jetbrains.kotlin:kotlin-stdlib:2.0.21'
     // CameraX (v1.13 Vision): lifecycle-aware capture for the person-presence
     // provider. The only camera dependency; detection itself stays on the

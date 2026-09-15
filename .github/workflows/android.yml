@@ -29,6 +29,12 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Apply the NRR patch series
+        # The parent repo records only the submodule's commit; the Android
+        # build needs the local fixes (e.g. the Windows-only windows.h
+        # include in runtime/onnx_runtime.cpp) that live in patches/nrr/.
+        run: bash scripts/apply_nrr_patches.sh
+
       - name: Set up JDK (JetBrains Runtime 21)
         # The Gradle daemon is pinned by gradle-daemon-jvm.properties to
         # toolchainVendor=jetbrains / toolchainVersion=21 (the Android Studio

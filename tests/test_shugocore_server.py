@@ -156,6 +156,114 @@ class ServerTestCase(unittest.TestCase):
         self.assertIn("governor_state", body)
         self.assertIn("fallbacks", body)
 
+    def test_status_includes_activity_summary(self):
+        # Exercise a work endpoint, then confirm the additive summary.
+        requests.get(f"{self.base}/api/tags", timeout=5)
+        resp = requests.get(f"{self.base}/api/v1/status", timeout=5)
+        self.assertEqual(resp.status_code, 200)
+        activity = resp.json().get("activity")
+        self.assertIsInstance(activity, dict)
+        self.assertGreaterEqual(activity["requests_total"], 2)  # tags + status
+        self.assertGreaterEqual(activity["ok_total"], 2)
+        self.assertIn("requests_per_minute", activity)
+
+    def test_uptime_endpoint(self):
+        resp = requests.get(f"{self.base}/api/v1/uptime", timeout=5)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertGreaterEqual(body["uptime_seconds"], 0.0)
+        self.assertTrue(body["started_at"].endswith("+00:00"))
+
+    def test_activity_counts_outcomes_per_endpoint(self):
+        ok = requests.get(f"{self.base}/api/tags", timeout=5)
+        bad = requests.post(f"{self.base}/api/chat", json={},
+                            timeout=5)  # 400: messages required
+        resp = requests.get(f"{self.base}/api/v1/activity", timeout=5)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(ok.status_code, 200)
+        self.assertEqual(bad.status_code, 400)
+        requests_stats = body["requests"]
+        self.assertGreaterEqual(requests_stats["tags"]["ok"], 1)
+        self.assertGreaterEqual(requests_stats["chat"]["client_error"], 1)
+        self.assertIn("latency_ms", requests_stats["tags"])
+        self.assertIn("requests_per_minute", requests_stats["tags"])
+        # A bare DecisionEngine has no loop surface: no agent block, never fake.
+        self.assertNotIn("agent", body)
+        # Uptime carried on the activity snapshot too.
+        self.assertGreaterEqual(body["uptime_seconds"], 0.0)
+
+    def test_activity_agent_passthrough_when_hosted(self):
+        """A hosted agent's Phase-A status surfaces verbatim under `agent`."""
+
+        class _FakeAgent:
+            def get_status(self):
+                return {"loop": {"cycles": 7, "success_rate": 1.0},
+                        "loop_stages": {"OBSERVE": {"state": "ok"}},
+                        "mesh_activity": {"peers": [], "total_shared_facts": 0},
+                        "uptime_seconds": 42.5,
+                        "tick_count": 7}  # extra keys are not copied
+
+        port = _free_port()
+        server = build_server(engine=_FakeAgent(), backend=_build_backend("stub"),
+                              model="test-model", host="127.0.0.1", port=port)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            resp = requests.get(f"http://127.0.0.1:{port}/api/v1/activity",
+                                timeout=5)
+            self.assertEqual(resp.status_code, 200)
+            agent = resp.json()["agent"]
+            self.assertEqual(agent["loop"]["cycles"], 7)
+            self.assertEqual(agent["loop_stages"]["OBSERVE"]["state"], "ok")
+            self.assertEqual(agent["uptime_seconds"], 42.5)
+            self.assertNotIn("tick_count", agent)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_agent_get_status_failure_is_omitted_not_fatal(self):
+        class _BrokenAgent:
+            def get_status(self):
+                raise RuntimeError("boom")
+
+        port = _free_port()
+        server = build_server(engine=_BrokenAgent(), backend=_build_backend("stub"),
+                              model="test-model", host="127.0.0.1", port=port)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            resp = requests.get(f"http://127.0.0.1:{port}/api/v1/activity",
+                                timeout=5)
+            self.assertEqual(resp.status_code, 200)
+            self.assertNotIn("agent", resp.json())
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_new_routes_require_token_when_configured(self):
+        port = _free_port()
+        server = build_server(engine=self.engine, backend=self.backend,
+                              model="test-model", host="127.0.0.1", port=port,
+                              auth_token="sekrit")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{port}"
+            for path in ("/api/v1/activity", "/api/v1/uptime"):
+                resp = requests.get(f"{base}{path}", timeout=5)
+                self.assertEqual(resp.status_code, 401, path)
+                resp = requests.get(
+                    f"{base}{path}", headers={"Authorization": "Bearer sekrit"},
+                    timeout=5)
+                self.assertEqual(resp.status_code, 200, path)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
     def test_unknown_route(self):
         resp = requests.get(f"{self.base}/nope", timeout=5)
         self.assertEqual(resp.status_code, 404)

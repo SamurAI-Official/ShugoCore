@@ -1648,6 +1648,12 @@ class AndroidAgent:
                                     gaze_toward_camera=gaze_bool)
                             self.attention.stamp_tts(observation.get("tts_speaking", False))
                         att_state, att_conf = self.attention.evaluate()
+                        # v1.30.2: the attention verdict is real loop work
+                        # (v1.20 layer) — stamp its stage so loop-stage
+                        # liveness is honest. Only stamped when the layer
+                        # actually evaluated; no layer -> stage stays
+                        # "unknown" (truthful absence, not fake liveness).
+                        self._stamp_stage("VERIFY_ATTENTION")
                         context["attention_state"] = str(att_state.value) if hasattr(att_state, "value") else str(att_state)
                         context["attention_confidence"] = round(att_conf, 2)
                         # v1.28 visual-audio binding: is the speech we heard

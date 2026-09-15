@@ -4,6 +4,34 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [Unreleased] — desktop activity API, CSFA soak, bounded model scoring
+
+- **Desktop API** (`shugocore_server.py`): new `GET /api/v1/activity` (per-endpoint
+  request counters, outcome buckets, bounded latency ring, requests/minute, and a
+  verbatim `agent` block — loop/loop_stages/mesh_activity — when the server hosts a
+  full agent), new `GET /api/v1/uptime`, and additive `activity` + `uptime_seconds`
+  keys on `GET /api/v1/status`. Accounting is observational, bounded, and never
+  fabricated: a bare DecisionEngine deployment simply omits the agent block.
+- **CSFA soak** (`tests/csfa_soak.py`): wall-clock endurance on the host —
+  periodic invariant checks (stage liveness, counter consistency, audit-chain
+  integrity, ring bounds, honest uptime), deterministic scripted backend plus a
+  `--null-dialect` mode; JSON report, nonzero exit on any violation.
+- **Device soak** (`tests/android_device_soak.py`): the same endurance posture
+  over adb — process liveness, native-crash and Python-traceback watch, a
+  cadence-aware decision-loop stall detector (4 polls ≈ 2 min), optional
+  conversational injections; per-device JSON verdict.
+- **Loop-stamp gap fixed**: `VERIFY_ATTENTION` performs real work every tick
+  (v1.20 attention layer) but was never stamped — the stage showed `unknown`
+  forever. Stamped when (and only when) the layer actually evaluates; no layer
+  still reports honest `unknown`. The endurance suite now requires 7 of 8
+  stages stamped on SUCCESS cycles (CONSOLIDATE stays honestly variable).
+- **Fixed: unbounded model-performance growth** (`model_manager.py`) — the
+  multiplicative update (×1.1 per success) had no ceiling, so a healthy loop
+  drove `aggregated_output` toward float overflow (~7300 cycles; observed at
+  1.3e12 after 293). Scores are now capped at `MODEL_PERFORMANCE_CAP` (100.0)
+  on both the update and the RL `set` path; relative ranking in the working
+  regime is unchanged. Found by the soak, pinned by `tests/test_model_manager.py`.
+
 ## [1.30.2] - 2026-09-15
 
 ### CSFA activity + uptime instrumentation, endurance verification, and the ACTIVITY tab

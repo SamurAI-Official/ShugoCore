@@ -56,6 +56,8 @@ import os
 import sys
 import threading
 import time
+from collections import deque
+from datetime import datetime, timezone
 from http import server as http_server
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -76,6 +78,12 @@ MAX_STRING_FIELD = 10_000  # per-field cap for prompt/message content
 SERVER_TOKEN_ENV = "SHUGOCORE_SERVER_TOKEN"
 DEFAULT_RATE_LIMIT_PER_MINUTE = 240.0
 DEFAULT_RATE_LIMIT_BURST = 120
+
+# Activity accounting bounds (the repo's no-unbounded-growth principle):
+# latency samples and the request-per-minute window are both capped.
+ACTIVITY_LATENCY_RING = 100      # latency samples kept per endpoint
+ACTIVITY_RPM_WINDOW = 60.0       # seconds in the requests/minute window
+ACTIVITY_RPM_CAP = 2000          # max timestamps retained across endpoints
 
 
 # ---------------------------------------------------------------------------
@@ -186,12 +194,22 @@ class ShugoCoreServer:
         self.auth_token = str(auth_token) if auth_token else None
         self._lock = threading.Lock()
         self._started = time.monotonic()
+        self._started_wall = time.time()
         self._limiter: Optional[RateLimiter] = None
         if rate_limit_per_minute and float(rate_limit_per_minute) > 0:
             self._limiter = RateLimiter(
                 calls_per_minute=float(rate_limit_per_minute),
                 burst=int(rate_limit_burst),
             )
+        # -- activity accounting (bounded; honest; observational only) --------
+        # Per-endpoint outcome counters. Every dispatched wire request lands
+        # here exactly once: 2xx -> ok, 4xx -> client_error, 5xx -> server_error.
+        self._activity_lock = threading.Lock()
+        self._stats: Dict[str, Dict[str, int]] = {}
+        # Per-endpoint latency ring (most recent last), capped.
+        self._latency: Dict[str, deque] = {}
+        # Shared request-timestamp window for requests/minute, pruned by time.
+        self._rpm: deque = deque(maxlen=ACTIVITY_RPM_CAP)
         from version import __version__
         self._version = __version__
 
@@ -208,6 +226,135 @@ class ShugoCoreServer:
         if self._limiter is None:
             return True
         return self._limiter.acquire(str(client_key), timeout=0.0)
+
+    # -- activity accounting ---------------------------------------------------
+
+    @staticmethod
+    def route_name(method: str, path: str) -> Optional[str]:
+        """Canonical activity-bucket name for a wire request (None = unknown)."""
+        if method == "GET":
+            if path.endswith("/health"):
+                return "health"
+            if path.endswith("/api/tags"):
+                return "tags"
+            if path.endswith("/api/v1/status"):
+                return "status"
+            if path.endswith("/api/v1/activity"):
+                return "activity"
+            if path.endswith("/api/v1/uptime"):
+                return "uptime"
+        elif method == "POST":
+            if path.endswith("/api/generate"):
+                return "generate"
+            if path.endswith("/api/chat"):
+                return "chat"
+            if path.endswith("/api/v1/task"):
+                return "task"
+        return None
+
+    def record(self, route: Optional[str], http_status: int,
+               latency_ms: Optional[float] = None) -> None:
+        """Record one dispatched request (outcome bucket + latency + window)."""
+        bucket = ("ok" if http_status < 400
+                  else "client_error" if http_status < 500
+                  else "server_error")
+        name = route or "other"
+        now = time.monotonic()
+        with self._activity_lock:
+            stats = self._stats.setdefault(
+                name, {"requests": 0, "ok": 0,
+                       "client_error": 0, "server_error": 0})
+            stats["requests"] += 1
+            stats[bucket] += 1
+            if latency_ms is not None:
+                ring = self._latency.setdefault(
+                    name, deque(maxlen=ACTIVITY_LATENCY_RING))
+                ring.append(float(latency_ms))
+            self._rpm.append((now, name))
+
+    def _rpm_counts(self, now: float) -> Dict[str, float]:
+        """Requests/minute per endpoint over the trailing window (pruned)."""
+        cutoff = now - ACTIVITY_RPM_WINDOW
+        counts: Dict[str, int] = {}
+        for ts, name in self._rpm:
+            if ts >= cutoff:
+                counts[name] = counts.get(name, 0) + 1
+        return {name: round(n * 60.0 / ACTIVITY_RPM_WINDOW, 2)
+                for name, n in counts.items()}
+
+    def _agent_activity(self) -> Optional[Dict[str, Any]]:
+        """Phase-A loop status from a hosted agent, verbatim (None if absent).
+
+        The desktop server usually fronts a bare DecisionEngine (no loop); a
+        deployment that hosts the full agent exposes get_status() with the
+        instrumented loop/loop_stages/mesh_activity keys. Only real keys are
+        surfaced — an absent surface is omitted, never fabricated.
+        """
+        get_status = getattr(self.engine, "get_status", None)
+        if not callable(get_status):
+            return None
+        try:
+            snap = get_status()
+        except Exception as exc:
+            logger.warning("agent get_status failed: %s", type(exc).__name__)
+            return None
+        if not isinstance(snap, dict):
+            return None
+        agent = {key: snap[key] for key in
+                 ("loop", "loop_stages", "mesh_activity", "uptime_seconds")
+                 if key in snap}
+        return agent or None
+
+    def activity_summary(self) -> Dict[str, Any]:
+        """Compact totals for GET /api/v1/status (additive, backward-safe)."""
+        now = time.monotonic()
+        with self._activity_lock:
+            requests = sum(s["requests"] for s in self._stats.values())
+            ok = sum(s["ok"] for s in self._stats.values())
+            client = sum(s["client_error"] for s in self._stats.values())
+            server = sum(s["server_error"] for s in self._stats.values())
+            total_rpm = round(sum(self._rpm_counts(now).values()), 2)
+        return {"requests_total": requests, "ok_total": ok,
+                "client_error_total": client, "server_error_total": server,
+                "requests_per_minute": total_rpm}
+
+    def handle_activity(self) -> Tuple[int, Dict[str, Any]]:
+        """GET /api/v1/activity -> full activity snapshot."""
+        now = time.monotonic()
+        with self._activity_lock:
+            rpm = self._rpm_counts(now)
+            endpoints: Dict[str, Dict[str, Any]] = {}
+            for name, stats in self._stats.items():
+                entry: Dict[str, Any] = dict(stats)
+                entry["requests_per_minute"] = rpm.get(name, 0.0)
+                ring = self._latency.get(name)
+                if ring:
+                    recent = list(ring)[-25:]
+                    entry["latency_ms"] = {
+                        "avg_recent": round(sum(recent) / len(recent), 1),
+                        "max": round(max(ring), 1),
+                        "last": round(ring[-1], 1),
+                    }
+                endpoints[name] = entry
+        body: Dict[str, Any] = {
+            "version": self._version,
+            "model": self.model,
+            "backend": getattr(self.backend, "name", "unknown"),
+            "uptime_seconds": round(now - self._started, 3),
+            "requests": endpoints,
+        }
+        agent = self._agent_activity()
+        if agent is not None:
+            body["agent"] = agent
+        return 200, body
+
+    def handle_uptime(self) -> Tuple[int, Dict[str, Any]]:
+        """GET /api/v1/uptime -> server uptime + start time."""
+        return 200, {
+            "uptime_seconds": round(time.monotonic() - self._started, 3),
+            "started_at": datetime.fromtimestamp(
+                self._started_wall, tz=timezone.utc).isoformat(),
+        }
 
     # -- Ollama wire contract ------------------------------------------------
 
@@ -308,6 +455,8 @@ class ShugoCoreServer:
                 "memory_unavailable": memory_unavailable,
                 "vector_db_stub": bool(getattr(self.engine.vector_db, "stub", False)),
                 "uptime_s": int(time.monotonic() - self._started),
+                "uptime_seconds": round(time.monotonic() - self._started, 3),
+                "activity": self.activity_summary(),
             }
             return 200, state
         except Exception as exc:
@@ -360,14 +509,18 @@ class ShugoCoreHandler(http_server.BaseHTTPRequestHandler):
             return
         # /health stays open for liveness probes; every other route is subject
         # to the per-client rate limit and (when configured) bearer auth.
+        route = core.route_name(method, path)
         if not path.endswith("/health"):
             client_ip = self.client_address[0] if self.client_address else "unknown"
             if not core.allow_request(client_ip):
+                core.record(route, 429)
                 _send_json(self, 429, {"error": "rate limit exceeded"})
                 return
             if not core.authorize(_extract_token(self)):
+                core.record(route, 401)
                 _send_json(self, 401, {"error": "unauthorized"})
                 return
+        started = time.monotonic()
         status, payload = 404, {"error": "not found"}
         if path.endswith("/health") and method == "GET":
             status, payload = core.handle_health()
@@ -379,8 +532,13 @@ class ShugoCoreHandler(http_server.BaseHTTPRequestHandler):
             status, payload = core.handle_chat(_read_json_body(self))
         elif path.endswith("/api/v1/status") and method == "GET":
             status, payload = core.handle_status()
+        elif path.endswith("/api/v1/activity") and method == "GET":
+            status, payload = core.handle_activity()
+        elif path.endswith("/api/v1/uptime") and method == "GET":
+            status, payload = core.handle_uptime()
         elif path.endswith("/api/v1/task") and method == "POST":
             status, payload = core.handle_task(_read_json_body(self))
+        core.record(route, status, (time.monotonic() - started) * 1000.0)
 
         # Ollama-style streaming generate responses are sent as NDJSON.
         if payload.get("__ndjson__") is not None and status == 200:

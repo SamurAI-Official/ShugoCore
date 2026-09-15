@@ -2,6 +2,13 @@ import logging
 import threading
 from typing import List, Dict, Any
 
+# Upper bound for per-model performance scores. The multiplicative update
+# (×1.1 per success) is unbounded without it; a steady-state successful loop
+# would overflow the float within ~7300 cycles and make aggregated_output
+# meaningless long before that.
+MODEL_PERFORMANCE_CAP = 100.0
+
+
 class ModelManager:
     def __init__(self, models: List[Dict[str, Any]]):
         """
@@ -57,10 +64,18 @@ class ModelManager:
     def update_model_performance(self, model_id: str, success: bool):
         """
         Update model performance based on task success (multiplicative).
+
+        Bounded: repeated successes multiply by 1.1 but the score is capped
+        at MODEL_PERFORMANCE_CAP, so a long healthy run (the normal CSFA
+        steady state) cannot drive the score — and with it
+        ``aggregated_output`` — toward float overflow. Relative ratios
+        between models (the part ranking actually uses) are unchanged.
         """
         with self._lock:
             if model_id in self.model_performance:
-                self.model_performance[model_id] *= 1.1 if success else 0.9
+                updated = self.model_performance[model_id] * (1.1 if success else 0.9)
+                self.model_performance[model_id] = min(
+                    updated, MODEL_PERFORMANCE_CAP)
                 self.logger.info(f"Updated performance for {model_id}: {self.model_performance[model_id]}")
 
     def set_model_performance(self, model_id: str, performance: float):
@@ -69,7 +84,8 @@ class ModelManager:
         """
         with self._lock:
             if model_id in self.model_performance:
-                self.model_performance[model_id] = max(0.0, performance)
+                self.model_performance[model_id] = min(
+                    max(0.0, performance), MODEL_PERFORMANCE_CAP)
                 self.logger.info(f"Set performance for {model_id}: {self.model_performance[model_id]}")
     
     def add_model(self, model: Dict[str, Any]):

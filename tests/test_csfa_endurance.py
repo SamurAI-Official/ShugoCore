@@ -149,15 +149,17 @@ class TestSustainedModelDrivenLoop(_EnduranceBase):
         self.assertEqual(loop["success_rate"], 1.0)
 
         # (2) The stages the SUCCESS trail declares are stamped: OBSERVE, GATE,
-        # DECIDE, EXECUTE, EVALUATE, RECORD. (VERIFY_ATTENTION only runs on
-        # attention-verified paths and CONSOLIDATE on consolidation passes, so
-        # an honest `unknown` is expected for them here.)
+        # DECIDE, EXECUTE, EVALUATE, RECORD — plus VERIFY_ATTENTION, whose
+        # verdict is real loop work on this path (v1.20 attention layer).
+        # CONSOLIDATE runs on the decoupled worker, which may or may not have
+        # fired within N fast ticks — any honest state is acceptable there.
         stages = status["loop_stages"]
-        for stage in ("OBSERVE", "GATE", "DECIDE", "EXECUTE", "EVALUATE",
-                      "RECORD"):
+        for stage in ("OBSERVE", "VERIFY_ATTENTION", "GATE", "DECIDE",
+                      "EXECUTE", "EVALUATE", "RECORD"):
             self.assertIn(stages[stage]["state"], ("ok", "stale"), stage)
             self.assertIsNotNone(stages[stage]["last_ts"], stage)
-        self.assertEqual(stages["VERIFY_ATTENTION"]["state"], "unknown")
+        self.assertIn(stages["CONSOLIDATE"]["state"],
+                      ("ok", "stale", "unknown"))
 
         # (3) Tier 2 memory grew across the run.
         self.assertGreater(status["tier2_facts"], self.tier2_before)

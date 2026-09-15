@@ -4,7 +4,33 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
-## [Unreleased] — CSFA activity + uptime instrumentation
+## [1.30.2] - 2026-09-15
+
+### CSFA activity + uptime instrumentation, endurance verification, and the ACTIVITY tab
+
+The Continuous Synthetic Functional Agency loop is now **verifiable, not
+assumed** — instrumented end to end and confirmed on real hardware.
+
+- **Loop instrumentation** (`AndroidAgent`): bounded counters (cycles,
+  `by_outcome`, `by_source`, `by_action`, conversational ticks), a 60 s
+  cycles-per-minute window, a 100-entry activity ring, per-stage timestamps
+  for all 8 CSFA stages (`ok` / `stale` > 60 s / `unknown`), `uptime_seconds`,
+  and `mesh_activity` (shared facts by provenance peer). Purely observational —
+  no change to any decision, gate verdict, or outcome.
+- **Fixed**: `decision_source` status key was the constant `"none"`;
+  `execute_task` now surfaces `proposal_source`/`action_type` so cycle truth
+  is real.
+- **Endurance suite** (`tests/test_csfa_endurance.py`): 30-cycle scripted
+  model-driven run asserting full stage-trail stamping, zero rule fallbacks,
+  audit-chain integrity, and honest accounting; plus the null-dialect case
+  proving the documented 3-strike fallback is reported and unchanged.
+- **On-device verification**: A51 (portable build, 0.5B — 33 cycles, 28
+  model-sourced) and Tab S9 FE (dotprod, 1.5B — 33 cycles, 23 model-sourced,
+  conversational `ask_user`/`speak`), 0 crashes.
+- **Android UI**: new **ACTIVITY tab** (recent-cycle ring, outcome ledger,
+  loop rate/uptime, memory-mesh activity) and **AGENT tab** Loop section +
+  Loop-stages liveness. Missing evidence renders `—`, never fabricated
+  success. Verified live on both devices.
 
 ### Android UI: the loop is visible (ACTIVITY tab, AGENT tab additions)
 

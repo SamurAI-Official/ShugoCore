@@ -4,33 +4,45 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
-## [Unreleased] — desktop activity API, CSFA soak, bounded model scoring
+## [1.30.3] - 2026-09-15
 
-- **Desktop API** (`shugocore_server.py`): new `GET /api/v1/activity` (per-endpoint
-  request counters, outcome buckets, bounded latency ring, requests/minute, and a
-  verbatim `agent` block — loop/loop_stages/mesh_activity — when the server hosts a
-  full agent), new `GET /api/v1/uptime`, and additive `activity` + `uptime_seconds`
-  keys on `GET /api/v1/status`. Accounting is observational, bounded, and never
-  fabricated: a bare DecisionEngine deployment simply omits the agent block.
-- **CSFA soak** (`tests/csfa_soak.py`): wall-clock endurance on the host —
-  periodic invariant checks (stage liveness, counter consistency, audit-chain
-  integrity, ring bounds, honest uptime), deterministic scripted backend plus a
-  `--null-dialect` mode; JSON report, nonzero exit on any violation.
-- **Device soak** (`tests/android_device_soak.py`): the same endurance posture
-  over adb — process liveness, native-crash and Python-traceback watch, a
-  cadence-aware decision-loop stall detector (4 polls ≈ 2 min), optional
-  conversational injections; per-device JSON verdict.
-- **Loop-stamp gap fixed**: `VERIFY_ATTENTION` performs real work every tick
-  (v1.20 attention layer) but was never stamped — the stage showed `unknown`
-  forever. Stamped when (and only when) the layer actually evaluates; no layer
-  still reports honest `unknown`. The endurance suite now requires 7 of 8
-  stages stamped on SUCCESS cycles (CONSOLIDATE stays honestly variable).
+### Desktop activity API, CSFA soak tools, bounded model scoring
+
+The loop that was made *visible* in 1.30.2 is now made **verifiable over
+time** — and the soak immediately paid for itself with two real findings.
+
+- **Desktop activity API** (`shugocore_server.py`): `GET /api/v1/activity`
+  (per-endpoint request counters, outcome buckets, bounded latency ring,
+  requests/minute, and a verbatim `agent` block — loop / loop_stages /
+  mesh_activity — when the server hosts a full agent), `GET /api/v1/uptime`,
+  and additive `activity` + `uptime_seconds` keys on `GET /api/v1/status`.
+  Accounting is observational and bounded; a bare DecisionEngine deployment
+  simply omits the agent block — never fabricated.
+- **CSFA soak** (`tests/csfa_soak.py`): wall-clock host endurance with
+  periodic invariant checks (stage liveness, counter consistency,
+  audit-chain integrity, bounded structures, honest uptime), deterministic
+  scripted backend plus a `--null-dialect` mode. JSON report; nonzero exit
+  on any violation.
+- **Device soak** (`tests/android_device_soak.py`): the same endurance
+  posture over adb — process liveness, native-crash and Python-traceback
+  watch, a time-based wedge detector tuned to real on-device cadence, and
+  optional conversational injections. Per-device JSON verdict.
+- **Fixed: `VERIFY_ATTENTION` stage was never stamped** — the v1.20
+  attention layer runs every tick, but the stage liveness surface showed
+  `unknown` forever. Stamped when (and only when) the layer evaluates; an
+  absent layer still reports honest `unknown`. The endurance suite now
+  requires 7 of 8 stages stamped on SUCCESS cycles.
 - **Fixed: unbounded model-performance growth** (`model_manager.py`) — the
-  multiplicative update (×1.1 per success) had no ceiling, so a healthy loop
-  drove `aggregated_output` toward float overflow (~7300 cycles; observed at
-  1.3e12 after 293). Scores are now capped at `MODEL_PERFORMANCE_CAP` (100.0)
-  on both the update and the RL `set` path; relative ranking in the working
-  regime is unchanged. Found by the soak, pinned by `tests/test_model_manager.py`.
+  multiplicative ×1.1-per-success update had no ceiling; a healthy loop
+  drove `aggregated_output` to 1.3e12 within 293 soak cycles and would
+  overflow the float at ~7300. Scores are now capped at
+  `MODEL_PERFORMANCE_CAP` (100.0) on both the update and the RL set path;
+  relative ranking in the working regime is unchanged.
+- **Verified by the tools this release ships**: host soak STABLE (5 min,
+  294 ticks); Tab S9 FE (1.5B, dotprod) 15-min soak STABLE — 82 decisions,
+  0 crashes, 0 tracebacks; A51 (0.5B, portable) 15-min soak STABLE — 22
+  decisions, 0 crashes, 0 tracebacks.
+
 
 ## [1.30.2] - 2026-09-15
 

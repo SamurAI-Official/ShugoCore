@@ -29,6 +29,13 @@ verifying every declared stage is stamped, outcome accounting matches,
 Tier 2 grows, the audit chain verifies across the whole run, the activity ring
 is ordered and bounded, and the null dialect is reported honestly.
 
+**Verified on hardware.** With the instrumented loop running on both test
+phones (A51 Exynos 9611 + Tab S9 FE), the decision log shows the loop cycling
+with predominantly model-sourced decisions — A51: 33 cycles, 28 model-sourced
+(`record_observation` / `network_list_agents`); Tab: 33 cycles, 23
+model-sourced (`ask_user` / `speak` / `record_observation`), one side-effecting
+proposal correctly refused by the policy gate.
+
 ## [1.30.1] - 2026-09-14 — one APK, self-determining CPU kernels
 
 The fleet needed a single installable that is safe on every arm64 SoC and still

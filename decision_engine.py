@@ -767,6 +767,22 @@ class DecisionEngine:
 
     # -- gated execution (the ONLY path to the execution layer) --------------
 
+    def _with_decision_meta(self, result: Dict[str, Any],
+                            decision: Optional[Dict[str, Any]]
+                            ) -> Dict[str, Any]:
+        """Surface who decided and what on the task result.
+
+        Additive metadata only (v1.20 cycle truth, completed in v1.30.2): the
+        agent shell's loop reads proposal_source to account which model (or
+        rule fallback) drove the cycle — previously that never left the
+        engine, so the status key decision_source was always "none".
+        """
+        if isinstance(decision, dict):
+            result.setdefault("proposal_source",
+                              decision.get("proposal_source"))
+            result.setdefault("action_type", decision.get("action_type"))
+        return result
+
     def execute_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """
         Executes a task through the full policy pipeline, interlocked by the
@@ -880,11 +896,12 @@ class DecisionEngine:
             )
             self.governor.step(AgentState.IDLE)
             self.memory.resolve_step()
-            return {"status": "error", "outcome": "no_viable_action",
-                    "message": "no viable action proposed by the model ensemble",
-                    "call_errors": {str(k)[:64]: str(v)[:80]
-                                    for k, v in call_errors.items()},
-                    "stages": list(trail) + ["RECORD"]}
+            result = {"status": "error", "outcome": "no_viable_action",
+                      "message": "no viable action proposed by the model ensemble",
+                      "call_errors": {str(k)[:64]: str(v)[:80]
+                                      for k, v in call_errors.items()},
+                      "stages": list(trail) + ["RECORD"]}
+            return self._with_decision_meta(result, decision)
 
         if decision.get("action_type") == "multi_step_process":
             trail.append("EXECUTE")
@@ -921,9 +938,10 @@ class DecisionEngine:
             self._record_block("decision", decision, reason or "gated")
             self.governor.step(AgentState.IDLE)
             self.memory.resolve_step()
-            return {"status": "refused", "outcome": "policy_block",
-                    "reason": reason or "gated",
-                    "stages": list(trail) + ["RECORD"]}
+            result = {"status": "refused", "outcome": "policy_block",
+                      "reason": reason or "gated",
+                      "stages": list(trail) + ["RECORD"]}
+            return self._with_decision_meta(result, decision)
 
         trail.append("EXECUTE")
         self.governor.step(AgentState.EXECUTING)
@@ -1001,7 +1019,8 @@ class DecisionEngine:
         payload["_trace"] = {k: v for k, v in trace.items() if v is not None}
         token = {"verdict": "allow", "decision_hash": canonical_hash(payload)}
         payload["_policy"] = token
-        return self.execution_layer.execute(payload)
+        result = self.execution_layer.execute(payload)
+        return self._with_decision_meta(result, decision)
 
     def _execute_multi_step(self, task: Dict[str, Any],
                             decision: Dict[str, Any]) -> Dict[str, Any]:

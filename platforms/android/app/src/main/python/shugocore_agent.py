@@ -119,6 +119,21 @@ class AndroidAgent:
         self._last_evaluation = "—"
         self._last_tick_ts = 0.0
         self._last_cycle_result: Optional[Dict[str, Any]] = None
+        # v1.30.2: CSFA activity + uptime instrumentation. Every structure is
+        # bounded (ring 100, window 200, counter dicts capped) so the repo's
+        # no-unbounded-growth principle holds. Purely observational: it records
+        # what the loop already computed, it never changes a decision.
+        self._started_at: float = time.time()
+        self._loop_counters: Dict[str, Any] = {
+            "cycles": 0,
+            "by_outcome": {},
+            "by_source": {},
+            "by_action": {},
+            "conversational_ticks": 0,
+        }
+        self._cycle_window: deque = deque(maxlen=200)   # (ts, outcome)
+        self._activity_ring: deque = deque(maxlen=100)  # recent cycles
+        self._stage_last_ts: Dict[str, float] = {}
         # Any construction failures, captured so the UI can surface the real
         # reason instead of a silent zombie agent (cycle=0 forever).
         self.engine_error: Optional[str] = None
@@ -1534,6 +1549,10 @@ class AndroidAgent:
 
     def tick(self) -> None:
         self.tick_count += 1
+        cycle_started = time.monotonic()
+        # Available to the instrumentation even on paths that never reach the
+        # engine (conversational fast path, no-engine ticks).
+        engine_result: Dict[str, Any] = {}
         # Phase 3.2: poll background timers each tick — no sleep threads.
         self._check_timers()
         decision, action = "—", "—"
@@ -1555,6 +1574,12 @@ class AndroidAgent:
                 # Still drain conversation events (closed-loop record) before
                 # returning — the ask/answer round-trip must be journaled.
                 self._drain_conversation_events()
+                # v1.30.2: a conversation is loop activity too — account it
+                # separately from decision cycles (the contract outcome
+                # accounting stays untouched).
+                self._note_conversational_tick(
+                    "conversational fast path",
+                    duration_ms=(time.monotonic() - cycle_started) * 1000.0)
                 return
             if self.engine is None:
                 self.log("AGENT", "no model engine; conversational fast path only",
@@ -1753,8 +1778,149 @@ class AndroidAgent:
         self._last_action = action
         self._last_evaluation = outcome.lower()
         self._last_tick_ts = time.time()
+        # v1.30.2: account the cycle (bounded counters, stage stamps) from
+        # the truth this tick already computed. The engine result now carries
+        # proposal_source/action_type (v1.20 cycle truth, completed), so the
+        # accounting is by the real source — and the status key
+        # decision_source is finally populated instead of a constant "none".
+        source = (engine_result.get("proposal_source")
+                  if isinstance(engine_result, dict) else None)
+        action_type = (engine_result.get("action_type")
+                       if isinstance(engine_result, dict) else None)
+        self._decision_source = str(source)[:64] if source else "none"
+        self._record_cycle(outcome, trail, source, action_type,
+                           duration_ms=(time.monotonic() - cycle_started)
+                                       * 1000.0)
         self.log("AGENT", f"cycle={self.tick_count} outcome={outcome} "
                           f"stages={'+'.join(trail)}")
+
+    # -- CSFA activity + uptime instrumentation (v1.30.2) ---------------------
+    # Purely observational. Every structure is bounded (activity ring 100,
+    # rolling window 200, counter dicts capped) so the repo's no-unbounded-
+    # growth principle holds. It records what the loop already computed; it
+    # never changes a decision, a gate verdict, or an outcome.
+
+    _STAGE_FRESH_S = 60.0     # a loop stage older than this renders `stale`
+    _COUNTER_CAP = 64         # max distinct keys per counter bucket
+
+    def _stamp_stage(self, stage: str) -> None:
+        """Mark one pipeline stage as just completed (wall clock)."""
+        self._stage_last_ts[str(stage)[:24]] = time.time()
+
+    @staticmethod
+    def _bucket_key(name: Any) -> str:
+        return str(name if name else "unknown")[:48]
+
+    def _record_cycle(self, outcome: str, trail: Tuple[str, ...],
+                      source: str, action_type: str,
+                      duration_ms: float) -> None:
+        """Account one completed decision cycle (bounded counters + stages)."""
+        now = time.time()
+        counters = self._loop_counters
+        counters["cycles"] = int(counters["cycles"]) + 1
+        for key, name in (("by_outcome", outcome),
+                          ("by_source", source),
+                          ("by_action", action_type)):
+            bucket = counters.setdefault(key, {})
+            if len(bucket) < self._COUNTER_CAP:
+                bucket[self._bucket_key(name)] = (
+                    int(bucket.get(self._bucket_key(name), 0)) + 1)
+        self._cycle_window.append((now, self._bucket_key(outcome)))
+        for stage in trail:
+            self._stamp_stage(stage)
+        self._note_activity(outcome, source, action_type, "", duration_ms)
+
+    def _note_activity(self, outcome: str, source: str, action_type: str,
+                       detail: str, duration_ms: float) -> None:
+        """Record one loop pass in the bounded activity ring."""
+        now = time.time()
+        self._activity_ring.append({
+            "ts": round(now, 3),
+            "source": self._bucket_key(source),
+            "action_type": self._bucket_key(action_type),
+            "outcome": self._bucket_key(outcome),
+            "duration_ms": round(max(0.0, float(duration_ms)), 1),
+            "detail": sanitize_text(detail, 120) if detail else "",
+        })
+
+    def _note_conversational_tick(self, detail: str,
+                                  duration_ms: float) -> None:
+        """Account a conversational fast-path tick (separate from decision
+        cycles so the contract outcome accounting stays untouched)."""
+        counters = self._loop_counters
+        counters["conversational_ticks"] = (
+            int(counters["conversational_ticks"]) + 1)
+        bucket = counters.setdefault("by_source", {})
+        if len(bucket) < self._COUNTER_CAP:
+            bucket["conversation"] = int(bucket.get("conversation", 0)) + 1
+        self._stamp_stage("OBSERVE")
+        self._stamp_stage("RECORD")
+        self._note_activity("CONVERSATION", "conversation", "speak",
+                            detail, duration_ms)
+
+    def _loop_status(self) -> Dict[str, Any]:
+        now = time.time()
+        window = [entry for entry in self._cycle_window
+                  if now - entry[0] <= 60.0]
+        counters = self._loop_counters
+        cycles = int(counters["cycles"])
+        by_outcome = dict(counters["by_outcome"])
+        return {
+            "cycles": cycles,
+            "conversational_ticks": int(counters["conversational_ticks"]),
+            "by_outcome": by_outcome,
+            "by_source": dict(counters["by_source"]),
+            "by_action": dict(counters["by_action"]),
+            "success_rate": (round(by_outcome.get("SUCCESS", 0) / cycles, 3)
+                             if cycles else None),
+            "cycles_per_minute": round(float(len(window)), 2),
+            "last_cycle": (dict(self._activity_ring[-1])
+                           if self._activity_ring else None),
+            "recent": list(self._activity_ring)[-25:],
+        }
+
+    def _loop_stage_status(self) -> Dict[str, Dict[str, Any]]:
+        """Per-stage liveness over the 8-stage CSFA loop.
+
+        Honest states only: a stage with no evidence yet is ``unknown`` (never
+        fabricated as success); one older than _STAGE_FRESH_S is ``stale``.
+        """
+        now = time.time()
+        out: Dict[str, Dict[str, Any]] = {}
+        for stage in PIPELINE_STAGES:
+            ts = self._stage_last_ts.get(stage)
+            if ts is None:
+                out[stage] = {"last_ts": None, "age_s": None,
+                              "state": "unknown"}
+                continue
+            age = round(max(0.0, now - ts), 1)
+            out[stage] = {"last_ts": round(ts, 3), "age_s": age,
+                          "state": ("ok" if age <= self._STAGE_FRESH_S
+                                    else "stale")}
+        return out
+
+    def _mesh_activity(self) -> Dict[str, Any]:
+        """Fleet memory-mesh activity: shared-fact counts by provenance peer."""
+        peers = (self.last_observation.get("mesh_peers") or [])
+        counter = None
+        if self.memory is not None:
+            counter = getattr(self.memory.tier2, "count_shared", None)
+        entries: List[Dict[str, Any]] = []
+        total = 0
+        if counter is not None:
+            for peer in peers[:16]:
+                pid = (str(peer.get("device_id") or peer.get("id") or peer)[:48]
+                       if isinstance(peer, dict) else str(peer)[:48])
+                try:
+                    count = int(counter(pid))
+                except Exception:
+                    count = 0
+                entries.append({"peer": pid, "shared_facts": count})
+            try:
+                total = int(counter(None))
+            except Exception:
+                total = 0
+        return {"peers": entries, "total_shared_facts": total}
 
     def _classify_engine_result(self, engine_result: Dict[str, Any]
                                 ) -> Tuple[str, Tuple[str, ...], str, bool, str]:
@@ -1993,6 +2159,7 @@ class AndroidAgent:
     def _run_consolidation(self) -> None:
         try:
             self.memory.consolidate_now()
+            self._stamp_stage("CONSOLIDATE")
             self.log("MEMORY", "consolidation pass complete")
         except Exception as exc:
             logger.error("Consolidation error: %s", exc)
@@ -2133,6 +2300,11 @@ class AndroidAgent:
                        "consent_required": True,
                        "agent_caps": dict(self.agent_caps),
                        "network": dict(self.network_policy)},
+            # v1.30.2: CSFA activity + uptime verification.
+            "uptime_seconds": round(max(0.0, time.time() - self._started_at), 1),
+            "loop": self._loop_status(),
+            "loop_stages": self._loop_stage_status(),
+            "mesh_activity": self._mesh_activity(),
         }
 
     def get_attention_state_json(self) -> str:

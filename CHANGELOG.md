@@ -4,6 +4,31 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [Unreleased] — CSFA activity + uptime instrumentation
+
+The 1 Hz agent loop now accounts every pass in **bounded** structures so the
+Continuous Synthetic Functional Agency loop is verifiable, not assumed:
+
+- **Counters** — cycles, `by_outcome` (the outcome contract), `by_source`
+  (which model / rule fallback drove it), `by_action`, and
+  `conversational_ticks` (separate from decision cycles).
+- **Loop-stage liveness** — per-stage timestamps for all 8 stages
+  (OBSERVE … CONSOLIDATE) with honest `ok` / `stale` (> 60 s) / `unknown`
+  (no evidence yet, never fabricated).
+- **Activity ring** (last 100) and a 60 s rolling window for
+  cycles-per-minute.
+- **Mesh activity** — shared-fact counts by provenance peer and the total.
+- **`uptime_seconds`** on the agent status.
+
+Supporting fixes: `DecisionEngine.execute_task` now surfaces
+`proposal_source` / `action_type` on its result (the status key
+`decision_source` was previously a constant `"none"`), and the scripted
+endurance backend is config-tolerant. New
+`tests/test_csfa_endurance.py`: a **30-cycle sustained model-driven loop**
+verifying every declared stage is stamped, outcome accounting matches,
+Tier 2 grows, the audit chain verifies across the whole run, the activity ring
+is ordered and bounded, and the null dialect is reported honestly.
+
 ## [1.30.1] - 2026-09-14 — one APK, self-determining CPU kernels
 
 The fleet needed a single installable that is safe on every arm64 SoC and still

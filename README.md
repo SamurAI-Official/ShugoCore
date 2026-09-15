@@ -4,7 +4,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/shugocore)](https://pypi.org/project/shugocore/)
 ![Release](https://img.shields.io/badge/release-v1.30.0-blue)
-![Tests](https://img.shields.io/badge/tests-1005%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-1007%20passing-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%E2%80%933.13-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android%20%28Termux%2FChaquopy%29-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -628,7 +628,7 @@ for fact in candidates:
 ## Testing
 
 ```bash
-python -m unittest discover -s tests -v     # 1005 tests, no native deps
+python -m unittest discover -s tests -v     # 1007 tests, no native deps
 python -m compileall -q .                   # byte-compile every module
 ruff check .                                # syntax errors + undefined names
 bandit -q -r . -x ./.venv,./.llama_build,./platforms,./dist,./build,./tests -lll

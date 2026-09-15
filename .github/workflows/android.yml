@@ -19,6 +19,12 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# The default token permissions are read-only on this repo; uploading a
+# release asset (and creating the release if the tag has none) needs
+# contents: write.
+permissions:
+  contents: write
+
 jobs:
   apk:
     name: Build + sign release APK

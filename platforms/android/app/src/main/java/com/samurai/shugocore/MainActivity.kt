@@ -250,6 +250,19 @@ class MainActivity : AppCompatActivity(), ControlPlaneHost {
         prefs().edit().putString("desktop_api_url", url).apply()
     }
 
+    override fun onBackupTokenChanged(token: String) {
+        // Persisted alongside desktop_api_url so the next agent bootstrap
+        // picks it up. Blank -> removed (the bearer token is opt-in).
+        val sanitized = token.trim()
+        val editor = prefs().edit()
+        if (sanitized.isEmpty()) {
+            editor.remove("desktop_api_token")
+        } else {
+            editor.putString("desktop_api_token", sanitized)
+        }
+        editor.apply()
+    }
+
     override fun onModelProbeClicked() {
         LogBus.log(LogBus.Category.MODEL, "MODEL TEST: request sent")
         service()?.runModelProbe { msg -> serverPane.status(msg) }

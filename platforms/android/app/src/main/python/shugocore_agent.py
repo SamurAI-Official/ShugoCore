@@ -70,7 +70,8 @@ _LOG_BUFFER_MAX = 300
 class AndroidAgent:
     def __init__(self, device_caps: Optional[str] = None,
                  api_url: Optional[str] = None,
-                 data_dir: Optional[str] = None):
+                 data_dir: Optional[str] = None,
+                 auth_token: Optional[str] = None):
         self.device_caps = device_caps or "Unknown"
         self.api_url = api_url or "http://127.0.0.1:11434"
         # Writable app-private dir injected by the Kotlin shell. Android apps
@@ -78,6 +79,13 @@ class AndroidAgent:
         # this, MemoryManager/DecisionEngine fail to open their SQLite files
         # and the whole agent construction throws.
         self.data_dir = data_dir
+        # v1.30.4: bearer token for the desktop server (paired with
+        # desktop_api_url). Empty / None means no token; the local llama.cpp
+        # server is open, so the token is opt-in. Stored only on this
+        # instance — never written to disk from Python (the Kotlin side
+        # owns persistence in SharedPreferences).
+        token = str(auth_token).strip() if auth_token else ""
+        self.auth_token: Optional[str] = token or None
         self.memory_db_path = self._join_data("semantic_memory.db")
         self.audit_path = self._join_data("audit_chain.jsonl")
         self.episodic_journal_path = self._join_data("episodic_journal.jsonl")
@@ -686,11 +694,19 @@ class AndroidAgent:
             # agent construction.
             from decision_engine import DecisionEngine
             # `api_url` matches AndroidBackend.__init__'s signature.
+            backend_kwargs: Dict[str, Any] = {
+                "type": "android", "api_url": self.api_url,
+                "model_name": "shugocore-local",
+                "device_caps": {"soc": self.device_caps}}
+            # v1.30.4: forward the bearer token to the AndroidBackend so
+            # the same HTTP helper can talk to token-protected desktop
+            # servers (without it, a 401 from the desktop server would
+            # silently fall back to the rule-fallback path on every cycle).
+            if self.auth_token:
+                backend_kwargs["auth_token"] = self.auth_token
             kwargs: Dict[str, Any] = {
                 "models": [{"id": "shugocore-local", "type": "text", "weight": 1.0,
-                            "backend": {"type": "android", "api_url": self.api_url,
-                                        "model_name": "shugocore-local",
-                                        "device_caps": {"soc": self.device_caps}}}],
+                            "backend": backend_kwargs}],
                 "vector_db_config": {"type": "chroma"},
                 "memory_db_path": self.memory_db_path or "semantic_memory.db",
             }
@@ -2405,5 +2421,10 @@ class AndroidAgent:
 
 def create_agent(device_caps: Optional[str] = None,
                  api_url: Optional[str] = None,
-                 data_dir: Optional[str] = None) -> AndroidAgent:
-    return AndroidAgent(device_caps=device_caps, api_url=api_url, data_dir=data_dir)
+                 data_dir: Optional[str] = None,
+                 auth_token: Optional[str] = None) -> AndroidAgent:
+    """Build an AndroidAgent. The bearer token is forwarded to the
+    AndroidBackend so token-protected desktop servers can be paired
+    without --allow-unauthenticated."""
+    return AndroidAgent(device_caps=device_caps, api_url=api_url,
+                        data_dir=data_dir, auth_token=auth_token)

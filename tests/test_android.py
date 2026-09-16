@@ -452,6 +452,52 @@ class AndroidInferenceTestCase(unittest.TestCase):
         )
         self.assertEqual(backend.model_name, "test-model")
 
+    def test_android_backend_auth_token_optional(self):
+        """A blank / missing token is treated as no token (back-compat)."""
+        b0 = AndroidBackend(api_url="http://x", model_name="m")
+        self.assertIsNone(b0.auth_token)
+        b1 = AndroidBackend(api_url="http://x", model_name="m", auth_token="")
+        self.assertIsNone(b1.auth_token)
+        b2 = AndroidBackend(api_url="http://x", model_name="m", auth_token="  ")
+        self.assertIsNone(b2.auth_token)
+        b3 = AndroidBackend(api_url="http://x", model_name="m", auth_token="t0k")
+        self.assertEqual(b3.auth_token, "t0k")
+        # Whitespace is stripped.
+        b4 = AndroidBackend(api_url="http://x", model_name="m",
+                            auth_token="  t0k  ")
+        self.assertEqual(b4.auth_token, "t0k")
+
+    def test_android_backend_sends_authorization_header(self):
+        """When a token is set, generate/chat/list_models/get_health send
+        ``Authorization: Bearer <token>`` on every request."""
+        from unittest import mock
+        backend = AndroidBackend(api_url="http://x", model_name="m",
+                                 auth_token="t0k3n")
+        with mock.patch("android_inference._http_post",
+                        return_value={"response": "ok"}) as post:
+            backend.generate(model_id="m", prompt="hi", timeout=1)
+            backend.chat(model_id="m", messages=[{"role": "user", "content": "hi"}],
+                         timeout=1)
+        # Both calls should have included the bearer token.
+        for call in post.call_args_list:
+            self.assertEqual(call.kwargs.get("auth_token"), "t0k3n")
+
+        with mock.patch("android_inference._http_get",
+                        return_value={"models": []}) as get:
+            backend.list_models()
+            backend.get_health()
+        for call in get.call_args_list:
+            self.assertEqual(call.kwargs.get("auth_token"), "t0k3n")
+
+    def test_android_backend_no_authorization_when_no_token(self):
+        """Without a token, no Authorization header is sent (back-compat)."""
+        from unittest import mock
+        backend = AndroidBackend(api_url="http://x", model_name="m")
+        with mock.patch("android_inference._http_post",
+                        return_value={"response": "ok"}) as post:
+            backend.generate(model_id="m", prompt="hi", timeout=1)
+        self.assertIsNone(post.call_args.kwargs.get("auth_token"))
+
 
 if __name__ == "__main__":
     unittest.main()

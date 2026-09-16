@@ -16,16 +16,35 @@ from typing import Optional, Dict, Any, List
 from model_backends import BaseBackend, register_backend
 
 
-def _http_post(url: str, payload: dict, timeout: float) -> dict:
-    """POST JSON via stdlib urllib (``requests`` is not bundled in Chaquopy)."""
+def _http_post(url: str, payload: dict, timeout: float,
+               auth_token: Optional[str] = None) -> dict:
+    """POST JSON via stdlib urllib (``requests`` is not bundled in Chaquopy).
+
+    When ``auth_token`` is supplied, it's sent as ``Authorization: Bearer <token>``
+    so the same HTTP helper can talk to token-protected desktop servers as
+    well as the bare local llama.cpp endpoint. The helper is local to this
+    module and never logs the header.
+    """
     data = json.dumps(payload).encode("utf-8")
-    req = Request(url, data=data, headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
+    req = Request(url, data=data, headers=headers)
     with urlopen(req, timeout=int(timeout)) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _http_get(url: str, timeout: float) -> dict:
-    with urlopen(url, timeout=int(timeout)) as resp:
+def _http_get(url: str, timeout: float,
+              auth_token: Optional[str] = None) -> dict:
+    headers = {}
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
+    if headers:
+        req = Request(url, headers=headers)
+    else:
+        req = url
+    with urlopen(req if isinstance(req, str) else req,  # type: ignore[arg-type]
+                 timeout=int(timeout)) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -34,6 +53,11 @@ class AndroidBackend(BaseBackend):
 
     Connects to LocalApiServer running llama.cpp via JNI.
     Compatible with OllamaBackend interface (same API format).
+
+    ``auth_token`` (v1.30.4): optional bearer token sent on every request
+    so the same client can also reach a token-protected *desktop* server
+    (the SHUGOCORE_SERVER_TOKEN guard on ``shugocore-server``). The token
+    is never logged or echoed back.
     """
 
     name = "android"
@@ -47,6 +71,8 @@ class AndroidBackend(BaseBackend):
         # base_url; OllamaBackend uses base_url, AndroidBackend uses
         # api_url -- explicit wins, alias fills when explicit is default).
         base_url: Optional[str] = None,
+        # v1.30.4: optional bearer token to send on every request.
+        auth_token: Optional[str] = None,
         # CPU-only on-device generation needs ample headroom for prompt
         # eval (prefill) + decode. On a 0.5B Q4 model on Exynos 1380:
         # prefill ~280s + decode ~1.3s/token. Full 80-token generation
@@ -60,6 +86,9 @@ class AndroidBackend(BaseBackend):
         self.model_name = model_name
         self.device_caps = device_caps or {}
         self.timeout = timeout
+        # Strip + sanitize the token; an empty string is the same as None.
+        token = str(auth_token).strip() if auth_token else ""
+        self.auth_token: Optional[str] = token or None
 
     def generate(
         self,
@@ -97,7 +126,8 @@ class AndroidBackend(BaseBackend):
         print(f"ANDROID_INFERENCE generate called: model_id={model_id} "
               f"prompt_len={len(prompt)} grammar={'on' if grammar else 'off'}")
         data = _http_post(
-            f"{self.base_url}/api/generate", payload, timeout or self.timeout
+            f"{self.base_url}/api/generate", payload, timeout or self.timeout,
+            auth_token=self.auth_token,
         )
         response_text = data.get("response", "")
         if not response_text:
@@ -127,14 +157,16 @@ class AndroidBackend(BaseBackend):
         if grammar:
             payload["grammar"] = grammar
         data = _http_post(
-            f"{self.base_url}/api/chat", payload, timeout or self.timeout
+            f"{self.base_url}/api/chat", payload, timeout or self.timeout,
+            auth_token=self.auth_token,
         )
         return data.get("message", {}).get("content", "")
 
     def list_models(self) -> List[str]:
         """List available models via the /api/tags endpoint."""
         try:
-            data = _http_get(f"{self.base_url}/api/tags", self.timeout)
+            data = _http_get(f"{self.base_url}/api/tags", self.timeout,
+                             auth_token=self.auth_token)
             return [m["name"] for m in data.get("models", [])]
         except Exception:
             return [self.model_name]
@@ -142,7 +174,8 @@ class AndroidBackend(BaseBackend):
     def get_health(self) -> bool:
         """Check if the local inference server is running."""
         try:
-            _http_get(f"{self.base_url}/health", 5)
+            _http_get(f"{self.base_url}/health", 5,
+                      auth_token=self.auth_token)
             return True
         except Exception:
             return False

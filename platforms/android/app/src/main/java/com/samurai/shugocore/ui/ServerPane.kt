@@ -39,6 +39,7 @@ class ServerPane(
     private val modelLine: TextView
     private val progress: ProgressBar
     private val backupUrl: EditText
+    private val backupToken: EditText
     private val probeParse: TextView
     private val probeClass: TextView
     private val probeLatency: TextView
@@ -121,6 +122,32 @@ class ServerPane(
             })
         }
         col.addView(backupUrl)
+
+        // v1.30.4: bearer token field for token-protected desktop servers.
+        // Optional (leave blank for an open / loopback server); the token is
+        // persisted alongside desktop_api_url and forwarded on every request.
+        col.addView(TextView(context).apply {
+            textSize = 12f
+            setTextColor(Ui.DIM)
+            text = "Bearer token (optional, SHUGOCORE_SERVER_TOKEN) — sent " +
+                "as Authorization: Bearer <token> on every request"
+        })
+        backupToken = EditText(context).apply {
+            hint = "(leave blank to disable)"
+            textSize = 14f
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setText(host.prefs().getString("desktop_api_token", ""))
+            addTextChangedListener(object : TextWatcher {
+                override fun afterTextChanged(s: Editable?) {
+                    host.onBackupTokenChanged(s?.toString()?.trim() ?: "")
+                }
+
+                override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            })
+        }
+        col.addView(backupToken)
 
         // -- MODEL TEST ---------------------------------------------------------
         col.addView(Ui.section(context, "Model test"))

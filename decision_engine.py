@@ -251,7 +251,16 @@ class DecisionEngine:
         self.capabilities = capabilities if capabilities is not None else CapabilityRegistry()
         self.approvals = approvals if approvals is not None else ApprovalBroker()
         self.consents = consents if consents is not None else ConsentRegistry()
-        self.audit = AuditChain(audit_path) if audit_path else None
+        # Audit chain: local file is the source of truth. Env-driven sinks
+        # (SHUGOCORE_AUDIT_HTTPS_URL / SHUGOCORE_AUDIT_FILE_PATH) mirror
+        # entries to a remote endpoint or second file; sinks are
+        # observational and fail-safe, so a misconfiguration can never block
+        # the engine.
+        if audit_path:
+            from audit import sinks_from_env
+            self.audit = AuditChain(audit_path, sinks=sinks_from_env())
+        else:
+            self.audit = None
 
         self.vector_db = VectorDB(vector_db_config)
         # v1.19 causal ID sequence for decisions and executions.

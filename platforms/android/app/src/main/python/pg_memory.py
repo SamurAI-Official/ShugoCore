@@ -361,6 +361,121 @@ class PgSemanticMemory:
             rows = cursor.fetchall()
         return [row[0] for row in rows]
 
+    def link_entities(self, fact_id: int, entities: List[str]) -> int:
+        """Explicitly link a fact to entity names (v1.30.4).
+
+        API parity with ``SemanticMemory.link_entities``. Entities are
+        created on demand; linking is idempotent (``ON CONFLICT DO NOTHING``).
+        Returns the number of link operations performed.
+        """
+        now = _utc_now_iso()
+        linked = 0
+        with self._lock:
+            cursor = self._conn.cursor()
+            for raw in entities:
+                name = sanitize_text(raw, 64).strip().lower()
+                if len(name) < 2:
+                    continue
+                cursor.execute(
+                    sql.SQL("SELECT id FROM {entities} WHERE name = %s")
+                        .format(entities=self._t_entities_id),
+                    (name,))
+                row = cursor.fetchone()
+                if row:
+                    entity_id = int(row[0])
+                    cursor.execute(
+                        sql.SQL("UPDATE {entities} SET mention_count = "
+                                "mention_count + 1 WHERE id = %s")
+                            .format(entities=self._t_entities_id),
+                        (entity_id,))
+                else:
+                    cursor.execute(
+                        sql.SQL("INSERT INTO {entities} "
+                                "(name, mention_count, created_at) "
+                                "VALUES (%s, 1, %s) RETURNING id")
+                            .format(entities=self._t_entities_id),
+                        (name, now))
+                    entity_id = int(cursor.fetchone()[0])
+                cursor.execute(
+                    sql.SQL("INSERT INTO {fact_entities} (fact_id, entity_id) "
+                            "VALUES (%s, %s) ON CONFLICT DO NOTHING")
+                        .format(fact_entities=self._t_fact_entities_id),
+                    (int(fact_id), entity_id))
+                linked += 1
+            self._conn.commit()
+        return linked
+
+    def query_subgraph(self, entity_name: str, depth: int = 2,
+                       limit: int = 25) -> Dict[str, Any]:
+        """Multi-hop relation walk from an entity (v1.30.4).
+
+        API parity with ``SemanticMemory.query_subgraph``. Returns a bounded
+        ``{nodes, edges, depth}`` subgraph exploring co-occurrence links out
+        to ``depth`` hops; at most ``limit`` nodes total.
+        """
+        name = sanitize_text(entity_name, 64).lower()
+        nodes: List[Dict[str, Any]] = []
+        edges: List[Dict[str, Any]] = []
+        seen_nodes: set = set()
+        seen_edges: set = set()
+        frontier = [name]
+        hops = 0
+        max_depth = max(1, int(depth))
+        with self._lock:
+            cursor = self._conn.cursor()
+            while frontier and hops <= max_depth and len(nodes) < limit:
+                next_frontier: List[str] = []
+                for current in frontier:
+                    if len(nodes) >= limit:
+                        break
+                    cursor.execute(
+                        sql.SQL("SELECT e.id, e.name, e.mention_count "
+                                "FROM {entities} e WHERE e.name = %s")
+                            .format(entities=self._t_entities_id),
+                        (current,))
+                    row = cursor.fetchone()
+                    if not row:
+                        continue
+                    entity_id, _, mention_count = row
+                    if entity_id not in seen_nodes:
+                        seen_nodes.add(entity_id)
+                        nodes.append({"id": int(entity_id), "name": current,
+                                      "mention_count": int(mention_count),
+                                      "hops": hops})
+                    peer_limit = max(1, limit - len(nodes))
+                    cursor.execute(
+                        sql.SQL("""
+                        SELECT e2.id, e2.name, e2.mention_count, fe2.fact_id
+                        FROM {entities} e1
+                        JOIN {fact_entities} fe1 ON fe1.entity_id = e1.id
+                        JOIN {fact_entities} fe2 ON fe2.fact_id = fe1.fact_id
+                        JOIN {entities} e2 ON e2.id = fe2.entity_id
+                        WHERE e1.name = %s AND e2.name != %s
+                        GROUP BY e2.id ORDER BY e2.mention_count DESC LIMIT %s
+                        """).format(entities=self._t_entities_id,
+                                    fact_entities=self._t_fact_entities_id),
+                        (current, current, peer_limit))
+                    peers = cursor.fetchall()
+                    for peer_id, peer_name, peer_mentions, via_fact in peers:
+                        edge_key = (current, peer_name, int(via_fact))
+                        if edge_key not in seen_edges:
+                            seen_edges.add(edge_key)
+                            edges.append({"from": current, "to": peer_name,
+                                          "via_fact_id": int(via_fact)})
+                        if len(nodes) >= limit:
+                            break
+                        if peer_id not in seen_nodes:
+                            seen_nodes.add(peer_id)
+                            nodes.append({"id": int(peer_id), "name": peer_name,
+                                          "mention_count": int(peer_mentions),
+                                          "hops": hops + 1})
+                            if hops + 1 < max_depth:
+                                next_frontier.append(peer_name)
+                frontier = next_frontier
+                hops += 1
+        return {"root": name, "depth": max_depth, "nodes": nodes,
+                "edges": edges}
+
     # -- similarity search (pushed down to pgvector) ---------------------------
 
     def search(self, query: str, top_k: int = 5, min_salience: float = 0.0,

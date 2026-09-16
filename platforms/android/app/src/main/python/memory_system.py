@@ -436,6 +436,111 @@ class SemanticMemory:
             ).fetchall()
         return [self._row_to_fact(row) for row in rows]
 
+    def link_entities(self, fact_id: int, entities: List[str]) -> int:
+        """Explicitly link a fact to entity names (v1.30.4).
+
+        Unlike :meth:`_link_entities` (which auto-extracts from fact content
+        at write time), this lets a caller attach *additional* relations —
+        e.g. a planner asserting "fact 42 concerns 'billing' and 'sre'".
+        Entities are created on demand; linking is idempotent. Returns the
+        number of link operations performed.
+        """
+        now = _utc_now_iso()
+        linked = 0
+        with self._lock:
+            for raw in entities:
+                name = sanitize_text(raw, 64).strip().lower()
+                if len(name) < 2:
+                    continue
+                row = self._conn.execute(
+                    "SELECT id FROM entities WHERE name = ?",
+                    (name,)).fetchone()
+                if row:
+                    entity_id = int(row[0])
+                    self._conn.execute(
+                        "UPDATE entities SET mention_count = mention_count + 1 "
+                        "WHERE id = ?", (entity_id,))
+                else:
+                    cursor = self._conn.execute(
+                        "INSERT INTO entities (name, mention_count, created_at) "
+                        "VALUES (?, 1, ?)", (name, now))
+                    entity_id = int(cursor.lastrowid)
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO fact_entities (fact_id, entity_id) "
+                    "VALUES (?, ?)", (int(fact_id), entity_id))
+                linked += 1
+        return linked
+
+    def query_subgraph(self, entity_name: str, depth: int = 2,
+                       limit: int = 25) -> Dict[str, Any]:
+        """Multi-hop relation walk from an entity (v1.30.4).
+
+        Returns a bounded ``{nodes: [...], edges: [...], depth: int}``
+        subgraph exploring co-occurrence links out to ``depth`` hops.
+        ``nodes`` are ``{id, name, mention_count, hops}``; ``edges`` are
+        ``{from, to, via_fact_id}``. Bounded at every horizon: up to
+        ``limit`` nodes total — a truly continuous agent can never
+        traverse an unbounded relation graph.
+        """
+        name = sanitize_text(entity_name, 64).lower()
+        nodes: List[Dict[str, Any]] = []
+        edges: List[Dict[str, Any]] = []
+        seen_nodes: set = set()
+        seen_edges: set = set()
+        frontier = [name]
+        hops = 0
+        max_depth = max(1, int(depth))
+        with self._lock:
+            while frontier and hops <= max_depth and len(nodes) < limit:
+                next_frontier: List[str] = []
+                for current in frontier:
+                    if len(nodes) >= limit:
+                        break
+                    rows = self._conn.execute(
+                        "SELECT e.id, e.name, e.mention_count "
+                        "FROM entities e WHERE e.name = ?", (current,)
+                    ).fetchone()
+                    if not rows:
+                        continue
+                    entity_id, _, mention_count = rows
+                    if entity_id not in seen_nodes:
+                        seen_nodes.add(entity_id)
+                        nodes.append({"id": entity_id, "name": current,
+                                      "mention_count": mention_count,
+                                      "hops": hops})
+                    # Peers co-occurrent in a shared fact.
+                    peer_limit = max(1, limit - len(nodes))
+                    peers = self._conn.execute(
+                        "SELECT e2.id, e2.name, e2.mention_count, fe2.fact_id "
+                        "FROM entities e1 "
+                        "JOIN fact_entities fe1 ON fe1.entity_id = e1.id "
+                        "JOIN fact_entities fe2 ON fe2.fact_id = fe1.fact_id "
+                        "JOIN entities e2 ON e2.id = fe2.entity_id "
+                        "WHERE e1.name = ? AND e2.name != ? "
+                        "GROUP BY e2.id ORDER BY e2.mention_count DESC "
+                        "LIMIT ?",
+                        (current, current, peer_limit),
+                    ).fetchall()
+                    for peer_id, peer_name, peer_mentions, via_fact in peers:
+                        edge_key = (current, peer_name, int(via_fact))
+                        if edge_key not in seen_edges:
+                            seen_edges.add(edge_key)
+                            edges.append({"from": current, "to": peer_name,
+                                          "via_fact_id": int(via_fact)})
+                        if len(nodes) >= limit:
+                            break
+                        if peer_id not in seen_nodes:
+                            seen_nodes.add(peer_id)
+                            nodes.append({"id": peer_id, "name": peer_name,
+                                          "mention_count": int(peer_mentions),
+                                          "hops": hops + 1})
+                            if hops + 1 < max_depth:
+                                next_frontier.append(peer_name)
+                frontier = next_frontier
+                hops += 1
+        return {"root": name, "depth": max_depth, "nodes": nodes,
+                "edges": edges}
+
     def related_entities(self, entity_name: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Graph adjacency: entities co-occurring in the same facts."""
         name = sanitize_text(entity_name, 64).lower()

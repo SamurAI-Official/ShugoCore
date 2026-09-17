@@ -433,5 +433,151 @@ class ConfigTestCase(unittest.TestCase):
         self.assertIsNotNone(engine)
 
 
+class NewSurfacesTestCase(unittest.TestCase):
+    """C1/C2/C3 surfaces: approval queue, fleet snapshot, sensor stream."""
+
+    def test_bare_engine_surfaces_report_disabled(self):
+        engine = build_engine(
+            models=[{"id": "m", "backend": {"type": "stub"}}],
+            memory_db_path=":memory:",
+            audit_path=None,
+        )
+        server = ShugoCoreServer(engine, _build_backend("stub"), model="m")
+        status, body = server.handle_approvals()
+        self.assertEqual(status, 200)
+        self.assertTrue(body["enabled"])  # engine owns an ApprovalBroker
+        self.assertEqual(body["count"], 0)
+        status, body = server.handle_fleet()  # no mobile registry
+        self.assertEqual(status, 200)
+        self.assertFalse(body["enabled"])
+        status, body = server.handle_sensors()  # no hosted agent
+        self.assertEqual(status, 200)
+        self.assertFalse(body["enabled"])
+
+    def test_approvals_enabled_with_pending_and_resolution(self):
+        engine = build_engine(
+            models=[{"id": "m", "backend": {"type": "stub"}}],
+            memory_db_path=":memory:",
+            audit_path=None,
+        )
+        broker = engine.approvals
+        # A blocking operator channel: the worker asks the human, and the
+        # request stays PENDING until we resolve it programmatically.
+        ask_event = threading.Event()
+        gate = threading.Event()
+
+        def blocking_operator(req):
+            ask_event.set()
+            gate.wait(10.0)
+            return False
+
+        broker.attach_operator(blocking_operator)
+        results: dict = {}
+        worker = threading.Thread(
+            target=lambda: results.update(
+                broker.request_approval(
+                    {"action_type": "database_update",
+                     "params": {"table": "x"}},
+                    ttl_seconds=8.0)),
+            daemon=True)
+        worker.start()
+        self.assertTrue(ask_event.wait(2.0), "operator asked")
+        pending = broker.list_pending()
+        self.assertEqual(len(pending), 1)
+        rid = pending[0]["request_id"]
+
+        server = ShugoCoreServer(engine, _build_backend("stub"), model="m")
+        status, body = server.handle_approvals()
+        self.assertEqual(status, 200)
+        self.assertTrue(body["enabled"])
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["approvals"][0]["request_id"], rid)
+        self.assertIn("action_type", body["approvals"][0]["description"])
+        status, body = server.resolve_approval(rid, approved=True)
+        self.assertEqual(status, 200)
+        self.assertTrue(body["resolved"])
+        status, body = server.resolve_approval(rid, approved=True)
+        self.assertEqual(status, 200)
+        self.assertFalse(body["resolved"])  # already resolved -> no-op
+        gate.set()
+        worker.join(timeout=5)
+        # The operator's LATE verdict (False) must NOT overwrite the
+        # programmatic approval — first resolution wins (CSFA race fix).
+        self.assertTrue(results.get("approved"))
+
+    def test_approvals_resolution_without_broker_is_503(self):
+        class _NoBrokerEngine:
+            approvals = None
+            get_status = None
+        server = ShugoCoreServer(_NoBrokerEngine(), _build_backend("stub"),
+                                 model="m")
+        status, body = server.handle_approvals()
+        self.assertEqual(status, 200)
+        self.assertFalse(body["enabled"])
+        status, body = server.resolve_approval("x", approved=True)
+        self.assertEqual(status, 503)
+
+    def test_fleet_aggregates_paired_nodes(self):
+        from audit import AuditChain
+        from mobile_nodes import MobileComputeBroker, MobileExecutionHandler, \
+            MobileNodeManager, MobileNodeRegistry
+        from policy import CapabilityRegistry
+        from ros2_interface import StubROS2Interface
+        engine = build_engine(
+            models=[{"id": "m", "backend": {"type": "stub"}}],
+            memory_db_path=":memory:",
+            audit_path=None,
+        )
+        tmpd = tempfile.mkdtemp(prefix="shugocore_fleet_test_")
+        try:
+            audit = AuditChain(os.path.join(tmpd, "fleet_audit.jsonl"))
+            registry = MobileNodeRegistry(audit=audit, heartbeat_timeout=10.0)
+            registry.pair("pixel8", {"sensors": ["camera", "mic"]})
+            registry.pair("tab", {"sensors": ["gps"]})
+            caps = CapabilityRegistry({"mobile_devices_allowlist":
+                                       ["pixel8", "tab"]})
+            ros2 = StubROS2Interface(rate_limit_hz=500.0)
+            manager = MobileNodeManager(ros2, registry, caps,
+                                        fallbacks=None, audit=audit)
+            broker = MobileComputeBroker(ros2, registry, caps, audit=audit)
+            engine.mobile_handler = MobileExecutionHandler(manager, broker)
+            server = ShugoCoreServer(engine, _build_backend("stub"), model="m")
+            status, body = server.handle_fleet()
+            self.assertEqual(status, 200)
+            self.assertTrue(body["enabled"])
+            ids = [n["device_id"] for n in body["nodes"]]
+            self.assertEqual(sorted(ids), ["pixel8", "tab"])
+            node = next(n for n in body["nodes"]
+                        if n["device_id"] == "pixel8")
+            self.assertIn("camera", node["manifest"]["sensors"])
+        finally:
+            import shutil as _shutil
+            _shutil.rmtree(tmpd, ignore_errors=True)
+
+    def test_sensors_stream_is_bounded_and_sanitized(self):
+        class _HostedAgent:
+            telemetry = {"thermal_c": 37.5, "power_w": 1.2,
+                         "battery_pct": 91}
+
+            def get_status(self):
+                return {"tick_count": 3, "memory_usage_mb": 128.0,
+                        "telemetry_received": True,
+                        "mesh_peer_count": 1,
+                        "mesh_peers": [{"device_id": "peer-a"}],
+                        "capabilities": {"camera": "ok"}}
+
+        server = ShugoCoreServer(_HostedAgent(), _build_backend("stub"),
+                                 model="m")
+        first = server.handle_sensors()
+        second = server.handle_sensors()
+        self.assertEqual(first[0], 200)
+        body = first[1]
+        self.assertTrue(body["enabled"])
+        self.assertEqual(body["capacity"], 100)
+        self.assertEqual(body["stream"][0]["telemetry"]["thermal_c"], "37.5")
+        self.assertEqual(body["stream"][0]["mesh_peer_count"], 1)
+        self.assertEqual(second[1]["count"], 2)  # two polls -> two samples
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,51 @@
+name: Release
+
+# D4 + D5 (v1.30.4): trusted (OIDC) PyPI publishing, SBOM generation, and
+# Sigstore artifact signing. There is NO static PyPI token anywhere —
+# publishing goes through OpenID Connect token exchange with the
+# `pypi` environment's trusted publisher, and every artifact gets a
+# sigstore signature + a cyclonedx SBOM attached to the GitHub release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  publish-python:
+    runs-on: ubuntu-latest
+    # The PyPI trusted publisher is configured on the `pypi` environment
+    # (repository owner SamurAI-Official, project shugocore).
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build wheel + sdist
+        run: |
+          pip install --upgrade build
+          python -m build --sdist --wheel --outdir dist
+      - name: Generate SBOM (SPDX)
+        uses: anchore/sbom-action@v0
+        with:
+          path: ./
+          format: spdx-json
+          output-file: ./dist/shugocore-sbom.spdx.json
+      - name: Sign artifacts with Sigstore
+        uses: sigstore/gh-action-sigstore-python@v3.0.0
+        with:
+          inputs: ./dist/*
+      - name: Publish to PyPI (trusted / OIDC, no static token)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: true
+      - name: Attach SBOM + signatures to the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.spdx.json
+            dist/*.pem
+            dist/*.sigstore

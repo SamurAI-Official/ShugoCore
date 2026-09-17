@@ -8,6 +8,7 @@ import json
 import time
 import unittest
 from unittest import mock
+import os
 
 from android_bridge import (
     JavaBridgeROS2Interface,
@@ -497,6 +498,134 @@ class AndroidInferenceTestCase(unittest.TestCase):
                         return_value={"response": "ok"}) as post:
             backend.generate(model_id="m", prompt="hi", timeout=1)
         self.assertIsNone(post.call_args.kwargs.get("auth_token"))
+
+
+class TermuxLauncherTestCase(unittest.TestCase):
+    """D1: the Termux llama-server spawn/lifecycle helper (android_inference)."""
+
+    def test_find_llama_server_env_override_wins(self):
+        from android_inference import find_llama_server
+        with mock.patch.dict(
+                os.environ,
+                {"SHUGOCORE_LLAMA_SERVER": "/custom/llama-server"}):
+            self.assertEqual(find_llama_server(prefix="/data/usr"),
+                             "/custom/llama-server")
+
+    def test_find_llama_server_termux_prefix(self):
+        from android_inference import find_llama_server
+        prefix = "/data/data/com.termux/files/usr"
+        with mock.patch("android_inference.os.path.exists",
+                        return_value=True), \
+                mock.patch("android_inference.os.access",
+                           return_value=True):
+            self.assertEqual(
+                find_llama_server(prefix=prefix),
+                f"{prefix}/bin/llama-server")
+
+    def test_find_llama_server_path_fallback(self):
+        from android_inference import find_llama_server
+        with mock.patch("android_inference.shutil.which",
+                        return_value="/usr/local/bin/llama-server"):
+            self.assertEqual(find_llama_server(prefix=""),
+                             "/usr/local/bin/llama-server")
+
+    def test_find_llama_server_none_when_absent(self):
+        from android_inference import find_llama_server
+        with mock.patch("android_inference.shutil.which",
+                        return_value=None):
+            self.assertIsNone(find_llama_server(prefix=""))
+
+    def test_start_refuses_without_model(self):
+        from android_inference import TermuxLlamaServer
+        server = TermuxLlamaServer(model_path="", binary="/bin/llama-server")
+        self.assertFalse(server.start())
+        self.assertFalse(server.running())
+
+    def test_start_refuses_without_binary(self):
+        from android_inference import TermuxLlamaServer
+        server = TermuxLlamaServer(model_path="/tmp/model.gguf", binary="")
+        self.assertFalse(server.start())
+        self.assertFalse(server.running())
+
+    def test_start_spawns_and_stops(self):
+        from android_inference import TermuxLlamaServer
+
+        class FakeProc:
+            def __init__(self):
+                self.terminated = False
+                self.killed = False
+
+            def poll(self):
+                return None if not self.terminated else 0
+
+            def terminate(self):
+                self.terminated = True
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                self.killed = True
+
+            @property
+            def pid(self):
+                return 4242
+
+        proc = FakeProc()
+        calls = {}
+        def popen(cmd, **kwargs):
+            calls["cmd"] = list(cmd)
+            calls["kwargs"] = kwargs
+            return proc
+
+        server = TermuxLlamaServer(
+            model_path="/tmp/qwen.gguf", binary="/bin/llama-server",
+            port=9090, popen=popen)
+        self.assertTrue(server.start())
+        self.assertTrue(server.running())
+        self.assertIn("--model", calls["cmd"])
+        self.assertIn("/tmp/qwen.gguf", calls["cmd"])
+        self.assertIn("--port", calls["cmd"])
+        self.assertIn("9090", calls["cmd"])
+        server.stop()
+        self.assertTrue(proc.terminated)
+        self.assertFalse(server.running())
+
+    def test_start_spawn_failure_records_failure(self):
+        from android_inference import TermuxLlamaServer
+
+        def popen(cmd, **kwargs):
+            raise OSError("boom")
+
+        server = TermuxLlamaServer(
+            model_path="/tmp/qwen.gguf", binary="/bin/llama-server",
+            popen=popen)
+        self.assertFalse(server.start())
+        self.assertFalse(server.running())
+
+    def test_extra_args_passed_through(self):
+        from android_inference import TermuxLlamaServer
+
+        def popen(cmd, **kwargs):
+            return None  # not used; start returns True after "spawn"
+
+        class FakeProc:
+            def poll(self):
+                return None
+
+        calls = {}
+
+        def popen2(cmd, **kwargs):
+            calls["cmd"] = list(cmd)
+            return FakeProc()
+
+        server = TermuxLlamaServer(
+            model_path="/tmp/m.gguf", binary="/bin/llama-server",
+            extra_args=["--ctx-size", "2048"], popen=popen2)
+        server.start()
+        self.assertIn("--ctx-size", calls["cmd"])
+        self.assertIn("2048", calls["cmd"])
+        server.stop()
 
 
 if __name__ == "__main__":

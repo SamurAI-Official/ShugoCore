@@ -177,6 +177,33 @@ class TestEnumerators(unittest.TestCase):
         self.assertTrue(any(d.kind is AcceleratorKind.NPU and "Intel" in d.name
                             for d in devices))
 
+    def test_linux_qualcomm_hexagon_npu_via_qnn_libraries(self):
+        devices = enumerate_linux(
+            probe=lambda p: p == "/vendor/lib64/libQnnHtp.so")
+        hits = [d for d in devices
+                if d.kind is AcceleratorKind.NPU and "Qualcomm" in d.name]
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0].details.get("detected_by"),
+                         "vendor QNN/cdsprpc libraries")
+
+    def test_linux_mediatek_apu_via_accelerator_device(self):
+        devices = enumerate_linux(
+            probe=lambda p: p == "/dev/accelerator0")
+        hits = [d for d in devices
+                if d.kind is AcceleratorKind.NPU and "MediaTek" in d.name]
+        self.assertEqual(len(hits), 1)
+
+    def test_linux_npu_absent_without_vendor_libraries(self):
+        devices = enumerate_linux(
+            probe=lambda p: p in {"/dev/fastrpc"})
+        self.assertFalse(any(d.kind is AcceleratorKind.NPU for d in devices))
+
+    def test_linux_cdsprpc_probe_detects_hexagon(self):
+        devices = enumerate_linux(
+            probe=lambda p: p == "/vendor/lib64/libcdsprpc.so")
+        self.assertTrue(any("Qualcomm Hexagon NPU" in d.name
+                            for d in devices))
+
     def test_generic_is_empty(self):
         self.assertEqual(enumerate_generic(), [])
 

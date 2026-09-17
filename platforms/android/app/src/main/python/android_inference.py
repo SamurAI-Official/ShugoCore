@@ -10,6 +10,9 @@ to work unchanged on Android through the local API server.
 
 import json
 import logging
+import os
+import shutil
+import subprocess
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 from typing import Optional, Dict, Any, List
@@ -183,3 +186,125 @@ class AndroidBackend(BaseBackend):
 
 # Self-register so ``create_backend({"type": "android", ...})`` works.
 register_backend("android", AndroidBackend)
+
+
+# ---------------------------------------------------------------------------
+# Termux llama-server launcher (v1.30.4)
+# ---------------------------------------------------------------------------
+# The Chaquopy app path embeds llama.cpp via JNI. A Termux deployment (the
+# README "Android llama.cpp-compatible host server for Termux" roadmap item)
+# instead shells OUT to the distribution's own llama-server binary and talks
+# to it over loopback HTTP — the agent works against a pkg-installed
+# llama.cpp with zero native JNI code in the Python layer.
+def find_llama_server(prefix: Optional[str] = None,
+                      which: Optional[Any] = None) -> Optional[str]:
+    """Locate a llama-server binary for the current environment.
+
+    Search order:
+      1. ``$PREFIX/bin/llama-server`` — Termux package install location.
+      2. ``shutil.which("llama-server")`` on PATH (also covers adb shell).
+      3. ``SHUGOCORE_LLAMA_SERVER`` env override (explicit operator path).
+
+    Returns None when no binary is found (the caller falls back to the
+    deterministic stub / Chaquopy JNI path unchanged).
+    """
+    if which is None:
+        which = shutil.which
+    env_override = (os.environ.get("SHUGOCORE_LLAMA_SERVER", "") or "").strip()
+    if env_override:
+        return env_override
+    prefix = os.environ.get("PREFIX", "") if prefix is None else str(prefix)
+    if prefix:
+        candidate = os.path.join(prefix, "bin", "llama-server")
+        try:
+            if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        except OSError:
+            pass
+    try:
+        found = which("llama-server")
+        if found:
+            return str(found)
+    except Exception:
+        pass
+    return None
+
+
+_POPEN = subprocess.Popen
+
+
+class TermuxLlamaServer:
+    """Owns one llama-server child process for a Termux deployment.
+
+    ``start()`` refuses to run when no binary or no model is available
+    (fail-closed — a silently-dead server would make every model call
+    error). ``stop()`` terminates the child (best-effort, idempotent).
+    ``running()`` reports process liveness without touching the network.
+    """
+
+    def __init__(self, model_path: str,
+                 binary: Optional[str] = None,
+                 host: str = "127.0.0.1",
+                 port: int = 8080,
+                 extra_args: Optional[List[str]] = None,
+                 popen: Optional[Any] = None,
+                 logger: Optional[Any] = None):
+        self.model_path = str(model_path or "").strip()
+        self.binary = binary or find_llama_server()
+        self.host = str(host or "127.0.0.1")
+        self.port = max(1, min(65535, int(port)))
+        self.extra_args = list(extra_args or [])
+        self._popen = popen or _POPEN
+        self._log = logger or logging.getLogger(__name__)
+        self._proc: Optional[Any] = None
+
+    def start(self) -> bool:
+        """Launch llama-server against the model; True when spawned."""
+        if not self.model_path:
+            self._log.warning("TermuxLlamaServer: no model path to serve")
+            return False
+        if not self.binary:
+            self._log.warning(
+                "TermuxLlamaServer: no llama-server binary (set "
+                "SHUGOCORE_LLAMA_SERVER or install the termux package)")
+            return False
+        cmd = [self.binary,
+               "--model", self.model_path,
+               "--host", self.host,
+               "--port", str(self.port)]
+        cmd.extend(self.extra_args)
+        try:
+            self._proc = self._popen(
+                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as exc:
+            self._log.error("TermuxLlamaServer: spawn failed: %s", exc)
+            self._proc = None
+            return False
+        self._log.info("TermuxLlamaServer: spawned %s pid=%s on %s:%s",
+                       self.binary, getattr(self._proc, "pid", "?"),
+                       self.host, self.port)
+        return True
+
+    def running(self) -> bool:
+        proc = self._proc
+        if proc is None:
+            return False
+        try:
+            return proc.poll() is None
+        except Exception:
+            return False
+
+    def stop(self, timeout: float = 3.0) -> None:
+        proc = self._proc
+        if proc is None:
+            return
+        try:
+            proc.terminate()
+            proc.wait(timeout=float(timeout))
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        self._proc = None
+

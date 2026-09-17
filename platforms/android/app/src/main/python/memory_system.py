@@ -1120,8 +1120,38 @@ class MemoryManager:
                  decay_half_life_hours: float = 72.0,
                  prune_min_salience: float = 0.05,
                  maintenance_failure_threshold: int = 3,
-                 auto_start: bool = True):
+                 auto_start: bool = True,
+                 policy: str = "shared_rw"):
+        """Per-agent memory policy (v1.30.4).
+
+        Profiles choose how this agent's Tier 2 / Tier 3 interact with the
+        shared knowledge base:
+
+        * ``"shared_rw"`` (default) — the historical behavior: Tier 2/3
+          objects are shared when passed in, and this agent's consolidation
+          worker may write consolidated facts into Tier 2.
+        * ``"shared_read"`` — Tier 2/3 are still shareable and queryable,
+          but this agent's maintenance worker NEVER writes Tier 2 (its
+          consolidation drains Tier 1 in place and only decays/prunes).
+          A planner node that must not pollute the shared world model uses
+          this profile.
+        * ``"isolated"`` — Tier 0/1/2/3 are all per-agent: even explicitly
+          shared ``semantic`` / ``core`` instances are ignored (a warning is
+          logged) so no cross-agent leakage is physically possible.
+
+        Tier 0/1 are per-agent in every profile (never shared), preserving
+        the architecture's isolation model.
+        """
         self.agent_id = str(agent_id)
+
+        # v1.30.4: per-agent memory policy (shared_rw / shared_read / isolated).
+        policy = str(policy or "shared_rw").lower()
+        if policy not in ("shared_rw", "shared_read", "isolated"):
+            raise ValueError(
+                f"unknown memory policy {policy!r} "
+                f"(choose from 'shared_rw', 'shared_read', 'isolated')")
+        self.policy = policy
+        self.read_only_tier2 = bool(policy == "shared_read")
 
         # Tier 0 / Tier 1: per-agent isolated subspaces
         self.tier0 = Scratchpad(max_entries=scratchpad_capacity,
@@ -1130,9 +1160,20 @@ class MemoryManager:
                                     journal_path=episodic_journal_path,
                                     max_age_hours=max_episodic_age_hours)
 
-        # Tier 2 / Tier 3: shareable across planning nodes
-        self.tier2 = semantic if semantic is not None else SemanticMemory()
-        self.tier3 = core if core is not None else CoreIdentity()
+        # Tier 2 / Tier 3: shareable across planning nodes UNLESS the agent
+        # is configured isolated — then shared instances are refused and
+        # fresh per-agent copies are used (no cross-agent leakage possible).
+        if policy == "isolated":
+            if semantic is not None or core is not None:
+                logger.warning(
+                    "[%s] isolated memory policy ignores passed Tier 2/3 "
+                    "instances (fresh per-agent copies created).",
+                    self.agent_id)
+            self.tier2 = SemanticMemory()
+            self.tier3 = CoreIdentity()
+        else:
+            self.tier2 = semantic if semantic is not None else SemanticMemory()
+            self.tier3 = core if core is not None else CoreIdentity()
 
         self.consolidation_interval = max(0.05, float(consolidation_interval))
         self.consolidation_threshold = max(1, int(consolidation_threshold))
@@ -1187,6 +1228,10 @@ class MemoryManager:
             True if write is permitted, False otherwise.
         """
         allowed = self._write_gates.get(tier, set())
+        if writer in allowed and tier == "tier2" and writer == "consolidation":
+            # v1.30.4: a shared_read agent's consolidation worker must never
+            # write the shared Tier 2 store.
+            return not self.read_only_tier2
         return writer in allowed
 
     def enforce_write(self, tier: str, writer: str) -> None:
@@ -1426,10 +1471,19 @@ class MemoryManager:
     def _consolidate_impl(self, events: List[Dict[str, Any]]) -> Dict[str, Any]:
         events = events or []
         if not events:
-            self.tier2.decay(self.decay_half_life_hours)
-            pruned = self.tier2.prune(self.prune_min_salience)
+            if not self.read_only_tier2:
+                self.tier2.decay(self.decay_half_life_hours)
+                pruned = self.tier2.prune(self.prune_min_salience)
+            else:
+                pruned = 0
             return {"events_processed": 0, "facts_stored": 0,
                     "promoted": 0, "pruned": pruned}
+
+        # shared_read agents drain Tier 1 in place but never write Tier 2
+        # (the shared world model stays read-only from this agent's side).
+        if self.read_only_tier2:
+            return {"events_processed": len(events), "facts_stored": 0,
+                    "promoted": 0, "pruned": 0}
 
         grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         for event in events:

@@ -265,7 +265,11 @@ class ApprovalBroker:
             result = False
         with self._lock:
             record = self._pending.get(request_id)
-            if record is not None:
+            # A programmatic approve()/deny() may have resolved the request
+            # while the human channel was still thinking (v1.30.4 CSFA fix).
+            # The human's late verdict must NOT overwrite an already-issued
+            # resolution — first resolution wins (fail-closed either way).
+            if record is not None and record.get("approved") is None:
                 record["approved"] = result
                 record["event"].set()
 

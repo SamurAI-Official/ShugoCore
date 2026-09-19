@@ -336,6 +336,67 @@ class ServerHardeningTestCase(unittest.TestCase):
                              json={"type": "user", "content": "x"}, timeout=5)
         self.assertEqual(resp.status_code, 401)
 
+    def test_suffix_paths_do_not_hit_real_handlers(self):
+        srv = self._start(auth_token="s3cret")
+        # Auth runs before the existence check, so anonymous probes of
+        # unknown/suffix-trick paths get 401 (no 404-vs-401 route oracle).
+        for method, path in (("GET", "/evil/health"),
+                             ("GET", "/api/v1/task/health"),
+                             ("GET", "/evil/api/tags")):
+            self.assertEqual(
+                requests.request(method, f"{srv.base}{path}",
+                                 timeout=5).status_code, 401, path)
+        self.assertEqual(
+            requests.post(f"{srv.base}/evil/approve", json={},
+                          timeout=5).status_code, 401)
+        # ...but with a valid token the same tricks 404: they never reach
+        # a real handler (notably, /evil/health never serves health).
+        auth = {"Authorization": "Bearer s3cret"}
+        for method, path in (("GET", "/evil/health"),
+                             ("GET", "/api/v1/task/health"),
+                             ("GET", "/evil/api/tags")):
+            self.assertEqual(
+                requests.request(method, f"{srv.base}{path}", timeout=5,
+                                 headers=auth).status_code, 404, path)
+        self.assertEqual(
+            requests.post(f"{srv.base}/evil/approve", json={}, timeout=5,
+                          headers=auth).status_code, 404)
+
+    def test_query_string_routes_like_bare_path(self):
+        srv = self._start(auth_token="s3cret")
+        # Liveness probes with a query string still serve /health openly...
+        self.assertEqual(
+            requests.get(f"{srv.base}/health?x=1", timeout=5).status_code, 200)
+        # ...and authed task URLs tolerate a query string.
+        ok = requests.post(f"{srv.base}/api/v1/task?x=1",
+                           json={"content": "hi"}, timeout=10,
+                           headers={"Authorization": "Bearer s3cret"})
+        self.assertEqual(ok.status_code, 200)
+        # ...while suffix tricks with a query string still 404 when authed
+        # (and 401 anonymously -- auth first, no route oracle).
+        self.assertEqual(
+            requests.get(f"{srv.base}/evil/health?x=1", timeout=5,
+                         headers={"Authorization": "Bearer s3cret"}
+                         ).status_code, 404)
+        self.assertEqual(
+            requests.get(f"{srv.base}/evil/health?x=1",
+                         timeout=5).status_code, 401)
+
+    def test_loopback_host_rejects_lookalike_dns(self):
+        from shugocore_server import _is_loopback_host
+        for good in ("127.0.0.1", "127.0.0.2", "localhost", "::1"):
+            self.assertTrue(_is_loopback_host(good), good)
+        for bad in ("127.evil.com", "127.0.0.1.nip.io",
+                    "localhost.evil.com", "0.0.0.0", "192.168.1.5", ""):
+            self.assertFalse(_is_loopback_host(bad), bad)
+
+    def test_cors_rejects_lookalike_loopback_dns(self):
+        srv = self._start()
+        resp = requests.options(f"{srv.base}/api/v1/task", timeout=5,
+                                headers={"Origin": "http://127.evil.com/"})
+        self.assertEqual(resp.status_code, 204)
+        self.assertIsNone(resp.headers.get("Access-Control-Allow-Origin"))
+
     # -- rate limiting -------------------------------------------------------
 
     def test_rate_limit_returns_429(self):
@@ -431,6 +492,203 @@ class ConfigTestCase(unittest.TestCase):
             audit_path=None,
         )
         self.assertIsNotNone(engine)
+
+
+class NewSurfacesTestCase(unittest.TestCase):
+    """C1/C2/C3 surfaces: approval queue, fleet snapshot, sensor stream."""
+
+    def test_bare_engine_surfaces_report_disabled(self):
+        engine = build_engine(
+            models=[{"id": "m", "backend": {"type": "stub"}}],
+            memory_db_path=":memory:",
+            audit_path=None,
+        )
+        server = ShugoCoreServer(engine, _build_backend("stub"), model="m")
+        status, body = server.handle_approvals()
+        self.assertEqual(status, 200)
+        self.assertTrue(body["enabled"])  # engine owns an ApprovalBroker
+        self.assertEqual(body["count"], 0)
+        status, body = server.handle_fleet()  # no mobile registry
+        self.assertEqual(status, 200)
+        self.assertFalse(body["enabled"])
+        status, body = server.handle_sensors()  # no hosted agent
+        self.assertEqual(status, 200)
+        self.assertFalse(body["enabled"])
+
+    def test_approvals_enabled_with_pending_and_resolution(self):
+        engine = build_engine(
+            models=[{"id": "m", "backend": {"type": "stub"}}],
+            memory_db_path=":memory:",
+            audit_path=None,
+        )
+        broker = engine.approvals
+        # A blocking operator channel: the worker asks the human, and the
+        # request stays PENDING until we resolve it programmatically.
+        ask_event = threading.Event()
+        gate = threading.Event()
+
+        def blocking_operator(req):
+            ask_event.set()
+            gate.wait(10.0)
+            return False
+
+        broker.attach_operator(blocking_operator)
+        results: dict = {}
+        worker = threading.Thread(
+            target=lambda: results.update(
+                broker.request_approval(
+                    {"action_type": "database_update",
+                     "params": {"table": "x"}},
+                    ttl_seconds=8.0)),
+            daemon=True)
+        worker.start()
+        self.assertTrue(ask_event.wait(2.0), "operator asked")
+        pending = broker.list_pending()
+        self.assertEqual(len(pending), 1)
+        rid = pending[0]["request_id"]
+
+        server = ShugoCoreServer(engine, _build_backend("stub"), model="m")
+        status, body = server.handle_approvals()
+        self.assertEqual(status, 200)
+        self.assertTrue(body["enabled"])
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["approvals"][0]["request_id"], rid)
+        self.assertIn("action_type", body["approvals"][0]["description"])
+        status, body = server.resolve_approval(rid, approved=True)
+        self.assertEqual(status, 200)
+        self.assertTrue(body["resolved"])
+        status, body = server.resolve_approval(rid, approved=True)
+        self.assertEqual(status, 200)
+        self.assertFalse(body["resolved"])  # already resolved -> no-op
+        gate.set()
+        worker.join(timeout=5)
+        # The operator's LATE verdict (False) must NOT overwrite the
+        # programmatic approval — first resolution wins (CSFA race fix).
+        self.assertTrue(results.get("approved"))
+
+    def test_approvals_resolution_without_broker_is_503(self):
+        class _NoBrokerEngine:
+            approvals = None
+            get_status = None
+        server = ShugoCoreServer(_NoBrokerEngine(), _build_backend("stub"),
+                                 model="m")
+        status, body = server.handle_approvals()
+        self.assertEqual(status, 200)
+        self.assertFalse(body["enabled"])
+        status, body = server.resolve_approval("x", approved=True)
+        self.assertEqual(status, 503)
+
+    def test_approvals_skips_malformed_entries(self):
+        class _BadBroker:
+            ttl_seconds = 60.0
+
+            def list_pending(self):
+                return [
+                    {"request_id": "good",
+                     "description": {"action_type": "database_update"},
+                     "requested_at": 1234.5},
+                    {"request_id": "bad",
+                     "description": {"action_type": "x"},
+                     "requested_at": "not-a-float"},  # must not 500
+                    "not-a-dict",  # skipped silently
+                ]
+
+        class _Engine:
+            approvals = _BadBroker()
+
+        server = ShugoCoreServer(_Engine(), _build_backend("stub"), model="m")
+        status, body = server.handle_approvals()
+        self.assertEqual(status, 200)
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["approvals"][0]["request_id"], "good")
+
+    def test_safe_payload_caps_nested_and_redacts(self):
+        from shugocore_server import _safe_payload
+        big = {"blob": "x" * 5_000_000, "api_key": "sk-live-123",
+               "deep": {"a": {"b": {"c": {"d": {"e": {"f": "too-deep"}}}}}}}
+        safe = _safe_payload({"status": "ok", "result": big,
+                              "reason": "r" * 9000})
+        import json
+        self.assertLess(len(json.dumps(safe["result"])), 10000)
+        self.assertEqual(safe["result"].get("api_key"), "***REDACTED***")
+        self.assertLessEqual(len(safe["reason"]), 2000)
+
+    def test_handle_task_deep_caps_params(self):
+        seen = {}
+
+        class _Engine:
+            def execute_task(self, task):
+                seen.update(task)
+                return {"status": "ok", "result": "done"}
+
+        server = ShugoCoreServer(_Engine(), _build_backend("stub"), model="m")
+        status, body = server.handle_task(
+            {"content": "hi",
+             "params": {"nested": {"blob": "y" * 5_000_000}}})
+        self.assertEqual(status, 200)
+        import json
+        self.assertLess(len(json.dumps(seen["params"])), 10000)
+
+    def test_fleet_aggregates_paired_nodes(self):
+        from audit import AuditChain
+        from mobile_nodes import MobileComputeBroker, MobileExecutionHandler, \
+            MobileNodeManager, MobileNodeRegistry
+        from policy import CapabilityRegistry
+        from ros2_interface import StubROS2Interface
+        engine = build_engine(
+            models=[{"id": "m", "backend": {"type": "stub"}}],
+            memory_db_path=":memory:",
+            audit_path=None,
+        )
+        tmpd = tempfile.mkdtemp(prefix="shugocore_fleet_test_")
+        try:
+            audit = AuditChain(os.path.join(tmpd, "fleet_audit.jsonl"))
+            registry = MobileNodeRegistry(audit=audit, heartbeat_timeout=10.0)
+            registry.pair("pixel8", {"sensors": ["camera", "mic"]})
+            registry.pair("tab", {"sensors": ["gps"]})
+            caps = CapabilityRegistry({"mobile_devices_allowlist":
+                                       ["pixel8", "tab"]})
+            ros2 = StubROS2Interface(rate_limit_hz=500.0)
+            manager = MobileNodeManager(ros2, registry, caps,
+                                        fallbacks=None, audit=audit)
+            broker = MobileComputeBroker(ros2, registry, caps, audit=audit)
+            engine.mobile_handler = MobileExecutionHandler(manager, broker)
+            server = ShugoCoreServer(engine, _build_backend("stub"), model="m")
+            status, body = server.handle_fleet()
+            self.assertEqual(status, 200)
+            self.assertTrue(body["enabled"])
+            ids = [n["device_id"] for n in body["nodes"]]
+            self.assertEqual(sorted(ids), ["pixel8", "tab"])
+            node = next(n for n in body["nodes"]
+                        if n["device_id"] == "pixel8")
+            self.assertIn("camera", node["manifest"]["sensors"])
+        finally:
+            import shutil as _shutil
+            _shutil.rmtree(tmpd, ignore_errors=True)
+
+    def test_sensors_stream_is_bounded_and_sanitized(self):
+        class _HostedAgent:
+            telemetry = {"thermal_c": 37.5, "power_w": 1.2,
+                         "battery_pct": 91}
+
+            def get_status(self):
+                return {"tick_count": 3, "memory_usage_mb": 128.0,
+                        "telemetry_received": True,
+                        "mesh_peer_count": 1,
+                        "mesh_peers": [{"device_id": "peer-a"}],
+                        "capabilities": {"camera": "ok"}}
+
+        server = ShugoCoreServer(_HostedAgent(), _build_backend("stub"),
+                                 model="m")
+        first = server.handle_sensors()
+        second = server.handle_sensors()
+        self.assertEqual(first[0], 200)
+        body = first[1]
+        self.assertTrue(body["enabled"])
+        self.assertEqual(body["capacity"], 100)
+        self.assertEqual(body["stream"][0]["telemetry"]["thermal_c"], "37.5")
+        self.assertEqual(body["stream"][0]["mesh_peer_count"], 1)
+        self.assertEqual(second[1]["count"], 2)  # two polls -> two samples
 
 
 if __name__ == "__main__":

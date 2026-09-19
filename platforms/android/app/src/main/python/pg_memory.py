@@ -50,8 +50,11 @@ from vector_db import hashed_embedding
 
 try:
     import psycopg2  # type: ignore
+    from psycopg2 import sql  # type: ignore  # used for safe identifier composition (B608)
     _HAS_PSYCOPG = True
 except ImportError:
+    psycopg2 = None  # type: ignore
+    sql = None  # type: ignore
     _HAS_PSYCOPG = False
 
 logger = logging.getLogger(__name__)
@@ -110,6 +113,17 @@ class PgSemanticMemory:
         self.dsn = str(dsn)
         self.table_prefix = prefix
         self.dimension = max(16, int(dimension))
+        # SQL identifier composition (B608-safe): table names cannot be bound as
+        # parameters, so we precompose ``sql.Composed`` statements at init time
+        # using ``psycopg2.sql.Identifier`` for each table reference. The prefix
+        # has already been strictly validated by ``_PREFIX_RE`` above, so this
+        # composition is safe; values are still parameterized (``%s``) as before.
+        # The ``sql.Composed`` objects are reused across calls — ``cursor.execute``
+        # accepts a ``Composed`` directly.
+        self._t_facts_id = sql.Identifier(f"{prefix}_facts")
+        self._t_entities_id = sql.Identifier(f"{prefix}_entities")
+        self._t_fact_entities_id = sql.Identifier(f"{prefix}_fact_entities")
+        # Plain string forms kept for log lines / error messages (never SQL).
         self._t_facts = f"{prefix}_facts"
         self._t_entities = f"{prefix}_entities"
         self._t_fact_entities = f"{prefix}_fact_entities"
@@ -131,9 +145,14 @@ class PgSemanticMemory:
                 cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
             except Exception as exc:  # fail-closed: never degrade silently
                 raise RuntimeError(_PGVECTOR_HINT) from exc
+            # All CREATE TABLE / INSERT / SELECT / UPDATE / DELETE statements
+            # below use ``sql.SQL(...).format(Identifier=...)`` for table names
+            # and ``%s`` for values — the bandit B608 hard-coded-SQL warning
+            # only fires on f-string interpolation of identifiers, which we no
+            # longer do.
             cursor.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {self._t_facts} (
+                sql.SQL("""
+                CREATE TABLE IF NOT EXISTS {facts} (
                     id            BIGSERIAL PRIMARY KEY,
                     content       TEXT NOT NULL,
                     kind          TEXT DEFAULT 'fact',
@@ -141,29 +160,30 @@ class PgSemanticMemory:
                     access_count  INTEGER DEFAULT 0,
                     created_at    TEXT,
                     last_accessed TEXT,
-                    embedding     vector({int(self.dimension)}),
+                    embedding     vector({dim}),
                     metadata      TEXT
                 )
-                """
+                """).format(facts=self._t_facts_id,
+                            dim=sql.Literal(int(self.dimension)))
             )
             cursor.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {self._t_entities} (
+                sql.SQL("""
+                CREATE TABLE IF NOT EXISTS {entities} (
                     id            BIGSERIAL PRIMARY KEY,
                     name          TEXT UNIQUE NOT NULL,
                     mention_count INTEGER DEFAULT 0,
                     created_at    TEXT
                 )
-                """
+                """).format(entities=self._t_entities_id)
             )
             cursor.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {self._t_fact_entities} (
+                sql.SQL("""
+                CREATE TABLE IF NOT EXISTS {fact_entities} (
                     fact_id   BIGINT NOT NULL,
                     entity_id BIGINT NOT NULL,
                     PRIMARY KEY (fact_id, entity_id)
                 )
-                """
+                """).format(fact_entities=self._t_fact_entities_id)
             )
             self._conn.commit()
 
@@ -214,13 +234,13 @@ class PgSemanticMemory:
         with self._lock:
             cursor = self._conn.cursor()
             cursor.execute(
-                f"""
-                INSERT INTO {self._t_facts}
+                sql.SQL("""
+                INSERT INTO {facts}
                     (content, kind, salience, access_count,
                      created_at, last_accessed, embedding, metadata)
                 VALUES (%s, %s, %s, 0, %s, %s, %s::vector, %s)
                 RETURNING id
-                """,
+                """).format(facts=self._t_facts_id),
                 (str(content), str(kind), float(salience),
                  now, now, embedding, meta),
             )
@@ -255,25 +275,30 @@ class PgSemanticMemory:
         cursor = self._conn.cursor()
         for name in self.extract_entities(content):
             cursor.execute(
-                f"SELECT id FROM {self._t_entities} WHERE name = %s",
+                sql.SQL("SELECT id FROM {entities} WHERE name = %s")
+                    .format(entities=self._t_entities_id),
                 (name,))
             row = cursor.fetchone()
             if row:
                 entity_id = int(row[0])
                 cursor.execute(
-                    f"UPDATE {self._t_entities} "
-                    "SET mention_count = mention_count + 1 WHERE id = %s",
+                    sql.SQL("UPDATE {entities} "
+                            "SET mention_count = mention_count + 1 "
+                            "WHERE id = %s")
+                        .format(entities=self._t_entities_id),
                     (entity_id,))
             else:
                 cursor.execute(
-                    f"INSERT INTO {self._t_entities} "
-                    "(name, mention_count, created_at) VALUES (%s, 1, %s) "
-                    "RETURNING id",
+                    sql.SQL("INSERT INTO {entities} "
+                            "(name, mention_count, created_at) "
+                            "VALUES (%s, 1, %s) RETURNING id")
+                        .format(entities=self._t_entities_id),
                     (name, now))
                 entity_id = int(cursor.fetchone()[0])
             cursor.execute(
-                f"INSERT INTO {self._t_fact_entities} (fact_id, entity_id) "
-                "VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                sql.SQL("INSERT INTO {fact_entities} (fact_id, entity_id) "
+                        "VALUES (%s, %s) ON CONFLICT DO NOTHING")
+                    .format(fact_entities=self._t_fact_entities_id),
                 (int(fact_id), entity_id))
 
     def facts_about(self, entity_name: str,
@@ -283,13 +308,17 @@ class PgSemanticMemory:
         with self._lock:
             cursor = self._conn.cursor()
             cursor.execute(
-                f"SELECT f.id, f.content, f.kind, f.salience, "
-                f"f.access_count, f.created_at, f.last_accessed, f.metadata "
-                f"FROM {self._t_facts} f "
-                f"JOIN {self._t_fact_entities} fe ON fe.fact_id = f.id "
-                f"JOIN {self._t_entities} e ON e.id = fe.entity_id "
-                f"WHERE e.name = %s "
-                f"ORDER BY f.salience DESC, f.id DESC LIMIT %s",
+                sql.SQL("""
+                SELECT f.id, f.content, f.kind, f.salience,
+                       f.access_count, f.created_at, f.last_accessed, f.metadata
+                FROM {facts} f
+                JOIN {fact_entities} fe ON fe.fact_id = f.id
+                JOIN {entities} e ON e.id = fe.entity_id
+                WHERE e.name = %s
+                ORDER BY f.salience DESC, f.id DESC LIMIT %s
+                """).format(facts=self._t_facts_id,
+                            fact_entities=self._t_fact_entities_id,
+                            entities=self._t_entities_id),
                 (name, max(1, int(limit))),
             )
             rows = cursor.fetchall()
@@ -302,15 +331,18 @@ class PgSemanticMemory:
         with self._lock:
             cursor = self._conn.cursor()
             cursor.execute(
-                f"SELECT e2.name, e2.mention_count, "
-                f"COUNT(*) AS co_occurrences "
-                f"FROM {self._t_entities} e1 "
-                f"JOIN {self._t_fact_entities} fe1 ON fe1.entity_id = e1.id "
-                f"JOIN {self._t_fact_entities} fe2 ON fe2.fact_id = fe1.fact_id "
-                f"JOIN {self._t_entities} e2 ON e2.id = fe2.entity_id "
-                f"WHERE e1.name = %s AND e2.name != %s "
-                f"GROUP BY e2.id, e2.name, e2.mention_count "
-                f"ORDER BY co_occurrences DESC LIMIT %s",
+                sql.SQL("""
+                SELECT e2.name, e2.mention_count,
+                       COUNT(*) AS co_occurrences
+                FROM {entities} e1
+                JOIN {fact_entities} fe1 ON fe1.entity_id = e1.id
+                JOIN {fact_entities} fe2 ON fe2.fact_id = fe1.fact_id
+                JOIN {entities} e2 ON e2.id = fe2.entity_id
+                WHERE e1.name = %s AND e2.name != %s
+                GROUP BY e2.id, e2.name, e2.mention_count
+                ORDER BY co_occurrences DESC LIMIT %s
+                """).format(fact_entities=self._t_fact_entities_id,
+                            entities=self._t_entities_id),
                 (name, name, max(1, int(limit))),
             )
             rows = cursor.fetchall()
@@ -321,11 +353,128 @@ class PgSemanticMemory:
         with self._lock:
             cursor = self._conn.cursor()
             cursor.execute(
-                f"SELECT name FROM {self._t_entities} "
-                "ORDER BY mention_count DESC LIMIT %s",
+                sql.SQL("""
+                SELECT name FROM {entities}
+                ORDER BY mention_count DESC LIMIT %s
+                """).format(entities=self._t_entities_id),
                 (max(1, int(limit)),))
             rows = cursor.fetchall()
         return [row[0] for row in rows]
+
+    def link_entities(self, fact_id: int, entities: List[str]) -> int:
+        """Explicitly link a fact to entity names (v1.30.4).
+
+        API parity with ``SemanticMemory.link_entities``. Entities are
+        created on demand; linking is idempotent (``ON CONFLICT DO NOTHING``).
+        Returns the number of link operations performed.
+        """
+        now = _utc_now_iso()
+        linked = 0
+        with self._lock:
+            cursor = self._conn.cursor()
+            for raw in entities:
+                name = sanitize_text(raw, 64).strip().lower()
+                if len(name) < 2:
+                    continue
+                cursor.execute(
+                    sql.SQL("SELECT id FROM {entities} WHERE name = %s")
+                        .format(entities=self._t_entities_id),
+                    (name,))
+                row = cursor.fetchone()
+                if row:
+                    entity_id = int(row[0])
+                    cursor.execute(
+                        sql.SQL("UPDATE {entities} SET mention_count = "
+                                "mention_count + 1 WHERE id = %s")
+                            .format(entities=self._t_entities_id),
+                        (entity_id,))
+                else:
+                    cursor.execute(
+                        sql.SQL("INSERT INTO {entities} "
+                                "(name, mention_count, created_at) "
+                                "VALUES (%s, 1, %s) RETURNING id")
+                            .format(entities=self._t_entities_id),
+                        (name, now))
+                    entity_id = int(cursor.fetchone()[0])
+                cursor.execute(
+                    sql.SQL("INSERT INTO {fact_entities} (fact_id, entity_id) "
+                            "VALUES (%s, %s) ON CONFLICT DO NOTHING")
+                        .format(fact_entities=self._t_fact_entities_id),
+                    (int(fact_id), entity_id))
+                linked += 1
+            self._conn.commit()
+        return linked
+
+    def query_subgraph(self, entity_name: str, depth: int = 2,
+                       limit: int = 25) -> Dict[str, Any]:
+        """Multi-hop relation walk from an entity (v1.30.4).
+
+        API parity with ``SemanticMemory.query_subgraph``. Returns a bounded
+        ``{nodes, edges, depth}`` subgraph exploring co-occurrence links out
+        to ``depth`` hops; at most ``limit`` nodes total.
+        """
+        name = sanitize_text(entity_name, 64).lower()
+        nodes: List[Dict[str, Any]] = []
+        edges: List[Dict[str, Any]] = []
+        seen_nodes: set = set()
+        seen_edges: set = set()
+        frontier = [name]
+        hops = 0
+        max_depth = max(1, int(depth))
+        with self._lock:
+            cursor = self._conn.cursor()
+            while frontier and hops <= max_depth and len(nodes) < limit:
+                next_frontier: List[str] = []
+                for current in frontier:
+                    if len(nodes) >= limit:
+                        break
+                    cursor.execute(
+                        sql.SQL("SELECT e.id, e.name, e.mention_count "
+                                "FROM {entities} e WHERE e.name = %s")
+                            .format(entities=self._t_entities_id),
+                        (current,))
+                    row = cursor.fetchone()
+                    if not row:
+                        continue
+                    entity_id, _, mention_count = row
+                    if entity_id not in seen_nodes:
+                        seen_nodes.add(entity_id)
+                        nodes.append({"id": int(entity_id), "name": current,
+                                      "mention_count": int(mention_count),
+                                      "hops": hops})
+                    peer_limit = max(1, limit - len(nodes))
+                    cursor.execute(
+                        sql.SQL("""
+                        SELECT e2.id, e2.name, e2.mention_count, fe2.fact_id
+                        FROM {entities} e1
+                        JOIN {fact_entities} fe1 ON fe1.entity_id = e1.id
+                        JOIN {fact_entities} fe2 ON fe2.fact_id = fe1.fact_id
+                        JOIN {entities} e2 ON e2.id = fe2.entity_id
+                        WHERE e1.name = %s AND e2.name != %s
+                        GROUP BY e2.id ORDER BY e2.mention_count DESC LIMIT %s
+                        """).format(entities=self._t_entities_id,
+                                    fact_entities=self._t_fact_entities_id),
+                        (current, current, peer_limit))
+                    peers = cursor.fetchall()
+                    for peer_id, peer_name, peer_mentions, via_fact in peers:
+                        edge_key = (current, peer_name, int(via_fact))
+                        if edge_key not in seen_edges:
+                            seen_edges.add(edge_key)
+                            edges.append({"from": current, "to": peer_name,
+                                          "via_fact_id": int(via_fact)})
+                        if len(nodes) >= limit:
+                            break
+                        if peer_id not in seen_nodes:
+                            seen_nodes.add(peer_id)
+                            nodes.append({"id": int(peer_id), "name": peer_name,
+                                          "mention_count": int(peer_mentions),
+                                          "hops": hops + 1})
+                            if hops + 1 < max_depth:
+                                next_frontier.append(peer_name)
+                frontier = next_frontier
+                hops += 1
+        return {"root": name, "depth": max_depth, "nodes": nodes,
+                "edges": edges}
 
     # -- similarity search (pushed down to pgvector) ---------------------------
 
@@ -342,11 +491,14 @@ class PgSemanticMemory:
         with self._lock:
             cursor = self._conn.cursor()
             cursor.execute(
-                f"SELECT {self._SELECT_COLUMNS}, "
-                f"1 - (embedding <=> %s::vector) AS similarity "
-                f"FROM {self._t_facts} "
-                f"WHERE salience >= %s AND embedding <=> %s::vector < 1.0 "
-                f"ORDER BY embedding <=> %s::vector LIMIT %s",
+                sql.SQL("""
+                SELECT {columns},
+                       1 - (embedding <=> %s::vector) AS similarity
+                FROM {facts}
+                WHERE salience >= %s AND embedding <=> %s::vector < 1.0
+                ORDER BY embedding <=> %s::vector LIMIT %s
+                """).format(columns=sql.SQL(self._SELECT_COLUMNS),
+                            facts=self._t_facts_id),
                 (query_vector, float(min_salience),
                  query_vector, query_vector, max(0, int(top_k))),
             )
@@ -364,17 +516,19 @@ class PgSemanticMemory:
         with self._lock:
             cursor = self._conn.cursor()
             cursor.execute(
-                f"SELECT salience, access_count FROM {self._t_facts} "
-                "WHERE id = %s",
+                sql.SQL("SELECT salience, access_count FROM {facts} "
+                        "WHERE id = %s").format(facts=self._t_facts_id),
                 (int(fact_id),))
             row = cursor.fetchone()
             if not row:
                 return
             new_salience = min(cap, float(row[0]) + boost)
             cursor.execute(
-                f"UPDATE {self._t_facts} "
-                "SET salience = %s, access_count = %s, last_accessed = %s "
-                "WHERE id = %s",
+                sql.SQL("""
+                UPDATE {facts}
+                SET salience = %s, access_count = %s, last_accessed = %s
+                WHERE id = %s
+                """).format(facts=self._t_facts_id),
                 (new_salience, int(row[1]) + 1, _utc_now_iso(), int(fact_id)),
             )
             self._conn.commit()
@@ -392,7 +546,8 @@ class PgSemanticMemory:
         with self._lock:
             cursor = self._conn.cursor()
             cursor.execute(
-                f"SELECT id, salience, last_accessed FROM {self._t_facts}")
+                sql.SQL("SELECT id, salience, last_accessed FROM {facts}")
+                    .format(facts=self._t_facts_id))
             rows = cursor.fetchall()
             decayed = 0
             for fact_id, salience, last_accessed in rows:
@@ -407,8 +562,9 @@ class PgSemanticMemory:
                     0.5 ** (hours / half_life_hours))
                 if abs(new_salience - float(salience)) > 1e-9:
                     cursor.execute(
-                        f"UPDATE {self._t_facts} SET salience = %s "
-                        "WHERE id = %s",
+                        sql.SQL("UPDATE {facts} SET salience = %s "
+                                "WHERE id = %s")
+                            .format(facts=self._t_facts_id),
                         (new_salience, int(fact_id)),
                     )
                     decayed += 1
@@ -420,7 +576,8 @@ class PgSemanticMemory:
         with self._lock:
             cursor = self._conn.cursor()
             cursor.execute(
-                f"DELETE FROM {self._t_facts} WHERE salience < %s",
+                sql.SQL("DELETE FROM {facts} WHERE salience < %s")
+                    .format(facts=self._t_facts_id),
                 (float(min_salience),))
             count = cursor.rowcount
             self._conn.commit()
@@ -430,8 +587,9 @@ class PgSemanticMemory:
         with self._lock:
             cursor = self._conn.cursor()
             cursor.execute(
-                f"SELECT {self._SELECT_COLUMNS} FROM {self._t_facts} "
-                "WHERE id = %s",
+                sql.SQL("SELECT {columns} FROM {facts} WHERE id = %s")
+                    .format(columns=sql.SQL(self._SELECT_COLUMNS),
+                            facts=self._t_facts_id),
                 (int(fact_id),))
             row = cursor.fetchone()
         return self._row_to_fact(row) if row else None

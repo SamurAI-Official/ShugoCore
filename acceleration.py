@@ -183,6 +183,26 @@ def enumerate_linux(probe: Optional[Callable[[str], bool]] = None) -> List[Accel
         devices.append(AcceleratorDevice("gpu", "Mali GPU", "linux"))
     if glob.glob("/dev/fastrpc-*") or probe("/dev/fastrpc"):
         devices.append(AcceleratorDevice("dsp", "Hexagon DSP (fastrpc)", "linux"))
+    # v1.30.4 — NPU rungs on the acceleration ladder. These are
+    # filesystem-presence probes only; the CPU rung remains the always-
+    # available floor, and the presence of a library alone never upgrades
+    # the policy — it only makes the device ADVERTISED so bring-up
+    # tooling can target it on real hardware (Snapdragon Hexagon /
+    # Dimensity APU).
+    if (probe("/vendor/lib64/libQnnHtp.so")
+            or probe("/vendor/lib/libQnnHtp.so")
+            or probe("/vendor/lib64/libQnnHtpV2Stub.so")
+            or probe("/vendor/lib64/libcdsprpc.so")):
+        devices.append(AcceleratorDevice(
+            "npu", "Qualcomm Hexagon NPU (QNN HTP)", "linux",
+            {"detected_by": "vendor QNN/cdsprpc libraries"}))
+    if (probe("/dev/accelerator")
+            or probe("/dev/accelerator0")
+            or probe("/vendor/lib64/libmvpu.so")
+            or probe("/vendor/lib64/libapu_mdl_drv.so")):
+        devices.append(AcceleratorDevice(
+            "npu", "MediaTek APU (mvpu/apu driver)", "linux",
+            {"detected_by": "mtk accelerator driver/libraries"}))
     if glob.glob("/dev/dri/renderD*"):
         devices.append(AcceleratorDevice("gpu", "DRM render node GPU", "linux"))
     return devices

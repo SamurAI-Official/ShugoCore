@@ -20,6 +20,46 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pg_memory  # noqa: E402
 from pg_memory import PgSemanticMemory, _vector_literal, open_semantic_memory  # noqa: E402
 
+try:
+    from psycopg2 import sql as _pg_sql  # type: ignore
+    _HAS_PG_SQL = True
+except ImportError:
+    _pg_sql = None  # type: ignore
+    _HAS_PG_SQL = False
+
+
+def _flatten_sql(stmt):
+    """Render a ``psycopg2.sql.Composed`` (or plain string) into a real SQL string.
+
+    The fake connection in these tests inspects the *literal* SQL string for
+    behavioral assertions (e.g. ``"INSERT INTO shugocore_facts" in sql``). The
+    production code uses :func:`psycopg2.sql.SQL.format` with safe ``Identifier``
+    interpolation (bandit B608 fix); that gives a ``Composed`` whose default
+    ``str()`` is the repr, so the fake needs to flatten it explicitly. Real
+    ``psycopg2`` cursors do this flattening natively (``cursor.execute`` accepts
+    a ``Composable`` and calls ``as_string(cursor)`` for you).
+
+    We walk the composable tree in pure Python: ``SQL._wrapped`` is a string
+    template, ``Identifier._wrapped`` is a tuple of name parts, and
+    ``Literal._wrapped`` is the original value (formatted as ``repr`` by
+    psycopg2 in production; here we use ``repr`` to match).
+    """
+    if not (_HAS_PG_SQL and isinstance(stmt, _pg_sql.Composable)):
+        return str(stmt)
+
+    parts: list = []
+    for piece in getattr(stmt, "_wrapped", (stmt,)):
+        cls = type(piece).__name__
+        if cls == "SQL":
+            parts.append(str(piece._wrapped))
+        elif cls == "Identifier":
+            parts.append(".".join(piece._wrapped))
+        elif cls == "Literal":
+            parts.append(repr(piece._wrapped))
+        else:
+            parts.append(str(piece))
+    return "".join(parts)
+
 
 class FakeCursor:
     """Records executed SQL; serves scripted rows or safe defaults."""
@@ -30,7 +70,7 @@ class FakeCursor:
         self.rowcount = 0
 
     def execute(self, sql, params=None):
-        normalized = " ".join(str(sql).split())
+        normalized = " ".join(_flatten_sql(sql).split())
         self._conn.executed.append((normalized, params))
         for needle, exc in (self._conn.fail_on or {}).items():
             if needle in normalized:

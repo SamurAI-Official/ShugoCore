@@ -8,7 +8,36 @@ try:
     _HAS_CHROMA = True
 except ImportError:
     _HAS_CHROMA = False
-from typing import Callable, Dict, Any, List, Optional
+from typing import Callable, Dict, Any, List, Optional, Protocol, runtime_checkable
+
+
+# ---------------------------------------------------------------------------
+# Embedder protocol (v1.30.4)
+# ---------------------------------------------------------------------------
+@runtime_checkable
+class Embedder(Protocol):
+    """Pluggable embedding backend (v1.30.4).
+
+    An Embedder converts text into a fixed-dimension vector that Tier 2
+    stores index and search against. Implementations must be deterministic
+    for the working set so that facts written through one backend can be
+    retrieved through another; ``hashed_embedding`` provides this for
+    free, and a real Sentence Transformer model satisfies it by virtue of
+    being deterministic.
+
+    Built-in implementations:
+
+      * :class:`HashingEmbedder` — dependency-free (default). Same
+        algorithm as ``hashed_embedding``.
+      * :class:`SentenceTransformerEmbedder` — optional, lazily imported;
+        only usable when ``sentence_transformers`` is installed.
+    """
+
+    name: str
+    dimension: int
+
+    def embed(self, text: str) -> List[float]: ...
+    def embed_batch(self, texts: List[str]) -> List[List[float]]: ...
 
 
 def hashed_embedding(text: str, dimension: int = 256,
@@ -42,6 +71,100 @@ def hashed_embedding(text: str, dimension: int = 256,
     return vector
 
 
+class HashingEmbedder:
+    """Default dependency-free embedder (SHA-256 hashing bag-of-words).
+
+    Wraps :func:`hashed_embedding` in the :class:`Embedder` protocol so
+    callers can plug it into ``VectorDB(embedding=...)`` interchangeably
+    with any other Embedder.
+    """
+
+    name = "hashing"
+    dimension = 256
+
+    def __init__(self, dimension: int = 256):
+        self.dimension = max(16, int(dimension))
+
+    def embed(self, text: str) -> List[float]:
+        return hashed_embedding(str(text), self.dimension)
+
+    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        return [self.embed(t) for t in texts]
+
+
+class SentenceTransformerEmbedder:
+    """Real semantic embeddings via sentence-transformers (optional).
+
+    The dependency is imported lazily inside ``__init__``; if the library
+    is not installed, construction raises ``ImportError`` so the caller
+    can fall back to :class:`HashingEmbedder`. ``model_name`` defaults to
+    ``all-MiniLM-L6-v2`` (384 dims, fast, well-tested).
+    """
+
+    name = "sentence-transformer"
+    dimension = 384
+
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2",
+                 dimension: Optional[int] = None, **kwargs: Any):
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as exc:
+            raise ImportError(
+                "sentence-transformers is required for the sentence-transformer "
+                "embedding backend. Install it with: "
+                "pip install sentence-transformers"
+            ) from exc
+        self._model = SentenceTransformer(model_name, **kwargs)
+        if dimension is not None:
+            self.dimension = int(dimension)
+        else:
+            getter = getattr(self._model,
+                             "get_sentence_embedding_dimension", None)
+            if callable(getter):
+                self.dimension = int(getter())
+            else:  # very old sentence-transformers fallback
+                first = next(iter(getattr(self._model, "_modules",
+                                          {}).values()), None)
+                self.dimension = int(getattr(first, "embed_dim", 384))
+        self.model_name = str(model_name)
+
+    def embed(self, text: str) -> List[float]:
+        vec = self._model.encode([str(text)], convert_to_numpy=True)[0]
+        return [float(v) for v in vec]
+
+    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        vectors = self._model.encode([str(t) for t in texts],
+                                     convert_to_numpy=True)
+        return [[float(v) for v in vec] for vec in vectors]
+
+
+def make_embedder(name: str = "hashing", dimension: int = 256,
+                  **kwargs: Any) -> Embedder:
+    """Build an :class:`Embedder` by name.
+
+    Falls back to :class:`HashingEmbedder` when the requested backend is
+    unavailable (e.g. ``sentence-transformer`` without the library) or
+    the name is unrecognized. Never raises on missing dependencies — a
+    real semantic search is strictly an upgrade on top of the
+    dependency-free baseline, and a missing dependency must never block
+    the engine.
+    """
+    key = (name or "hashing").lower()
+    if key in ("hashing", "hash"):
+        return HashingEmbedder(dimension=dimension)
+    if key in ("sentence-transformer", "sentence_transformer", "st"):
+        try:
+            return SentenceTransformerEmbedder(dimension=dimension, **kwargs)
+        except ImportError as exc:
+            logging.getLogger(__name__).warning(
+                "sentence-transformer backend unavailable (%s); "
+                "falling back to HashingEmbedder", exc)
+            return HashingEmbedder(dimension=dimension)
+    logging.getLogger(__name__).warning(
+        "unknown embedder %r; falling back to HashingEmbedder", name)
+    return HashingEmbedder(dimension=dimension)
+
+
 class VectorDB:
     def __init__(self, config: Dict[str, Any],
                  embedding_fn: Optional[Callable[[str], List[float]]] = None):
@@ -50,11 +173,23 @@ class VectorDB:
         self.db_type = config.get("type", "unknown")
         self.dimension = int(config.get("dimension", 256))
         self.collection_name = config.get("collection_name", "default")
-        # Pluggable embedding backend (P7): callers may inject a real
-        # embedding model; the default is the deterministic hash embedder
-        # so similarity search works out of the box with zero deps.
-        self.embedding_fn = embedding_fn or (
-            lambda text: hashed_embedding(str(text), self.dimension))
+        # Pluggable embedding backend (P7 / v1.30.4): callers may inject an
+        # Embedder instance OR a callable via ``embedding_fn``; otherwise the
+        # config may name one via ``embedder`` ("hashing" default,
+        # "sentence-transformer" optional). The default stays the
+        # deterministic hash embedder so similarity search works out of the
+        # box with zero deps.
+        named = config.get("embedder")
+        if embedding_fn is not None:
+            self.embedding_fn = embedding_fn
+        elif isinstance(named, Embedder):
+            self.embedding_fn = named.embed
+        elif named:
+            embedder = make_embedder(str(named), dimension=self.dimension)
+            self.embedding_fn = embedder.embed
+        else:
+            self.embedding_fn = (
+                lambda text: hashed_embedding(str(text), self.dimension))
 
         self.client = None
         self.collection = None

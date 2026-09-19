@@ -77,6 +77,12 @@ class ShugoCoreService : Service() {
         get() = getSharedPreferences(PREFS, MODE_PRIVATE)
             .getString("desktop_api_url", null)?.trim()?.takeIf { it.isNotEmpty() }
 
+    /** Optional bearer token for the desktop server (SHUGOCORE_SERVER_TOKEN).
+     *  Persisted alongside desktop_api_url in the same prefs file. */
+    private val fallbackAuthToken: String?
+        get() = getSharedPreferences(PREFS, MODE_PRIVATE)
+            .getString("desktop_api_token", null)?.trim()?.takeIf { it.isNotEmpty() }
+
     
     inner class LocalBinder : Binder() {
         fun getService(): ShugoCoreService = this@ShugoCoreService
@@ -249,19 +255,25 @@ class ShugoCoreService : Service() {
             }
             val prefs = getSharedPreferences("shugocore_prefs", MODE_PRIVATE)
             val desktopApiUrl = prefs.getString("desktop_api_url", null)
+            val desktopApiToken = prefs.getString("desktop_api_token", null)
             python?.let { py ->
                 // Inject the app-private writable dir so Python copies of
                 // semantic_memory.db / audit_chain.jsonl land somewhere real
                 // (the Chaquopy process cwd is root "/", which is read-only).
-                // IMPORTANT: always pass exactly 3 positional args to match
-                // AndroidAgent.__init__(device_caps, api_url, data_dir) - the
-                // no-desktop-URL case used to pass only 2, which silently bound
-                // dataDir to api_url and left data_dir=None, crashing every
-                // relative-path open (decision_engine.log, semantic_memory.db)
-                // with "Read-only file system: '/'".
+                // IMPORTANT: always pass exactly 4 positional args to match
+                // AndroidAgent.__init__(device_caps, api_url, data_dir,
+                // auth_token) - the no-desktop-URL case used to pass only 2,
+                // which silently bound dataDir to api_url and left
+                // data_dir=None, crashing every relative-path open
+                // (decision_engine.log, semantic_memory.db) with
+                // "Read-only file system: '/'".
+                // v1.30.4: a fourth positional arg carries the bearer token
+                // for token-protected desktop servers; "" means unset.
                 val dataDir = filesDir.absolutePath
                 val apiUrlArg = desktopApiUrl ?: ""
-                val callArgs = arrayOf<Any>(caps?.soc ?: Build.MODEL, apiUrlArg, dataDir)
+                val tokenArg = desktopApiToken ?: ""
+                val callArgs = arrayOf<Any>(caps?.soc ?: Build.MODEL,
+                                            apiUrlArg, dataDir, tokenArg)
                 pyAgent = py.getModule("shugocore_agent")
                     .callAttr("create_agent", *callArgs)
                 agentRunning = true

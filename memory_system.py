@@ -436,6 +436,111 @@ class SemanticMemory:
             ).fetchall()
         return [self._row_to_fact(row) for row in rows]
 
+    def link_entities(self, fact_id: int, entities: List[str]) -> int:
+        """Explicitly link a fact to entity names (v1.30.4).
+
+        Unlike :meth:`_link_entities` (which auto-extracts from fact content
+        at write time), this lets a caller attach *additional* relations —
+        e.g. a planner asserting "fact 42 concerns 'billing' and 'sre'".
+        Entities are created on demand; linking is idempotent. Returns the
+        number of link operations performed.
+        """
+        now = _utc_now_iso()
+        linked = 0
+        with self._lock:
+            for raw in entities:
+                name = sanitize_text(raw, 64).strip().lower()
+                if len(name) < 2:
+                    continue
+                row = self._conn.execute(
+                    "SELECT id FROM entities WHERE name = ?",
+                    (name,)).fetchone()
+                if row:
+                    entity_id = int(row[0])
+                    self._conn.execute(
+                        "UPDATE entities SET mention_count = mention_count + 1 "
+                        "WHERE id = ?", (entity_id,))
+                else:
+                    cursor = self._conn.execute(
+                        "INSERT INTO entities (name, mention_count, created_at) "
+                        "VALUES (?, 1, ?)", (name, now))
+                    entity_id = int(cursor.lastrowid)
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO fact_entities (fact_id, entity_id) "
+                    "VALUES (?, ?)", (int(fact_id), entity_id))
+                linked += 1
+        return linked
+
+    def query_subgraph(self, entity_name: str, depth: int = 2,
+                       limit: int = 25) -> Dict[str, Any]:
+        """Multi-hop relation walk from an entity (v1.30.4).
+
+        Returns a bounded ``{nodes: [...], edges: [...], depth: int}``
+        subgraph exploring co-occurrence links out to ``depth`` hops.
+        ``nodes`` are ``{id, name, mention_count, hops}``; ``edges`` are
+        ``{from, to, via_fact_id}``. Bounded at every horizon: up to
+        ``limit`` nodes total — a truly continuous agent can never
+        traverse an unbounded relation graph.
+        """
+        name = sanitize_text(entity_name, 64).lower()
+        nodes: List[Dict[str, Any]] = []
+        edges: List[Dict[str, Any]] = []
+        seen_nodes: set = set()
+        seen_edges: set = set()
+        frontier = [name]
+        hops = 0
+        max_depth = max(1, int(depth))
+        with self._lock:
+            while frontier and hops <= max_depth and len(nodes) < limit:
+                next_frontier: List[str] = []
+                for current in frontier:
+                    if len(nodes) >= limit:
+                        break
+                    rows = self._conn.execute(
+                        "SELECT e.id, e.name, e.mention_count "
+                        "FROM entities e WHERE e.name = ?", (current,)
+                    ).fetchone()
+                    if not rows:
+                        continue
+                    entity_id, _, mention_count = rows
+                    if entity_id not in seen_nodes:
+                        seen_nodes.add(entity_id)
+                        nodes.append({"id": entity_id, "name": current,
+                                      "mention_count": mention_count,
+                                      "hops": hops})
+                    # Peers co-occurrent in a shared fact.
+                    peer_limit = max(1, limit - len(nodes))
+                    peers = self._conn.execute(
+                        "SELECT e2.id, e2.name, e2.mention_count, fe2.fact_id "
+                        "FROM entities e1 "
+                        "JOIN fact_entities fe1 ON fe1.entity_id = e1.id "
+                        "JOIN fact_entities fe2 ON fe2.fact_id = fe1.fact_id "
+                        "JOIN entities e2 ON e2.id = fe2.entity_id "
+                        "WHERE e1.name = ? AND e2.name != ? "
+                        "GROUP BY e2.id ORDER BY e2.mention_count DESC "
+                        "LIMIT ?",
+                        (current, current, peer_limit),
+                    ).fetchall()
+                    for peer_id, peer_name, peer_mentions, via_fact in peers:
+                        edge_key = (current, peer_name, int(via_fact))
+                        if edge_key not in seen_edges:
+                            seen_edges.add(edge_key)
+                            edges.append({"from": current, "to": peer_name,
+                                          "via_fact_id": int(via_fact)})
+                        if len(nodes) >= limit:
+                            break
+                        if peer_id not in seen_nodes:
+                            seen_nodes.add(peer_id)
+                            nodes.append({"id": peer_id, "name": peer_name,
+                                          "mention_count": int(peer_mentions),
+                                          "hops": hops + 1})
+                            if hops + 1 < max_depth:
+                                next_frontier.append(peer_name)
+                frontier = next_frontier
+                hops += 1
+        return {"root": name, "depth": max_depth, "nodes": nodes,
+                "edges": edges}
+
     def related_entities(self, entity_name: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Graph adjacency: entities co-occurring in the same facts."""
         name = sanitize_text(entity_name, 64).lower()
@@ -1015,8 +1120,38 @@ class MemoryManager:
                  decay_half_life_hours: float = 72.0,
                  prune_min_salience: float = 0.05,
                  maintenance_failure_threshold: int = 3,
-                 auto_start: bool = True):
+                 auto_start: bool = True,
+                 policy: str = "shared_rw"):
+        """Per-agent memory policy (v1.30.4).
+
+        Profiles choose how this agent's Tier 2 / Tier 3 interact with the
+        shared knowledge base:
+
+        * ``"shared_rw"`` (default) — the historical behavior: Tier 2/3
+          objects are shared when passed in, and this agent's consolidation
+          worker may write consolidated facts into Tier 2.
+        * ``"shared_read"`` — Tier 2/3 are still shareable and queryable,
+          but this agent's maintenance worker NEVER writes Tier 2 (its
+          consolidation drains Tier 1 in place and only decays/prunes).
+          A planner node that must not pollute the shared world model uses
+          this profile.
+        * ``"isolated"`` — Tier 0/1/2/3 are all per-agent: even explicitly
+          shared ``semantic`` / ``core`` instances are ignored (a warning is
+          logged) so no cross-agent leakage is physically possible.
+
+        Tier 0/1 are per-agent in every profile (never shared), preserving
+        the architecture's isolation model.
+        """
         self.agent_id = str(agent_id)
+
+        # v1.30.4: per-agent memory policy (shared_rw / shared_read / isolated).
+        policy = str(policy or "shared_rw").lower()
+        if policy not in ("shared_rw", "shared_read", "isolated"):
+            raise ValueError(
+                f"unknown memory policy {policy!r} "
+                f"(choose from 'shared_rw', 'shared_read', 'isolated')")
+        self.policy = policy
+        self.read_only_tier2 = bool(policy == "shared_read")
 
         # Tier 0 / Tier 1: per-agent isolated subspaces
         self.tier0 = Scratchpad(max_entries=scratchpad_capacity,
@@ -1025,9 +1160,20 @@ class MemoryManager:
                                     journal_path=episodic_journal_path,
                                     max_age_hours=max_episodic_age_hours)
 
-        # Tier 2 / Tier 3: shareable across planning nodes
-        self.tier2 = semantic if semantic is not None else SemanticMemory()
-        self.tier3 = core if core is not None else CoreIdentity()
+        # Tier 2 / Tier 3: shareable across planning nodes UNLESS the agent
+        # is configured isolated — then shared instances are refused and
+        # fresh per-agent copies are used (no cross-agent leakage possible).
+        if policy == "isolated":
+            if semantic is not None or core is not None:
+                logger.warning(
+                    "[%s] isolated memory policy ignores passed Tier 2/3 "
+                    "instances (fresh per-agent copies created).",
+                    self.agent_id)
+            self.tier2 = SemanticMemory()
+            self.tier3 = CoreIdentity()
+        else:
+            self.tier2 = semantic if semantic is not None else SemanticMemory()
+            self.tier3 = core if core is not None else CoreIdentity()
 
         self.consolidation_interval = max(0.05, float(consolidation_interval))
         self.consolidation_threshold = max(1, int(consolidation_threshold))
@@ -1082,6 +1228,10 @@ class MemoryManager:
             True if write is permitted, False otherwise.
         """
         allowed = self._write_gates.get(tier, set())
+        if writer in allowed and tier == "tier2" and writer == "consolidation":
+            # v1.30.4: a shared_read agent's consolidation worker must never
+            # write the shared Tier 2 store.
+            return not self.read_only_tier2
         return writer in allowed
 
     def enforce_write(self, tier: str, writer: str) -> None:
@@ -1321,10 +1471,19 @@ class MemoryManager:
     def _consolidate_impl(self, events: List[Dict[str, Any]]) -> Dict[str, Any]:
         events = events or []
         if not events:
-            self.tier2.decay(self.decay_half_life_hours)
-            pruned = self.tier2.prune(self.prune_min_salience)
+            if not self.read_only_tier2:
+                self.tier2.decay(self.decay_half_life_hours)
+                pruned = self.tier2.prune(self.prune_min_salience)
+            else:
+                pruned = 0
             return {"events_processed": 0, "facts_stored": 0,
                     "promoted": 0, "pruned": pruned}
+
+        # shared_read agents drain Tier 1 in place but never write Tier 2
+        # (the shared world model stays read-only from this agent's side).
+        if self.read_only_tier2:
+            return {"events_processed": len(events), "facts_stored": 0,
+                    "promoted": 0, "pruned": 0}
 
         grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         for event in events:

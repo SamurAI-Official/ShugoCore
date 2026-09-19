@@ -61,6 +61,38 @@ def _get_pg_memory():
         except Exception:
             _pg_memory_fn = False  # mark unavailable; don't retry
     return _pg_memory_fn
+
+
+def _resolve_memory_source(memory_db_path: Optional[str]) -> Optional[str]:
+    """Resolve the Tier 2 storage source from the environment (v1.30.4).
+
+    Priority (highest wins):
+      1. explicit ``SHUGOCORE_MEMORY_DSN`` — a Postgres DSN of the form
+         ``postgres://user:pass@host:5432/db`` (fleet-shared Tier 2 via
+         pgvector), or any other source string passed straight to
+         ``open_semantic_memory`` (local SQLite paths still work).
+      2. an existing explicit ``memory_db_path`` argument (unchanged
+         historical behavior, including ``postgres://`` DSNs already
+         passed by operators).
+      3. ``SHUGOCORE_MEMORY_BACKEND=postgres`` *without* a DSN -> None
+         (the backend env var alone does not invent a database address;
+         the operator must also set SHUGOCORE_MEMORY_DSN).
+
+    The historical single-knob path (memory_db_path) is preserved; the env
+    var simply wins over the default DB path so a fleet operator can flip
+    storage without touching engine code.
+    """
+    import os as _os
+    dsn = (_os.environ.get("SHUGOCORE_MEMORY_DSN", "") or "").strip()
+    if dsn:
+        return dsn
+    backend = (_os.environ.get("SHUGOCORE_MEMORY_BACKEND", "") or "").strip()
+    if backend == "postgres":
+        if memory_db_path:
+            return memory_db_path
+        # No DSN and no explicit path: cannot invent a database address.
+        return None
+    return memory_db_path
 from reinforcement_learning import ReinforcementLearning
 from security import (
     RateLimiter,
@@ -251,7 +283,16 @@ class DecisionEngine:
         self.capabilities = capabilities if capabilities is not None else CapabilityRegistry()
         self.approvals = approvals if approvals is not None else ApprovalBroker()
         self.consents = consents if consents is not None else ConsentRegistry()
-        self.audit = AuditChain(audit_path) if audit_path else None
+        # Audit chain: local file is the source of truth. Env-driven sinks
+        # (SHUGOCORE_AUDIT_HTTPS_URL / SHUGOCORE_AUDIT_FILE_PATH) mirror
+        # entries to a remote endpoint or second file; sinks are
+        # observational and fail-safe, so a misconfiguration can never block
+        # the engine.
+        if audit_path:
+            from audit import sinks_from_env
+            self.audit = AuditChain(audit_path, sinks=sinks_from_env())
+        else:
+            self.audit = None
 
         self.vector_db = VectorDB(vector_db_config)
         # v1.19 causal ID sequence for decisions and executions.
@@ -340,7 +381,19 @@ class DecisionEngine:
         semantic = semantic_memory
         if semantic is None:
             pg_mem = _get_pg_memory()
-            semantic = pg_mem(memory_db_path) if pg_mem else SemanticMemory(db_path=memory_db_path)
+            # Env-driven Tier 2 storage selection (v1.30.4):
+            #   SHUGOCORE_MEMORY_DSN=postgres://...   -> fleet-shared pgvector
+            #   SHUGOCORE_MEMORY_BACKEND=postgres     -> requires DSN or path
+            resolved_source = _resolve_memory_source(memory_db_path)
+            if resolved_source is None:
+                raise ValueError(
+                    "SHUGOCORE_MEMORY_BACKEND=postgres requires "
+                    "SHUGOCORE_MEMORY_DSN (or an explicit memory_db_path); "
+                    "a database address cannot be invented")
+            if pg_mem:
+                semantic = pg_mem(resolved_source)
+            else:
+                semantic = SemanticMemory(db_path=str(resolved_source))
         # A caller-supplied MemoryManager (e.g. the Android agent shell's) is
         # shared, NOT replaced: the agent's observations and the engine's
         # decision/execution events must land in ONE Tier 1 so the control

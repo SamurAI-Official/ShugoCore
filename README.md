@@ -746,23 +746,48 @@ Runtime artifacts (`semantic_memory.db`, logs) are local and gitignored.
 
 ## Roadmap
 
-- Pluggable embedding backends for Tier 2 (current: dependency-free hashing vectors)
-- PostgreSQL + pgvector storage option for shared multi-process deployments
-- Entity/relation graphs alongside vector similarity in Tier 2
-- Per-agent memory policies (isolation vs. sharing profiles)
-- HMAC-signed audit chains (shipped in 1.20) - remaining: remote log shipping
-- Human approval UI beyond the programmatic broker API
-- Operator approval surface on the Android SECURITY tab (ApprovalBroker integration)
-- Android client bearer-token support so a token-protected desktop server can
-  be paired without `--allow-unauthenticated`
-- Camera / microphone / GPS live-stream display in the SENSORS tab
-- Per-model backend pools with health-based routing
-- CI trusted publishing to PyPI via GitHub Actions (OIDC, no static token)
-- Android llama.cpp-compatible host server for Termux (self-hosted launcher path)
-- NPU bring-up on real devices (Snapdragon Hexagon / Dimensity APU) against the acceleration ladder
-- Fleet dashboard for mobile nodes: pairing state, thermal headroom, offload telemetry
-- Triage the remaining bandit medium findings (B608 SQL construction in `pg_memory.py`)
-- Signed release artifacts + SBOM publication
+Done in v1.30.4:
+
+- ✅ Pluggable embedding backends for Tier 2 (`Embedder` protocol; hashing
+  default + optional sentence-transformer)
+- ✅ PostgreSQL + pgvector storage option for shared multi-process
+  deployments (`SHUGOCORE_MEMORY_DSN` / `SHUGOCORE_MEMORY_BACKEND=postgres`)
+- ✅ Entity/relation graphs alongside vector similarity in Tier 2
+  (`link_entities`, `query_subgraph` on both backends)
+- ✅ Per-agent memory policies (`MemoryManager(policy=...)`:
+  `shared_rw` / `shared_read` / `isolated`)
+- ✅ Remote audit log shipping (`LogSink` Protocol + HTTPS/file sinks via
+  `SHUGOCORE_AUDIT_HTTPS_URL` / `SHUGOCORE_AUDIT_FILE_PATH`)
+- ✅ Human-approval console surface (`GET /api/v1/approvals`,
+  `POST /api/v1/approvals/<id>/approve|deny`)
+- ✅ Fleet dashboard endpoint (`GET /api/v1/fleet`); a full desktop UI tab
+  still needs building
+- ✅ Bounded sensor live-stream endpoint (`GET /api/v1/sensors`); the
+  on-device SENSORS tab live rendering still needs building
+- ✅ Android client bearer-token support so a token-protected desktop
+  server can be paired without `--allow-unauthenticated`
+- ✅ Per-model backend pools with health-based routing (`BackendPool`)
+- ✅ CI trusted publishing to PyPI via GitHub Actions
+  (`.github/workflows/release.yml`, OIDC, no static token)
+- ✅ Android llama.cpp-compatible host server for Termux (`TermuxLlamaServer`
+  launcher helper; self-hosted path)
+- ✅ NPU capability-probe rungs (Qualcomm Hexagon QNN / MediaTek APU) on the
+  acceleration ladder — real-device bring-up against those rungs remains
+- ✅ Bandit B608 fixed in `pg_memory.py` (identifier composition via
+  `psycopg2.sql`; `bandit -lll` now clean)
+- ✅ Signed release artifacts + SBOM publication (Sigstore + SPDX SBOM in the
+  release workflow)
+
+Remaining:
+
+- Desktop UI tab / Android SENSORS live rendering for the fleet + sensor
+  endpoints added above
+- Operator approval surface on the Android SECURITY tab (the `ApprovalBroker`
+  now exposes the pending queue over the server API; wiring it into the app's
+  SECURITY tab is follow-on work)
+- Deep NPU bring-up (QNN / MTK inference integrations against real silicon)
+- Canonical desktop fleet dashboard UI (parsing the server-hosted
+  `/api/v1/fleet`)
 
 ## Contributing
 

@@ -336,6 +336,67 @@ class ServerHardeningTestCase(unittest.TestCase):
                              json={"type": "user", "content": "x"}, timeout=5)
         self.assertEqual(resp.status_code, 401)
 
+    def test_suffix_paths_do_not_hit_real_handlers(self):
+        srv = self._start(auth_token="s3cret")
+        # Auth runs before the existence check, so anonymous probes of
+        # unknown/suffix-trick paths get 401 (no 404-vs-401 route oracle).
+        for method, path in (("GET", "/evil/health"),
+                             ("GET", "/api/v1/task/health"),
+                             ("GET", "/evil/api/tags")):
+            self.assertEqual(
+                requests.request(method, f"{srv.base}{path}",
+                                 timeout=5).status_code, 401, path)
+        self.assertEqual(
+            requests.post(f"{srv.base}/evil/approve", json={},
+                          timeout=5).status_code, 401)
+        # ...but with a valid token the same tricks 404: they never reach
+        # a real handler (notably, /evil/health never serves health).
+        auth = {"Authorization": "Bearer s3cret"}
+        for method, path in (("GET", "/evil/health"),
+                             ("GET", "/api/v1/task/health"),
+                             ("GET", "/evil/api/tags")):
+            self.assertEqual(
+                requests.request(method, f"{srv.base}{path}", timeout=5,
+                                 headers=auth).status_code, 404, path)
+        self.assertEqual(
+            requests.post(f"{srv.base}/evil/approve", json={}, timeout=5,
+                          headers=auth).status_code, 404)
+
+    def test_query_string_routes_like_bare_path(self):
+        srv = self._start(auth_token="s3cret")
+        # Liveness probes with a query string still serve /health openly...
+        self.assertEqual(
+            requests.get(f"{srv.base}/health?x=1", timeout=5).status_code, 200)
+        # ...and authed task URLs tolerate a query string.
+        ok = requests.post(f"{srv.base}/api/v1/task?x=1",
+                           json={"content": "hi"}, timeout=10,
+                           headers={"Authorization": "Bearer s3cret"})
+        self.assertEqual(ok.status_code, 200)
+        # ...while suffix tricks with a query string still 404 when authed
+        # (and 401 anonymously -- auth first, no route oracle).
+        self.assertEqual(
+            requests.get(f"{srv.base}/evil/health?x=1", timeout=5,
+                         headers={"Authorization": "Bearer s3cret"}
+                         ).status_code, 404)
+        self.assertEqual(
+            requests.get(f"{srv.base}/evil/health?x=1",
+                         timeout=5).status_code, 401)
+
+    def test_loopback_host_rejects_lookalike_dns(self):
+        from shugocore_server import _is_loopback_host
+        for good in ("127.0.0.1", "127.0.0.2", "localhost", "::1"):
+            self.assertTrue(_is_loopback_host(good), good)
+        for bad in ("127.evil.com", "127.0.0.1.nip.io",
+                    "localhost.evil.com", "0.0.0.0", "192.168.1.5", ""):
+            self.assertFalse(_is_loopback_host(bad), bad)
+
+    def test_cors_rejects_lookalike_loopback_dns(self):
+        srv = self._start()
+        resp = requests.options(f"{srv.base}/api/v1/task", timeout=5,
+                                headers={"Origin": "http://127.evil.com/"})
+        self.assertEqual(resp.status_code, 204)
+        self.assertIsNone(resp.headers.get("Access-Control-Allow-Origin"))
+
     # -- rate limiting -------------------------------------------------------
 
     def test_rate_limit_returns_429(self):
@@ -516,6 +577,57 @@ class NewSurfacesTestCase(unittest.TestCase):
         self.assertFalse(body["enabled"])
         status, body = server.resolve_approval("x", approved=True)
         self.assertEqual(status, 503)
+
+    def test_approvals_skips_malformed_entries(self):
+        class _BadBroker:
+            ttl_seconds = 60.0
+
+            def list_pending(self):
+                return [
+                    {"request_id": "good",
+                     "description": {"action_type": "database_update"},
+                     "requested_at": 1234.5},
+                    {"request_id": "bad",
+                     "description": {"action_type": "x"},
+                     "requested_at": "not-a-float"},  # must not 500
+                    "not-a-dict",  # skipped silently
+                ]
+
+        class _Engine:
+            approvals = _BadBroker()
+
+        server = ShugoCoreServer(_Engine(), _build_backend("stub"), model="m")
+        status, body = server.handle_approvals()
+        self.assertEqual(status, 200)
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["approvals"][0]["request_id"], "good")
+
+    def test_safe_payload_caps_nested_and_redacts(self):
+        from shugocore_server import _safe_payload
+        big = {"blob": "x" * 5_000_000, "api_key": "sk-live-123",
+               "deep": {"a": {"b": {"c": {"d": {"e": {"f": "too-deep"}}}}}}}
+        safe = _safe_payload({"status": "ok", "result": big,
+                              "reason": "r" * 9000})
+        import json
+        self.assertLess(len(json.dumps(safe["result"])), 10000)
+        self.assertEqual(safe["result"].get("api_key"), "***REDACTED***")
+        self.assertLessEqual(len(safe["reason"]), 2000)
+
+    def test_handle_task_deep_caps_params(self):
+        seen = {}
+
+        class _Engine:
+            def execute_task(self, task):
+                seen.update(task)
+                return {"status": "ok", "result": "done"}
+
+        server = ShugoCoreServer(_Engine(), _build_backend("stub"), model="m")
+        status, body = server.handle_task(
+            {"content": "hi",
+             "params": {"nested": {"blob": "y" * 5_000_000}}})
+        self.assertEqual(status, 200)
+        import json
+        self.assertLess(len(json.dumps(seen["params"])), 10000)
 
     def test_fleet_aggregates_paired_nodes(self):
         from audit import AuditChain

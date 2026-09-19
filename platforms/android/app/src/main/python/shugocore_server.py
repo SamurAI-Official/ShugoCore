@@ -50,6 +50,7 @@ Notes
 
 import argparse
 import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -60,7 +61,7 @@ from collections import deque
 from datetime import datetime, timezone
 from http import server as http_server
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 from security import RateLimiter
 
@@ -95,9 +96,54 @@ SENSOR_STREAM_RING = 100         # bounded sensor samples retained (drop-oldest)
 # Bind / origin helpers
 # ---------------------------------------------------------------------------
 def _is_loopback_host(host: str) -> bool:
-    """True for loopback bind addresses (only these may run unauthenticated)."""
-    candidate = str(host or "").strip().strip("[]").lower()
-    return candidate in ("localhost", "::1") or candidate.startswith("127.")
+    """True for loopback bind addresses (only these may run unauthenticated).
+
+    Strict: ``localhost`` (exact, case-insensitive), the IPv6 loopback
+    ``::1``, or a numeric IPv4 address inside 127.0.0.0/8. The old
+    ``startswith("127.")`` prefix test also matched attacker-controlled DNS
+    names such as ``127.evil.com`` or ``127.0.0.1.nip.io`` -- those resolve
+    to non-loopback addresses and must NOT count as loopback.
+    """
+    candidate = str(host or "").strip().strip("[]").lower().rstrip(".")
+    if candidate in ("localhost", "::1"):
+        return True
+    try:
+        return ipaddress.ip_address(candidate).is_loopback
+    except ValueError:
+        return False
+
+
+def _normalize_request_path(raw_path: str) -> str:
+    """Return the decoded path component of a request-target.
+
+    Strips query/fragment, percent-decodes, collapses a single trailing
+    slash (except the root), so ``/health?x=1`` and ``/health/`` route like
+    ``/health`` while ``/evil/health`` never does.
+    """
+    try:
+        path = urlsplit(str(raw_path or "")).path or "/"
+    except ValueError:
+        return "/"
+    from urllib.parse import unquote
+    path = unquote(path)
+    if len(path) > 1 and path.endswith("/"):
+        path = path.rstrip("/")
+    return path or "/"
+
+
+def _approval_request_id(path: str) -> Optional[str]:
+    """Extract ``<id>`` from ``/api/v1/approvals/<id>/approve|deny``.
+
+    Returns None unless the normalized path has exactly that shape and the
+    id is non-empty without embedded slashes.
+    """
+    parts = path.split("/")
+    # ['', 'api', 'v1', 'approvals', '<id>', 'approve'|'deny']
+    if (len(parts) == 6 and parts[1] == "api" and parts[2] == "v1"
+            and parts[3] == "approvals" and parts[5] in ("approve", "deny")
+            and parts[4]):
+        return parts[4]
+    return None
 
 
 def _is_loopback_origin(origin: str) -> bool:
@@ -172,16 +218,41 @@ def _send_ndjson(handler: "http_server.BaseHTTPRequestHandler",
     handler.wfile.write(body)
 
 
+def _safe_value(value: Any, depth: int = 0) -> Any:
+    """Recursively bound a payload value (depth + breadth + string caps).
+
+    Scalars are coerced via ``_safe_text``; containers are walked with a
+    small max-depth (deeper levels collapse to ``"[truncated]"``), a
+    max-item cap (extras dropped), and a running char budget so a 5 MB
+    nested blob cannot ride through the ``result`` field uncapped.
+    """
+    if depth > 4:
+        return "[truncated]"
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for i, (k, v) in enumerate(value.items()):
+            if i >= 50:
+                break
+            out[_safe_text(k, 64)] = _safe_value(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple)):
+        return [_safe_value(v, depth + 1) for v in list(value)[:50]]
+    return _safe_text(value, 2000)
+
+
 def _safe_payload(result: Dict[str, Any]) -> Dict[str, Any]:
-    """Trim a task result to safe, serializable fields."""
+    """Trim a task result to safe, serializable fields.
+
+    Every value -- including nested ``dict``/``list`` results -- is
+    recursively capped and passed through ``redact`` so secrets or
+    unbounded memory echoes from ``engine.execute_task`` never reach
+    the wire verbatim.
+    """
+    from security import redact as _redact
     safe: Dict[str, Any] = {"status": _safe_text(result.get("status"), 32)}
     for key in ("reason", "message", "result", "action_type", "summary"):
         if result.get(key) is not None:
-            val = result[key]
-            if isinstance(val, (dict, list)):
-                safe[key] = val
-            else:
-                safe[key] = _safe_text(val, 2000)
+            safe[key] = _redact(_safe_value(result[key]))
     return safe
 # ---------------------------------------------------------------------------
 # ShugoCoreServer
@@ -236,35 +307,38 @@ class ShugoCoreServer:
 
     @staticmethod
     def route_name(method: str, path: str) -> Optional[str]:
-        """Canonical activity-bucket name for a wire request (None = unknown)."""
+        """Canonical activity-bucket name for a wire request (None = unknown).
+
+        ``path`` must already be normalized via ``_normalize_request_path``
+        (no query string); matching is exact so ``/evil/health`` never
+        buckets as ``health``.
+        """
         if method == "GET":
-            if path.endswith("/health"):
+            if path == "/health":
                 return "health"
-            if path.endswith("/api/tags"):
+            if path == "/api/tags":
                 return "tags"
-            if path.endswith("/api/v1/status"):
+            if path == "/api/v1/status":
                 return "status"
-            if path.endswith("/api/v1/activity"):
+            if path == "/api/v1/activity":
                 return "activity"
-            if path.endswith("/api/v1/uptime"):
+            if path == "/api/v1/uptime":
                 return "uptime"
-            if path.endswith("/api/v1/approvals"):
+            if path == "/api/v1/approvals":
                 return "approvals"
-            if path.endswith("/api/v1/fleet"):
+            if path == "/api/v1/fleet":
                 return "fleet"
-            if path.endswith("/api/v1/sensors"):
+            if path == "/api/v1/sensors":
                 return "sensors"
         elif method == "POST":
-            if path.endswith("/api/generate"):
+            if path == "/api/generate":
                 return "generate"
-            if path.endswith("/api/chat"):
+            if path == "/api/chat":
                 return "chat"
-            if path.endswith("/api/v1/task"):
+            if path == "/api/v1/task":
                 return "task"
-            if path.endswith("/approve"):
-                return "approve"
-            if path.endswith("/deny"):
-                return "deny"
+            if _approval_request_id(path) is not None:
+                return ("approve" if path.endswith("/approve") else "deny")
         return None
 
     def record(self, route: Optional[str], http_status: int,
@@ -395,17 +469,24 @@ class ShugoCoreServer:
         for req in pending[:APPROVALS_MAX_PENDING]:
             if not isinstance(req, dict):
                 continue
-            description = req.get("description", {})
-            if isinstance(description, dict):
-                safe_desc = {_safe_text(k, 64): _safe_text(v, 500)
-                             for k, v in description.items()}
-            else:
-                safe_desc = {"summary": _safe_text(description, 500)}
-            out.append({
-                "request_id": _safe_text(req.get("request_id"), 64),
-                "description": safe_desc,
-                "requested_at": round(float(req.get("requested_at", 0.0)), 3),
-            })
+            try:
+                description = req.get("description", {})
+                if isinstance(description, dict):
+                    safe_desc = {_safe_text(k, 64): _safe_text(v, 500)
+                                 for k, v in description.items()}
+                else:
+                    safe_desc = {"summary": _safe_text(description, 500)}
+                out.append({
+                    "request_id": _safe_text(req.get("request_id"), 64),
+                    "description": safe_desc,
+                    "requested_at": round(float(req.get("requested_at", 0.0)), 3),
+                })
+            except (TypeError, ValueError):
+                # One malformed broker entry must not 500 the whole listing
+                # (or drop the handler thread's connection).
+                logger.warning("skipping malformed approval entry: %s",
+                               type(req).__name__)
+                continue
         return 200, {
             "approvals": out,
             "count": len(out),
@@ -631,13 +712,20 @@ class ShugoCoreServer:
             return 500, {"error": f"status failed: {type(exc).__name__}"}
 
     def handle_task(self, body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
-        """POST /api/v1/task -> engine.execute_task (policy-gated)."""
+        """POST /api/v1/task -> engine.execute_task (policy-gated).
+
+        ``params`` is deep-capped at the boundary (nested strings sanitized
+        and length-capped, containers bounded in depth/breadth) so a hostile
+        caller cannot smuggle an unbounded blob or control characters past
+        the ``type``/``content`` caps into the policy/execution pipeline;
+        ``execute_task`` still re-gates everything downstream.
+        """
         if not isinstance(body, dict) or not body:
             return 400, {"error": "task body required"}
         task = {
             "type": _safe_text(body.get("type", "user"), 64),
-            "params": body.get("params")
-            if isinstance(body.get("params"), dict) else {},
+            "params": _safe_value(body.get("params")
+                                  if isinstance(body.get("params"), dict) else {}),
         }
         if body.get("content") is not None:
             task["content"] = _safe_text(body.get("content"))
@@ -674,10 +762,18 @@ class ShugoCoreHandler(http_server.BaseHTTPRequestHandler):
         if core is None:
             _send_json(self, 503, {"error": "server not initialized"})
             return
+        # Normalize once: strip query/fragment, percent-decode, collapse a
+        # trailing slash. Exact-match routing below then guarantees
+        # ``/evil/health`` or ``/evil/api/tags`` never hit real handlers,
+        # while ``/health?x=1`` still serves liveness probes.
+        norm_path = _normalize_request_path(path)
         # /health stays open for liveness probes; every other route is subject
         # to the per-client rate limit and (when configured) bearer auth.
-        route = core.route_name(method, path)
-        if not path.endswith("/health"):
+        # Auth/rate-limit run before the existence check so unauthenticated
+        # probes cannot distinguish "unknown path" (404) from "known but
+        # unauthorized" (401) -- no route oracle for scanners.
+        route = core.route_name(method, norm_path)
+        if norm_path != "/health":
             client_ip = self.client_address[0] if self.client_address else "unknown"
             if not core.allow_request(client_ip):
                 core.record(route, 429)
@@ -689,34 +785,40 @@ class ShugoCoreHandler(http_server.BaseHTTPRequestHandler):
                 return
         started = time.monotonic()
         status, payload = 404, {"error": "not found"}
-        if path.endswith("/health") and method == "GET":
+        if norm_path == "/health" and method == "GET":
             status, payload = core.handle_health()
-        elif path.endswith("/api/tags") and method == "GET":
+        elif norm_path == "/api/tags" and method == "GET":
             status, payload = core.handle_tags()
-        elif path.endswith("/api/generate") and method == "POST":
+        elif norm_path == "/api/generate" and method == "POST":
             status, payload = core.handle_generate(_read_json_body(self))
-        elif path.endswith("/api/chat") and method == "POST":
+        elif norm_path == "/api/chat" and method == "POST":
             status, payload = core.handle_chat(_read_json_body(self))
-        elif path.endswith("/api/v1/status") and method == "GET":
+        elif norm_path == "/api/v1/status" and method == "GET":
             status, payload = core.handle_status()
-        elif path.endswith("/api/v1/activity") and method == "GET":
+        elif norm_path == "/api/v1/activity" and method == "GET":
             status, payload = core.handle_activity()
-        elif path.endswith("/api/v1/uptime") and method == "GET":
+        elif norm_path == "/api/v1/uptime" and method == "GET":
             status, payload = core.handle_uptime()
-        elif path.endswith("/api/v1/approvals") and method == "GET":
+        elif norm_path == "/api/v1/approvals" and method == "GET":
             status, payload = core.handle_approvals()
-        elif path.endswith("/api/v1/fleet") and method == "GET":
+        elif norm_path == "/api/v1/fleet" and method == "GET":
             status, payload = core.handle_fleet()
-        elif path.endswith("/api/v1/sensors") and method == "GET":
+        elif norm_path == "/api/v1/sensors" and method == "GET":
             status, payload = core.handle_sensors()
-        elif path.endswith("/approve") and method == "POST":
+        elif method == "POST" and norm_path.endswith("/approve"):
             # Path shape: /api/v1/approvals/<id>/approve
-            rid = path.rsplit("/", 2)[-2]
-            status, payload = core.resolve_approval(rid, approved=True)
-        elif path.endswith("/deny") and method == "POST":
-            rid = path.rsplit("/", 2)[-2]
-            status, payload = core.resolve_approval(rid, approved=False)
-        elif path.endswith("/api/v1/task") and method == "POST":
+            rid = _approval_request_id(norm_path)
+            if rid is None:
+                status, payload = 404, {"error": "not found"}
+            else:
+                status, payload = core.resolve_approval(rid, approved=True)
+        elif method == "POST" and norm_path.endswith("/deny"):
+            rid = _approval_request_id(norm_path)
+            if rid is None:
+                status, payload = 404, {"error": "not found"}
+            else:
+                status, payload = core.resolve_approval(rid, approved=False)
+        elif norm_path == "/api/v1/task" and method == "POST":
             status, payload = core.handle_task(_read_json_body(self))
         core.record(route, status, (time.monotonic() - started) * 1000.0)
 

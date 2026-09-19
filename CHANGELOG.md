@@ -4,6 +4,37 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.30.4] - 2026-09-18
+
+### CSFA hardening: bandit B608, remote audit, fleet auth, embedders, backend pools, pg memory, approvals console, Termux/NPU/memory-policy infra, server hardening
+
+- **Bucket A (safety-critical)**: bandit B608 fix — all `pg_memory.py`
+  identifier interpolation uses `psycopg2.sql.Identifier`; remote audit
+  log shipping (`LogSink` + `HTTPSAuditSink` + `FileAuditSink`, bounded
+  queue/retries/flush, sink failure can never block a decision,
+  `SHUGOCORE_AUDIT_HTTPS_URL` / `SHUGOCORE_AUDIT_FILE_PATH` env wiring);
+  Android bearer-token pairing for the desktop API.
+- **Bucket B (CSFA loop gaps)**: pluggable embedding backends
+  (`HashingEmbedder` default, byte-identical to legacy vectors;
+  optional `SentenceTransformerEmbedder`); per-model `BackendPool`
+  with health routing + circuit breaker; PostgreSQL/pgvector env
+  switch (`SHUGOCORE_MEMORY_DSN`); Tier-2 entity/relation graph
+  helpers (`link_entities`, bounded `query_subgraph`).
+- **Bucket C (operator surfaces)**: approvals console, fleet endpoint,
+  bounded sensor live-stream; `ApprovalBroker` late-verdict race fix
+  (first resolution wins).
+- **Bucket D (long-horizon infra)**: Termux llama-server launcher, NPU
+  bring-up rungs (Hexagon QNN / MediaTek APU probing), per-agent
+  memory policies (`shared_rw` / `shared_read` / `isolated`), CI
+  trusted (OIDC) PyPI publishing + SPDX SBOM + Sigstore signing.
+- **Server hardening**: strict loopback check (numeric IPv4 in
+  127.0.0.0/8 via `ipaddress` — lookalike DNS like `127.evil.com`
+  no longer counts); prefix-route auth-first (suffix tricks 404, never
+  reach real handlers); query-tolerant routing; approvals/fleet
+  malformed-payload tolerance.
+- **Verified**: full suite **1,105 passing**; ruff clean;
+  bandit-high clean; CSFA host soak **STABLE** (118 ticks, 6/6 checks).
+
 ## [1.30.3] - 2026-09-15
 
 ### Desktop activity API, CSFA soak tools, bounded model scoring

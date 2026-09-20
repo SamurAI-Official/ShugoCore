@@ -433,6 +433,60 @@ attach_network_fallbacks(engine.fallbacks)
 | `memory_sync_conflict_storm` | safe_state | Excessive sync conflicts |
 | `audit_chain_broken` | halt | Audit integrity failure |
 
+### Link-cycle correlation (`scripts/netwatch.py`)
+
+The triggers above only exist while the node runtime is running, so an outage
+that happens between runs leaves no ShugoCore-side trace to correlate. The
+stdlib-only `scripts/netwatch.py` sampler records a 1 Hz link timeline so a
+suspected "network cycle" (a gateway re-publishing its RA/RDNSS/DHCPv6 data, a
+NAT64/DNS64 re-provision, a relay or VPN drop, or a software-update retry
+storm) is measured instead of guessed at:
+
+```bash
+# sample the local engine + Apple's update host for an hour
+python3 scripts/netwatch.py --jsonl /tmp/netwatch.jsonl \
+    --dns-name swscan.apple.com --duration 3600
+
+# what the node saw, second by second
+python3 -c "import json; print([r['payload']['state'] for r in \
+    map(json.loads, open('/tmp/netwatch.jsonl')) if r['type'] == 'netwatch_tick'])"
+
+# what the OS said at the same second
+grep -n 'NSURLErrorDomain Code=-1009' /var/log/install.log
+```
+
+Every tick probes DNS (`--dns-name`), the node's `host:port` (`--target`), one
+or more numeric endpoints (`--internet`, comma-separated) and optionally the
+gateway (`--gateway-port`). States, in precedence order:
+
+| State | Meaning | Record emitted |
+|---|---|---|
+| `no_route` | No local address / no default route -- the literal cycle | `network_cycle` |
+| `transport_exhausted` | Nothing on any configured endpoint answered | `network_transport_exhausted` (`pause`) |
+| `dns_failure` | Resolution failed while the path still answered | `network_cycle` |
+| `degraded` | All probes answered, one exceeded `--slow-ms` | `netwatch_tick` |
+| `ok` | Everything answered promptly | `netwatch_tick` |
+
+Endpoints are judged `open`, `refused` or `unreachable`, and **a refusal counts
+as the path working** -- a reset means the packet arrived and something
+answered, so a node whose `--target` port is simply closed is not reported as
+an outage. The `--internet` default therefore spans two operators, because
+carrier/CGNAT gateways routinely reset TCP to addresses they intercept and a
+single blocked address must not look like a total outage. A loopback `--target`
+is recorded as `target_authoritative: false` and is never treated as evidence
+about the link.
+
+`dns_failure` is the signature of a gateway re-publishing its RA/RDNSS/DHCPv6
+data (and of NAT64 re-provisioning): established flows keep working while every
+*new* connection fails, which is why a download or upgrade job notices first
+while the rest of the machine looks fine.
+
+Records reuse the node audit chain's field names (`timestamp` / `type` /
+`payload` / `seq`) so the timeline lines up with `node_audit.jsonl`, but they
+are **plain JSONL**: unlike `audit.py` records they are not hash-chained and
+must not be treated as tamper-evident. Exit status is `1` when a cycle was
+seen, so the sampler can gate a soak run or a cron job.
+
 ### Integration architecture
 
 The `shugonet_bridge.py` module follows the same pattern as `robotics_handler.py`
@@ -628,7 +682,7 @@ for fact in candidates:
 ## Testing
 
 ```bash
-python -m unittest discover -s tests -v     # 1008 tests, no native deps
+python -m unittest discover -s tests -v     # 1188 tests, no native deps
 python -m compileall -q .                   # byte-compile every module
 ruff check .                                # syntax errors + undefined names
 bandit -q -r . -x ./.venv,./.llama_build,./platforms,./dist,./build,./tests -lll

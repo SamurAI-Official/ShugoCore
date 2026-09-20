@@ -17,6 +17,24 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional
 
+# socketserver.TCPServer defaults request_queue_size to 5, which is smaller
+# than the concurrency the stress tests drive at this server. macOS *resets*
+# a connection whose SYN arrives while the accept queue is full, so a burst of
+# 16 simultaneous clients loses ~half of them to ECONNRESET before the server
+# ever sees the request (Linux instead drops the SYN and the client's
+# retransmit succeeds, which is why the failure only reproduces on a Mac).
+# The backlog is a property of the listen socket, not of the behaviour under
+# test, so it is raised here instead of weakening the assertion: measured 16
+# simultaneous connects -> 8-9 resets at the default 5, 0 resets at 128.
+_LISTEN_BACKLOG = 128
+
+
+class _FakeHTTPServer(ThreadingHTTPServer):
+    """Threaded server whose accept queue matches the load under test."""
+
+    daemon_threads = True
+    request_queue_size = _LISTEN_BACKLOG
+
 
 class FakeLlamaServer:
     def __init__(self, host="127.0.0.1", port=0, mode="ok", status=500,
@@ -36,7 +54,7 @@ class FakeLlamaServer:
         self._lock = threading.Lock()
 
     def start(self):
-        self._server = ThreadingHTTPServer((self.host, self.port), self._make_handler())
+        self._server = _FakeHTTPServer((self.host, self.port), self._make_handler())
         self.port = self._server.server_address[1]
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()

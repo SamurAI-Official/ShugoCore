@@ -25,11 +25,29 @@ from subsystems.intent import IntentType, UserIntent
 # What a clarification answer looks like per open-category. Each entry is a
 # list of (regex, slot_name, value_transform). value_transform is "num" for
 # ints, "unit" for duration units, else None (keep string group 1).
+#
+# v1.30.5: number WORDS are accepted too. The timer handler has understood
+# "five minutes" since v1.28.1, but the clarification resolver only matched
+# digits — so the agent asked "Timer for how long?" and then silently dropped a
+# spoken "five minutes" (verified on-device). Both forms must resolve.
+_NUMBER_WORDS = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+    "twelve": 12, "fifteen": 15, "twenty": 20, "thirty": 30,
+}
+
+_DURATION_WORD_RE = (
+    r"\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve"
+    r"|fifteen|twenty|thirty|a|an)\s+(minute|min|second|sec|hour|hr)s?\b"
+)
+
 _CLARIFICATION_PATTERNS: Dict[str, List[Tuple[str, str, Optional[str]]]] = {
     "timer_duration": [
         (r"(\d+)\s*(minute|min|second|sec|hour|hr)s?\b", "duration_value", "num"),
         (r"(\d+)\s*(minute|min|second|sec|hour|hr)s?\b", "duration_unit", "unit"),
         (r"(?:for|about)\s+(\d+)", "duration_value", "num"),
+        (_DURATION_WORD_RE, "duration_value", "word_num"),
+        (_DURATION_WORD_RE, "duration_unit", "unit"),
     ],
 }
 
@@ -44,8 +62,14 @@ _NEW_INTENT_WORDS = (
 class DialogueState:
     """Holds pending clarifications and recent entity context."""
 
+    # v1.30.5: the window is 120 s, matching the interaction bus's answer TTL.
+    # Measured on device, the agent's own tick can delay an utterance by 20-90 s
+    # (the conversational fast path waits behind the loop's model decision), so
+    # a 90 s window expired before a spoken answer was even parsed — the agent
+    # asked "Timer for how long?", heard "five minutes", and replied
+    # "I didn't catch that". `looks_like_answer` still rejects a fresh intent.
     def __init__(self, max_entities: int = 5,
-                 clarification_timeout_secs: float = 90.0):
+                 clarification_timeout_secs: float = 120.0):
         import time
         self.pending_category: Optional[str] = None
         self.pending_transcript: str = ""
@@ -110,6 +134,12 @@ class DialogueState:
                 continue
             if transform == "num":
                 merged[slot] = int(m.group(1))
+            elif transform == "word_num":
+                # "five minutes" -> 5, "a minute" -> 1. The timer handler
+                # accepts word forms (v1.28.1), so the resolver must too.
+                word = m.group(1).lower()
+                merged[slot] = (1 if word in ("a", "an")
+                                else _NUMBER_WORDS.get(word, 1))
             elif transform == "unit":
                 # "5 minutes" -> group(2) is the unit word.
                 merged[slot] = (m.group(2) if m.lastindex and m.lastindex >= 2

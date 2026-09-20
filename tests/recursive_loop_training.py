@@ -5,7 +5,7 @@ Recursive loop training for ShugoCore on Android devices
 
 Runs repeated full verification rounds against the live runtime + OS:
 
-    force-stop -> OS cold-start -> version check -> 11-phase harness ->
+    force-stop -> OS cold-start -> version check -> 14-phase harness ->
     liveness check -> crash/ANR scan -> (retry on failure) -> next round
 
 Aggregation: per-phase pass rates across rounds, flaky-phase detection, and
@@ -39,6 +39,12 @@ ALL_PHASES = [
     "nrr_camera_render",
     "personality_model_genesis",
     "personality_growth_log",
+    # v1.30.5: the closed-conversation-loop phases (routing must not depend on
+    # a question's phrasing, measurements are never invented, and the agent's
+    # own questions get answered).
+    "time_tool_query",
+    "measurement_honesty",
+    "ask_user_round_trip",
 ]
 
 
@@ -106,7 +112,7 @@ def crash_scan(serial):
 
 # Sanity cap for the smoke-harness subprocess. The fail-fast device check
 # in train_device already rejects an unreachable serial, so this only
-# bounds a reachable-but-slow run: the full 11-phase set with a measured
+# bounds a reachable-but-slow run: the full 14-phase set with a measured
 # ~50s decision cadence needs up to ~15+ min (personality_growth_log alone
 # is ~430s); 1800s leaves margin without resurrecting the old 2h sit.
 HARNESS_TIMEOUT = 1800
@@ -194,7 +200,7 @@ def post_round_health(serial, log):
 
 def run_round(serial, ridx, total_rounds, phases, expect_name, expect_code,
               log):
-    """One recursive round: cold-stop -> full 11-phase harness -> health."""
+    """One recursive round: cold-stop -> full 14-phase harness -> health."""
     log.append(f"[ROUND {ridx}/{total_rounds}] device {serial}")
     if not cold_start_and_verify(serial, expect_name, expect_code, log):
         return False, []
@@ -299,7 +305,7 @@ def train_device(serial, rounds, phases, max_retries, cooldown, log):
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description="Recursive loop training: repeated cold-start + full "
-                    "11-phase verification rounds per device.")
+                    "14-phase verification rounds per device.")
     ap.add_argument("--device", action="append", required=True,
                     help="adb serial (repeat for multiple devices)")
     ap.add_argument("--rounds", type=int, default=3,

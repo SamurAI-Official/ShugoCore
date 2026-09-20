@@ -26,6 +26,7 @@ def build_conversational_prompt(
     history_text: str = "",
     facts: Optional[List[str]] = None,
     perception: Optional[Dict[str, Any]] = None,
+    answering: Optional[str] = None,
 ) -> str:
     """Build a full conversational prompt.
 
@@ -35,6 +36,10 @@ def build_conversational_prompt(
         history_text: Formatted conversation history ('ROLE: text' lines).
         facts: Relevant memory facts to inject.
         perception: Dict with person_present, face_count, gaze_direction, etc.
+        answering: The question the agent asked and this utterance answers
+            (v1.30.5). Verified against the pairing TTL by the caller before it
+            is passed in, so the model is told about a real question/answer
+            round trip — never a guess.
 
     Returns:
         Complete prompt string for the model.
@@ -77,7 +82,11 @@ def build_conversational_prompt(
         sections.append(f"Recent conversation:\n{history_text}")
 
     # 5. The user's current message
-    sections.append(f'The person just said to you: "{transcript}"')
+    if answering:
+        sections.append(f'You asked them: "{answering}"')
+        sections.append(f'They answered: "{transcript}"')
+    else:
+        sections.append(f'The person just said to you: "{transcript}"')
 
     # 6. Response instruction
     sections.append(

@@ -690,6 +690,74 @@ class NewSurfacesTestCase(unittest.TestCase):
         self.assertEqual(body["stream"][0]["mesh_peer_count"], 1)
         self.assertEqual(second[1]["count"], 2)  # two polls -> two samples
 
+class TestListenBacklog(unittest.TestCase):
+    """The accept queue must suit a fleet, not a demo (v1.30.5).
+
+    macOS RESETS a SYN that arrives while the accept queue is full (Linux drops
+    it and the client's retry succeeds), so socketserver's default of 5 loses
+    concurrent clients before the handler — or even the rate limiter — runs.
+    Phase 0 measured 8-9 of 16 simultaneous loopback connects being reset at the
+    default and none at 128.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.port = _free_port()
+        cls.engine = build_engine(
+            models=[{"id": "test-model", "type": "text",
+                     "backend": {"type": "stub"}}],
+            memory_db_path=":memory:",
+            audit_path=os.path.join(cls._tmp.name, "audit.jsonl"),
+        )
+        cls.server = build_server(
+            engine=cls.engine, backend=_build_backend("stub"),
+            model="test-model", host="127.0.0.1", port=cls.port,
+        )
+        cls.thread = threading.Thread(
+            target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        time.sleep(0.2)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+        cls._tmp.cleanup()
+
+    def test_backlog_is_raised(self):
+        self.assertGreaterEqual(self.server.request_queue_size, 64)
+        self.assertTrue(self.server.daemon_threads)
+
+    def test_sixteen_simultaneous_clients_all_connect(self):
+        barrier = threading.Barrier(16)
+        statuses = []
+        errors = []
+        lock = threading.Lock()
+
+        def one():
+            barrier.wait()
+            try:
+                resp = requests.get(f"http://127.0.0.1:{self.port}/health",
+                                    timeout=10)
+                with lock:
+                    statuses.append(resp.status_code)
+            except Exception as exc:  # noqa: BLE001 - reported, not raised
+                with lock:
+                    errors.append(type(exc).__name__)
+
+        workers = [threading.Thread(target=one) for _ in range(16)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=20)
+        self.assertEqual(errors, [], f"connection errors: {errors}")
+        self.assertEqual(len(statuses), 16)
+        self.assertEqual(set(statuses), {200})
+
+
+
 
 if __name__ == "__main__":
     unittest.main()

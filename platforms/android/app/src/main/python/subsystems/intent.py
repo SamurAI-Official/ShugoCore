@@ -82,6 +82,28 @@ class IntentParser:
         r"(thank|thanks|thx)",
     ]
 
+    # v1.30.5: toolable questions. A question ABOUT the clock, date, battery,
+    # weather, temperature or the device's own sensors has a deterministic
+    # answer path, so the phrasing must not decide whether a tool is reached.
+    # Ordered by specificity — first match wins. Only consulted for
+    # question/chitchat intents, never for commands (so "remember the time of
+    # the meeting" stays a memory command).
+    _TOOL_TOPICS = [
+        (r"(temperature|thermometer|how\s+(hot|cold)\b"
+         r"|(is\s+it|it'?s)\s+(hot|cold|warm)\b"
+         r"|(hot|cold)\s+(outside|in\s+here|in\s+this\s+room)\b"
+         r"|degrees?\b)", "temperature"),
+        (r"(weather|forecast|\brain\b|\bsnow\b)", "weather"),
+        (r"(what'?s\s+the\s+time|what\s+time\s+is\s+it|tell\s+me\s+the\s+time"
+         r"|have\s+you\s+got\s+the\s+time|got\s+the\s+time|current\s+time"
+         r"|\bthe\s+time\b|\bclock\b)", "time"),
+        (r"(what'?s\s+the\s+date|what\s+is\s+the\s+date|what'?s\s+today'?s\s+date"
+         r"|what\s+day\s+is\s+it|what'?s\s+the\s+day|today'?s\s+date)", "date"),
+        (r"(battery|charge\s+level|how\s+much\s+(power|charge))", "battery"),
+        (r"(\bsensors?\b|telemetry|\breadings?\b|accelerometer|gyroscope"
+         r"|\bimu\b)", "sensors"),
+    ]
+
     def __init__(self):
         self._greeting_re = [re.compile(p, re.IGNORECASE) for p in self._GREETING_PATTERNS]
         self._farewell_re = [re.compile(p, re.IGNORECASE) for p in self._FAREWELL_PATTERNS]
@@ -122,6 +144,24 @@ class IntentParser:
 
     def _matches_any(self, patterns: list, text: str) -> bool:
         return any(p.search(text) for p in patterns)
+
+    def tool_topic(self, transcript: str) -> Optional[str]:
+        """The deterministic answer topic for a toolable question, or None.
+
+        A question about the clock, date, battery, weather, temperature or the
+        device's sensors is answered by a tool (or by an honest "I can't
+        measure that"), never by the language model — so the caller routes any
+        transcript this returns a topic for down the command path. The length
+        bound keeps longer commentary that merely mentions a keyword from being
+        hijacked into a tool call.
+        """
+        text = str(transcript or "").strip().lower()
+        if not text or len(text) > 120:
+            return None
+        for pattern, topic in self._TOOL_TOPICS:
+            if re.search(pattern, text):
+                return topic
+        return None
 
     def _extract_command_entities(self, text: str) -> Dict[str, Any]:
         """Extract entities from a command (time, target, etc.)."""

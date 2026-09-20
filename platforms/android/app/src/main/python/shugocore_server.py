@@ -902,6 +902,23 @@ def build_engine(models: Optional[List[Dict[str, Any]]] = None,
     )
 
 
+# socketserver.TCPServer defaults request_queue_size to 5, which is smaller than
+# the concurrency the fleet surfaces invite (an approvals console plus N paired
+# phones calling /api/v1/fleet and /api/v1/status). On macOS a SYN that arrives
+# while the accept queue is full is RESET, so a client sees ECONNRESET before
+# the handler — or even the rate limiter — ever runs; Linux drops the SYN and
+# the retry succeeds, which is why this only bites on a Mac. Measured: 16
+# simultaneous loopback connects -> 8-9 resets at the default 5, 0 at 128.
+_LISTEN_BACKLOG = 128
+
+
+class _BoundHTTPServer(http_server.ThreadingHTTPServer):
+    """Threaded server whose accept queue matches a fleet, not a demo."""
+
+    daemon_threads = True
+    request_queue_size = _LISTEN_BACKLOG
+
+
 def build_server(engine=None, backend=None, model: str = "qwen3.5:latest",
                  host: str = "127.0.0.1",
                  port: int = 11434,
@@ -922,7 +939,7 @@ def build_server(engine=None, backend=None, model: str = "qwen3.5:latest",
     class _BoundHandler(ShugoCoreHandler):
         pass
 
-    server = http_server.ThreadingHTTPServer((host, port), _BoundHandler)
+    server = _BoundHTTPServer((host, port), _BoundHandler)
     server.core = core  # type: ignore[attr-defined]
     return server
 

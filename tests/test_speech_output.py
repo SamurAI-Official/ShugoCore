@@ -7,6 +7,7 @@ honest not_implemented without one, tampered verdicts refused), the
 AgentResponse half of the interaction contract (validated, bounded, truth
 in stats), and the agent's speak_test path through the real gate.
 """
+import json
 import os
 import sys
 import tempfile
@@ -362,6 +363,118 @@ class TestSpeechDialectPrompt(unittest.TestCase):
         prompt = _build_decision_prompt(
             "test", self.agent.engine.available_action_types())
         self.assertIn("Shugo", prompt)
+
+
+class TestAskUserLoop(unittest.TestCase):
+    """v1.30.5: ask_user is a closed loop, not a fire-and-forget question.
+
+    Phase 0 measured the old behaviour on real hardware: the question was
+    spoken, the answer was paired as metadata and then ignored, expiry was
+    silent, and a turn whose model decision was unusable produced no speech at
+    all (the user heard nothing).
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="shugocore_ask_loop_")
+        self.agent = create_agent(device_caps="Exynos-1380",
+                                  api_url="http://127.0.0.1:11434",
+                                  data_dir=self.tmp)
+        self.speaker = _FakeSpeaker()
+        self.agent.register_speak_listener(self.speaker)
+
+    def tearDown(self):
+        try:
+            self.agent.cleanup()
+        except Exception:
+            pass
+
+    def _ask(self, question="What would you like to know today?"):
+        return self.agent._execute_ask_user(
+            {"action_type": "ask_user", "params": {"question": question},
+             "confidence": 0.9, "proposal_source": "test"})
+
+    def _handle(self, text):
+        self.agent._handle_conversational_input({"transcript": text,
+                                                "new_speech": True})
+
+    def _events(self):
+        return [e.get("type") for e in self.agent.memory.tier1._events]
+
+    def _stub_model(self, output, capture=None):
+        def fake(model_name, prompt, backend=None):
+            if capture is not None:
+                capture.append(prompt)
+            if isinstance(output, Exception):
+                raise output
+            return output
+
+        self.agent.engine.subconscious.get_conversational_output = fake
+
+    def test_result_reports_it_is_waiting_for_an_answer(self):
+        result = self._ask()
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(result["awaiting_answer"])
+        self.assertGreater(float(result["answer_ttl_s"]), 0.0)
+        self.assertIsNotNone(self.agent._open_question)
+
+    def test_answer_is_verified_and_journalled(self):
+        self._ask()
+        question = self.agent._take_open_question("what's the time")
+        self.assertEqual(question, "What would you like to know today?")
+        self.assertIn("question_answered", self._events())
+        self.assertIsNone(self.agent._open_question)
+
+    def test_answered_question_gets_a_real_answer(self):
+        self._ask()
+        self.speaker.spoken.clear()
+        self._handle("what's the time")
+        self.assertTrue(self.speaker.spoken)
+        self.assertIn("It's", self.speaker.spoken[-1])
+
+    def test_toolable_answer_never_reaches_the_model(self):
+        prompts = []
+        self._stub_model(json.dumps({"action_type": "speak",
+                                     "params": {"text": "sure"},
+                                     "confidence": 0.9}), prompts)
+        self._ask()
+        self._handle("what's the temperature")
+        self.assertEqual(prompts, [])
+
+    def test_expired_answer_is_recorded_not_silent(self):
+        self._ask()
+        self.agent._open_question["ts"] -= 500
+        self.assertIsNone(self.agent._take_open_question("hello there"))
+        self.assertIn("question_expired", self._events())
+
+    def test_tick_expiry_records_the_question(self):
+        self._ask()
+        self.agent._open_question["ts"] -= 500
+        self.agent._expire_open_question()
+        self.assertIsNone(self.agent._open_question)
+        self.assertIn("question_expired", self._events())
+
+    def test_unusable_decision_still_speaks(self):
+        self._stub_model(json.dumps({"action_type": None}))
+        self.speaker.spoken.clear()
+        self._handle("tell me a story about the sea")
+        self.assertEqual(len(self.speaker.spoken), 1)
+
+    def test_model_crash_still_speaks(self):
+        self._stub_model(RuntimeError("boom"))
+        self.speaker.spoken.clear()
+        self._handle("and what about a poem")
+        self.assertEqual(len(self.speaker.spoken), 1)
+
+    def test_prompt_carries_the_verified_question(self):
+        prompts = []
+        self._stub_model(json.dumps({"action_type": "speak",
+                                     "params": {"text": "Noted."},
+                                     "confidence": 0.9}), prompts)
+        self._ask("Where should I put it?")
+        self._handle("on the shelf by the window")
+        self.assertTrue(prompts)
+        self.assertIn("You asked them", prompts[-1])
+        self.assertIn("Where should I put it?", prompts[-1])
 
 
 if __name__ == "__main__":

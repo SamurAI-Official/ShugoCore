@@ -4,6 +4,73 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.30.5] - 2026-09-20
+
+### Closed conversational loop: toolable-question routing, honest measurements, ask_user answers
+
+Measured on the A51 (SM-S515DL) + Tab S9 FE (SM-X518U): asking the agent basic
+things (*what time is it*, *what is the temperature*) produced no proper tool use
+and often no response at all. Three separable defects:
+
+- **A question's phrasing decided whether a tool was reached.** Only the literal
+  string `what time is it` was promoted to a command; `what's the time`,
+  `do you have the time`, `current time`, `what's the date`, `what day is it`,
+  `what is the temperature`, `how hot is it`, `what's my battery` all stayed
+  QUESTIONs and were answered by the language model — which invented readings
+  (`"The temperature outside is currently 20 degrees Celsius."`, an older window
+  even a fabricated city). `tell me the time` mis-routed to `search`
+  ("I can search for that. Let me think about it.") and `get_date` /
+  `check_sensors` were unreachable from any transcript. `handle_time` also
+  executed the `get_time` tool twice per query.
+- **A turn could end with no spoken outcome at all.** An injected `what's the
+  time` was recorded as heard and then produced no tool answer, no model speak
+  and no fallback line — silence.
+- **`ask_user` was fire-and-forget.** `_execute_ask_user` returned
+  `{status, asked, delivered}`; the answer was paired on the bus as metadata
+  only and never answered; expiry at `_ANSWER_TTL_S` was silent;
+  `ConversationManager.on_speak_end` had zero callers so `ConversationState.
+  WAITING` was unreachable; and the one existing loop (timer clarification) only
+  accepted digits — on device `five minutes` produced *"I didn't catch that"*
+  while `5 minutes` set the timer.
+
+Fixes: `IntentParser.tool_topic()` + `_categorize(verb, transcript, tool_topic)`
+make routing phrasing-independent (new `handle_date` / `handle_temperature` /
+`handle_sensors`, single-call `handle_time`); `get_temperature` reports a real
+reading (ambient vs device/CPU framed, `<= 0` = no reading) or refuses honestly;
+the agent re-routes toolable questions before the model, guarantees exactly one
+spoken outcome per turn (blocked/empty/unusable/crashing decisions degrade to an
+honest line), suppresses model-supplied measurement claims, and closes the
+ask_user loop (verified answer, `question_answered` / `question_expired`
+journalled, tick-time expiry, verified question passed to the prompt); the
+clarification resolver accepts number words; unknown commands now fall through
+to the conversational path instead of "I can't do that yet, but I'm learning!";
+`handle_search` no longer promises a backend that does not exist.
+
+Tests: `tests/test_tool_routing.py` (21 — phrasing matrix, parser↔router
+consistency, temperature honesty, no-fabrication guard, word-number clarify) and
+`TestAskUserLoop` in `tests/test_speech_output.py` (9), plus the root↔bundled
+drift guard now recurses into subpackages. `DialogueState`'s clarification window
+is now 120 s, matching the interaction bus's answer TTL — at 90 s a spoken answer
+could be parsed after it expired, because the conversational fast path waits
+behind the loop's own model decision (20-90 s measured).
+
+- **Release gate** — three new device phases: `time_tool_query` (a RE-WORDED
+  clock question must reach the tool), `measurement_honesty` (a temperature
+  question is answered by a tool or refused, never an invented number) and
+  `ask_user_round_trip` (the agent's own question, detected via the bus's
+  `pending_question`, gets an answered reply). All three pass on hardware. Also
+  fixed two harness bugs the phases exposed: `measure_decision_cadence` matched
+  only dotted timestamps (`logcat -v brief` has no prefix and the engine writes
+  `15:04:49,311`), so it always returned its 50 s floor — the Tab now measures a
+  real 21.8 s cadence; and a bounded warm-up plus `await_conversation_idle` stop
+  a slow node failing phases for backlog rather than behaviour. The run now also
+  prints the device thermal status (the A51 hit status 4/critical with decisions
+  ~100 s apart — a phase failure there is thermal, not behavioural).
+- **`shugocore_server.py`** — `build_server` binds `_BoundHTTPServer`
+  (`request_queue_size = 128`) instead of socketserver's default 5: macOS resets
+  a SYN that arrives while the accept queue is full, before the handler or the
+  rate limiter runs, and the fleet/approvals surfaces invite concurrent clients.
+
 ## [1.30.4] - 2026-09-18
 
 ### CSFA hardening: bandit B608, remote audit, fleet auth, embedders, backend pools, pg memory, approvals console, Termux/NPU/memory-policy infra, server hardening

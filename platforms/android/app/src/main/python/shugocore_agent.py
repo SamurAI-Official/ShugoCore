@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import re
 import threading
 import time
 import traceback
@@ -66,6 +67,22 @@ _BACKEND_ERROR_CLASSES = ("transport_error", "model_unavailable", "invalid_model
 
 _LOG_BUFFER_MAX = 300
 
+# v1.30.5: a measurement claim in model output. Toolable questions are routed
+# to a tool BEFORE the model is consulted, so any reading in the model's reply
+# is invented — and the device log shows exactly that happening ("The
+# temperature outside is currently 20 degrees Celsius"). Such a text is never
+# spoken; the honest refusal below is.
+_MEASUREMENT_CLAIM_RE = re.compile(
+    r"\b\d+(?:\.\d+)?\s*(?:degrees?|°)\b"
+    r"|\b(?:temperature|thermometer)\b[^.]{0,30}?\b\d+(?:\.\d+)?\b"
+    r"|\bbattery\b[^.]{0,20}?\b\d+\s*%"
+    r"|\b\d+\s*%\s*(?:battery|charge)\b",
+    re.IGNORECASE)
+
+_MEASUREMENT_REFUSAL = ("I can't measure that here — I have no weather "
+                        "service and no ambient sensor, so I won't guess a "
+                        "number.")
+
 
 class AndroidAgent:
     def __init__(self, device_caps: Optional[str] = None,
@@ -115,6 +132,11 @@ class AndroidAgent:
         # contract: observations flow in here; the engine only ever sees
         # them as task `context` data (import-guard enforced in tests).
         self.interaction = InteractionBus() if _HAS_INTERACTION else None
+        # v1.30.5: the open ask_user question (thin honest loop). While a
+        # question is open, the next utterance within the pairing TTL is
+        # verified as its answer, journalled, and answered; an unanswered
+        # question expires loudly instead of dangling.
+        self._open_question: Optional[Dict[str, Any]] = None
         # v1.20 attention verification layer (provider-side).
         self.attention = AttentionLayer() if _HAS_ATTENTION else None
         # Last-tick decision source for cycle-truth observability.
@@ -308,7 +330,8 @@ class AndroidAgent:
             try:
                 from subsystems import (IntentParser, CommandExecutor,
                                         MemoryManager, DialogueState)
-                from subsystems.command_router import default_handlers
+                from subsystems.command_router import (CommandResult,
+                                                       default_handlers)
                 from subsystems.tools import default_tools, TimerManager
 
                 self.intent_parser = IntentParser()
@@ -362,6 +385,15 @@ class AndroidAgent:
                 for name, handler in default_handlers(
                         self.tool_registry).items():
                     self.command_executor.register_handler(name, handler)
+                # v1.30.5: an unrecognised "command" is not a dead end. With no
+                # fallback registered the user heard "I can't do that yet, but
+                # I'm learning!"; an empty response lets the conversational
+                # path handle it instead (the command block only returns when a
+                # handler actually produced text).
+                self.command_executor.set_fallback(
+                    lambda intent: CommandResult(
+                        success=True, response="",
+                        action_taken="unhandled_command"))
                 # v1.30: fleet memory mesh tools. They resolve the ShugoNet
                 # runtime lazily, since _start_shugonet() runs after this.
                 self.tool_registry.register_handler(
@@ -931,6 +963,12 @@ class AndroidAgent:
         if self.interaction is not None:
             self.interaction.record_agent_response(AgentResponse(
                 type="speech", content=text, target="user"))
+        if self.conversation is not None:
+            # v1.30.5: a plain utterance is not a question, so it clears any
+            # WAITING state. The listener returns once the platform holds the
+            # text, so this is an approximation of "TTS finished" — an exact
+            # completion signal would need a Kotlin bridge callback.
+            self.conversation.on_speak_end(expects_answer=False)
         return {"status": "success", "spoken": text, "delivered": delivered}
 
     def _execute_ask_user(self, decision: Dict[str, Any]) -> Dict[str, Any]:
@@ -965,7 +1003,80 @@ class AndroidAgent:
         if self.memory is not None:
             self.memory.record_event(
                 "agent_question", {"question": text})
-        return {"status": "success", "asked": text, "delivered": delivered}
+        # v1.30.5: open the loop. The question is tracked by the AGENT (not
+        # merely paired on the bus as metadata), so the next utterance is
+        # verified as its answer within the TTL, journalled, and answered.
+        self._open_question = {"text": text, "ts": time.time()}
+        if self.conversation is not None:
+            self.conversation.on_speak_end(expects_answer=True)
+        return {"status": "success", "asked": text, "delivered": delivered,
+                "awaiting_answer": True, "answer_ttl_s": self._question_ttl_s()}
+
+    # -- v1.30.5 ask_user loop -------------------------------------------
+    def _question_ttl_s(self) -> float:
+        """Pairing window for an open question (mirrors the interaction bus)."""
+        try:
+            from human_interaction import _ANSWER_TTL_S
+            return float(_ANSWER_TTL_S)
+        except Exception:
+            return 120.0
+
+    def _note_question_event(self, kind: str, question: Dict[str, Any],
+                             answer: str, age: float) -> None:
+        """Journal a question outcome.
+
+        Metadata only, exactly like `_drain_conversation_events`: the words
+        stay in the bounded bus, the journal gets counts and the round trip.
+        """
+        if self.memory is None:
+            return
+        try:
+            self.memory.record_event(kind, {
+                "question_chars": len(str(question.get("text") or "")),
+                "answer_chars": len(str(answer or "")),
+                "round_trip_s": round(float(age), 2),
+            })
+        except Exception:
+            pass
+
+    def _take_open_question(self, transcript: str) -> Optional[str]:
+        """Verify + consume the open question for this utterance.
+
+        Returns the question text when this utterance is its (fresh) answer, so
+        the reply can be shaped as an answer to it. An expired question is
+        recorded as unanswered rather than being silently dropped; a stale
+        transcript that is clearly a new request is handled by the caller as a
+        normal utterance.
+        """
+        question = self._open_question
+        self._open_question = None
+        if question is None or not str(transcript or "").strip():
+            return None
+        age = time.time() - float(question.get("ts") or 0.0)
+        if age > self._question_ttl_s():
+            self._note_question_event("question_expired", question, transcript,
+                                      age)
+            self.log("AGENT", f"question expired after {age:.0f}s: "
+                              f"{str(question.get('text'))[:60]!r}",
+                     level="WARN")
+            return None
+        self._note_question_event("question_answered", question, transcript, age)
+        self.log("AGENT", f"question answered in {age:.1f}s: "
+                          f"{str(question.get('text'))[:60]!r}")
+        return str(question.get("text") or "")
+
+    def _expire_open_question(self) -> None:
+        """Tick hook: record a question that nobody ever answered."""
+        question = self._open_question
+        if question is None:
+            return
+        age = time.time() - float(question.get("ts") or 0.0)
+        if age <= self._question_ttl_s():
+            return
+        self._open_question = None
+        self._note_question_event("question_expired", question, "", age)
+        self.log("AGENT", f"question expired unanswered after {age:.0f}s: "
+                          f"{str(question.get('text'))[:60]!r}", level="WARN")
 
     def _drain_conversation_events(self) -> None:
         """v1.17 closed-loop Record: completed question/answer round trips
@@ -1029,10 +1140,23 @@ class AndroidAgent:
           3. record durable facts + topic (MemoryManager)
           4. command intents execute through real tools (retry + fallback)
           5. everything else -> personality-driven conversational prompt
+
+        v1.30.5 additions:
+          0.  verify + consume the answer to an open ask_user question
+          4b. route toolable questions (clock/date/battery/weather/temperature/
+              sensors) to their tool, so the model can never supply a reading
+          5b. guarantee exactly ONE spoken outcome — a blocked, empty or
+              unusable decision degrades to an honest line, never silence
         """
         transcript = observation.get("transcript", "").strip()
         if not transcript:
             return
+
+        # v1.30.5: is this utterance the answer to an open question? The bus
+        # pairs it as metadata; here it is verified against the TTL and
+        # journalled (question_answered / question_expired) before the reply is
+        # shaped as an answer to it.
+        answer_to = self._take_open_question(transcript)
 
         # Phase B: growth bookkeeping — every turn counts, explicit
         # feedback is captured as trait signals.
@@ -1092,12 +1216,7 @@ class AndroidAgent:
                 and self.user_memory is not None):
             answer = self._memory_question_answer(transcript)
             if answer:
-                # Mirror to the agent log (same headless-probe rationale as
-                # the command path above).
-                self.log("AGENT", f"say: {answer}")
-                self._speak_direct(answer)
-                if self.conversation is not None:
-                    self.conversation.on_speak_begin(answer)
+                self._speak_turn(answer)
                 self.log("AGENT", "memory recall (question path)")
                 return
 
@@ -1119,16 +1238,27 @@ class AndroidAgent:
                     self.dialogue.begin_clarification(
                         category, intent.transcript, intent.entities)
                 if result.response:
-                    # Speak the command result directly; ALSO in the agent log:
-                    # headless adb-driven probes assert on these log lines, and
-                    # TTS may be muted/absent on test devices (log still proves
-                    # the decision path executed).
-                    self.log("AGENT", f"say: {result.response}")
-                    self._speak_direct(result.response)
-                    if self.conversation is not None:
-                        self.conversation.on_speak_begin(result.response)
+                    # Speak the command result directly. _speak_turn brackets
+                    # the turn on the conversation state machine and still logs
+                    # "say:" for the headless adb probes.
+                    self._speak_turn(result.response)
                     self.log("AGENT", f"command: {result.action_taken}")
                     return
+
+        # v1.30.5: a question about the clock, date, battery, weather,
+        # temperature or the sensors has a deterministic answer. Route it to
+        # the tool path so the phrasing never decides whether a tool is
+        # reached — and so the language model can never supply a measurement.
+        if intent is not None and intent.intent_type.value in ("question",
+                                                              "chitchat"):
+            topic = None
+            try:
+                if self.intent_parser is not None:
+                    topic = self.intent_parser.tool_topic(transcript)
+            except Exception:
+                topic = None
+            if topic and self._answer_tool_question(topic, transcript):
+                return
 
         # Otherwise: personality-driven conversational response
         history_text = ""
@@ -1157,6 +1287,7 @@ class AndroidAgent:
             history_text=history_text,
             facts=facts,
             perception=perception,
+            answering=answer_to,
         )
 
         # Build the conversational task
@@ -1169,28 +1300,120 @@ class AndroidAgent:
         }
 
         try:
-            decision = self.engine.make_decision(task)
+            decision = self.engine.make_decision(task) or {}
             # Execute the decision directly (speak/ask_user)
             action_type = decision.get("action_type")
             if action_type == "speak":
-                result = self._execute_speak(decision)
-                spoken = decision.get("params", {}).get("text", "")
-                if self.conversation is not None and spoken:
-                    self.conversation.on_speak_begin(spoken)
-                self.log("AGENT", f"conversation: spoke -> {spoken[:80]!r}")
+                # v1.30.5: the model never supplies a measurement. A toolable
+                # question was already answered above, so a reading here can
+                # only have been invented.
+                spoken = self._guard_fabricated_measurement(
+                    self._decision_text(decision))
+                if not spoken:
+                    self._speak_fallback(transcript)
+                else:
+                    if spoken != self._decision_text(decision):
+                        decision = dict(
+                            decision,
+                            params=dict(decision.get("params") or {},
+                                        text=spoken))
+                    if self.conversation is not None:
+                        self.conversation.on_speak_begin(spoken)
+                    self._execute_speak(decision)
+                    self.log("AGENT", f"conversation: spoke -> {spoken[:80]!r}")
             elif action_type == "ask_user":
-                result = self._execute_ask_user(decision)
-                asked = decision.get("params", {}).get("question", "")
+                asked = self._decision_text(decision, "question")
                 if self.conversation is not None and asked:
                     self.conversation.on_speak_begin(asked)
+                self._execute_ask_user(decision)
                 self.log("AGENT", f"conversation: asked -> {asked[:80]!r}")
             else:
+                # v1.30.5: a blocked, empty or unexpected decision must still
+                # produce ONE honest spoken outcome instead of silence.
                 self.log("AGENT",
-                         f"conversation: unexpected action {action_type}",
-                         level="WARN")
+                         f"conversation: no usable action ({action_type!r}) "
+                         f"-> honest fallback", level="WARN")
+                self._speak_fallback(transcript)
         except Exception as exc:
             self.log("ERROR", f"conversation handling failed: {exc}",
                      level="ERROR")
+            # A crash must not leave the turn silent either.
+            self._speak_fallback(transcript)
+
+    def _decision_text(self, decision: Dict[str, Any],
+                       key: str = "text") -> str:
+        """Text of a speak/ask_user decision (params first, then top level)."""
+        params = decision.get("params") or {}
+        for candidate in (key, "text", "utterance", "question"):
+            value = params.get(candidate)
+            if value:
+                return str(value)
+        return str(decision.get("text") or "")
+
+    def _guard_fabricated_measurement(self, text: str) -> str:
+        """Replace a model-invented measurement with an honest refusal.
+
+        Toolable questions reach a tool before the model is consulted, so a
+        reading in the model's reply can only be invented. The device log
+        contains exactly that failure ("The temperature outside is currently 20
+        degrees Celsius"), so it is never allowed through the speaker.
+        """
+        text = str(text or "").strip()
+        if not text:
+            return ""
+        if not _MEASUREMENT_CLAIM_RE.search(text):
+            return text
+        self.log("AGENT", "suppressed a model-supplied measurement reading",
+                 level="WARN")
+        return _MEASUREMENT_REFUSAL
+
+    def _speak_fallback(self, transcript: str) -> None:
+        """Last-resort honest line so a user turn is never silent."""
+        try:
+            self._speak_turn("I couldn't put that together just now — could "
+                             "you ask me again?")
+        except Exception as exc:
+            self.log("ERROR",
+                     f"fallback speak failed: {type(exc).__name__}",
+                     level="ERROR")
+
+    def _answer_tool_question(self, topic: str, transcript: str) -> bool:
+        """Answer a toolable question deterministically; True when spoken.
+
+        Used for question/chitchat intents that a tool can answer, so they
+        never reach the language model. An unavailable tool still answers
+        honestly in the handler's own words — that is the point: no invented
+        readings, and no silence.
+        """
+        if self.command_executor is None:
+            return False
+        from subsystems.intent import IntentType, UserIntent
+        intent = UserIntent(IntentType.COMMAND, transcript, confidence=0.9,
+                            entities={"tool_topic": topic})
+        try:
+            result = self.command_executor.execute(intent)
+        except Exception as exc:
+            self.log("ERROR", f"tool question failed: {type(exc).__name__}",
+                     level="ERROR")
+            return False
+        if not result.response:
+            return False
+        self._speak_turn(result.response)
+        self.log("AGENT", f"command: {result.action_taken}")
+        return True
+
+    def _speak_turn(self, text: str) -> bool:
+        """Speak a deterministic answer and bracket the turn on the manager.
+
+        Mirrors the model paths (begin -> speak -> end) so the conversation
+        state machine never sticks in SPEAKING after a command answer.
+        """
+        if self.conversation is not None and text:
+            self.conversation.on_speak_begin(text)
+        delivered = self._speak_direct(text)
+        if self.conversation is not None:
+            self.conversation.on_speak_end(expects_answer=False)
+        return delivered
 
     def _speak_direct(self, text: str) -> bool:
         """Speak text directly through the TTS listener, bypassing the decision
@@ -1571,6 +1794,9 @@ class AndroidAgent:
         engine_result: Dict[str, Any] = {}
         # Phase 3.2: poll background timers each tick — no sleep threads.
         self._check_timers()
+        # v1.30.5: an open question that nobody answered is recorded as
+        # expired (never silently forgotten).
+        self._expire_open_question()
         decision, action = "—", "—"
         outcome = "ENGINE_FAILURE"
         trail: Tuple[str, ...] = ("OBSERVE",)

@@ -78,7 +78,8 @@ class CommandExecutor:
         entities = intent.entities
         verb = entities.get("action_verb", "")
         transcript_lower = intent.transcript.lower()
-        category = self._categorize(verb, transcript_lower)
+        category = self._categorize(verb, transcript_lower,
+                                    entities.get("tool_topic"))
         handler = self._handlers.get(category)
         if handler:
             # Phase 3.3: retry transient failures once with backoff, then
@@ -99,16 +100,33 @@ class CommandExecutor:
             response="I can't do that yet, but I'm learning!",
             action_taken="unhandled_command")
 
-    def _categorize(self, verb: str, transcript: str) -> str:
-        """Determine the command category."""
+    # v1.30.5: phrasing-independent topic keywords, used for command forms
+    # (where the intent layer supplies no topic) so a natural re-wording can no
+    # longer miss its handler — "tell me the time" used to route to "search".
+    _TOPIC_KEYWORDS = (
+        ("temperature", ("temperature", "how hot", "how cold", "thermometer",
+                          "degrees", "hot outside", "cold outside",
+                          "is it hot", "is it cold")),
+        ("weather", ("weather", "forecast", "rain", "snow")),
+        ("date", ("what's the date", "what is the date", "what day is it",
+                   "todays date", "today's date")),
+        ("time", ("the time", "time is it", "current time", "clock")),
+        ("battery", ("battery", "charge level")),
+        ("sensors", ("sensor", "telemetry", "accelerometer", "gyroscope")),
+    )
+
+    def _categorize(self, verb: str, transcript: str,
+                    tool_topic: Optional[str] = None) -> str:
+        """Determine the command category.
+
+        v1.30.5: a topic supplied by the intent layer (`tool_topic`) wins, so
+        the phrasing of a question can no longer decide whether a tool is
+        reached. Keyword rules remain for the command forms the parser already
+        promotes; the explicit verbs (timer, mesh, memory) are checked first so
+        a topic keyword inside them cannot shadow them.
+        """
         if "timer" in transcript or "remind" in transcript:
             return "timer"
-        if "weather" in transcript:
-            return "weather"
-        if "time" in transcript and ("what" in transcript or "current" in transcript):
-            return "time"
-        if "battery" in transcript:
-            return "battery"
         # Fleet memory mesh: "sync your memory with your peer", "mesh status".
         # Checked before memory so "sync your memory" is not read as a fact op.
         if ("mesh" in transcript
@@ -118,11 +136,16 @@ class CommandExecutor:
                 or "share your memory" in transcript
                 or ("sync" in transcript and "peer" in transcript)):
             return "mesh"
-        # Phase 4: durable-memory commands. Checked after timer so
-        # "remember to set a timer" still routes to the timer handler.
+        # Phase 4: durable-memory commands. Checked before the topic keywords
+        # so "remember the time of the meeting" stays a memory command.
         if ("remember" in transcript or "forget" in transcript
                 or verb in ("remember", "recall", "forget")):
             return "memory"
+        if tool_topic:
+            return tool_topic
+        for category, keywords in self._TOPIC_KEYWORDS:
+            if any(keyword in transcript for keyword in keywords):
+                return category
         if verb in ("search", "find", "show", "tell"):
             return "search"
         if verb in ("turn", "open", "close", "play", "pause", "start", "stop"):
@@ -212,15 +235,64 @@ def default_handlers(tools: Any = None) -> Dict[str, Callable[[UserIntent], Comm
             action_taken="weather_unavailable")
 
     def handle_time(intent: UserIntent) -> CommandResult:
-        failed = _tool("get_time")
-        if not failed and tools is not None:
+        # v1.30.5: ONE tool call. The old probe-then-call shape executed
+        # get_time twice per query (harmless for a clock read, wrong for
+        # anything with a side effect).
+        if tools is not None and tools.has("get_time"):
             result = tools.call("get_time")
-            return CommandResult(success=True, response=result.output,
-                                 action_taken="time_report")
+            if result.ok:
+                return CommandResult(success=True, response=result.output,
+                                     action_taken="time_report")
         return CommandResult(
             success=True,
             response=f"It's {time.strftime('%I:%M %p')}.",
             action_taken="time_report")
+
+    def handle_date(intent: UserIntent) -> CommandResult:
+        """v1.30.5: get_date existed but no category could reach it."""
+        if tools is not None and tools.has("get_date"):
+            result = tools.call("get_date")
+            if result.ok:
+                return CommandResult(success=True, response=result.output,
+                                     action_taken="date_report")
+        return CommandResult(
+            success=True,
+            response=f"Today is {time.strftime('%A, %B %d')}.",
+            action_taken="date_report")
+
+    def handle_temperature(intent: UserIntent) -> CommandResult:
+        """v1.30.5: a REAL reading or an honest refusal — never a guess.
+
+        Mirrors handle_battery: the registry is called once, and an
+        unavailable reading is reported as unavailable rather than letting the
+        language model invent a number (which is what the device log shows
+        happening: "The temperature outside is currently 20 degrees Celsius").
+        """
+        if tools is not None and tools.has("get_temperature"):
+            result = tools.call("get_temperature")
+            return CommandResult(
+                success=result.ok, response=result.output,
+                action_taken=("temperature_report" if result.ok
+                              else "temperature_unavailable"),
+                data=result.data or {})
+        return CommandResult(
+            success=True,
+            response=("I can't measure a temperature here — this device has no "
+                      "ambient sensor and no weather service is connected."),
+            action_taken="temperature_unavailable")
+
+    def handle_sensors(intent: UserIntent) -> CommandResult:
+        if tools is not None and tools.has("check_sensors"):
+            result = tools.call("check_sensors")
+            return CommandResult(
+                success=result.ok, response=result.output,
+                action_taken=("sensor_report" if result.ok
+                              else "sensor_unavailable"),
+                data=result.data or {})
+        return CommandResult(
+            success=True,
+            response="I can't read the sensors right now.",
+            action_taken="sensor_unavailable")
 
     def handle_battery(intent: UserIntent) -> CommandResult:
         if tools is not None and tools.has("get_battery"):
@@ -230,15 +302,24 @@ def default_handlers(tools: Any = None) -> Dict[str, Callable[[UserIntent], Comm
                                  else "battery_unavailable")
         return CommandResult(
             success=True,
-            response=("I can see the battery level on your device. Let me "
-                      "check the sensors tab for you."),
-            action_taken="battery_check")
+            response=("I need my tool kit to read the battery level."),
+            action_taken="battery_unavailable")
 
     def handle_search(intent: UserIntent) -> CommandResult:
+        """v1.30.5: the placeholder used to promise "I can search for that"
+        with no search backend wired. A "tell/show" request that is not a
+        lookup is left to the conversational path (an empty response falls
+        through), and an explicit lookup is answered honestly."""
+        lowered = intent.transcript.lower()
+        if not any(word in lowered for word in ("search", "find", "look up",
+                                                "google")):
+            return CommandResult(success=True, response="",
+                                 action_taken="not_a_search")
         return CommandResult(
             success=True,
-            response="I can search for that. Let me think about it.",
-            action_taken="search_initiated")
+            response=("I don't have a search service connected, so I can't "
+                      "look that up."),
+            action_taken="search_unavailable")
 
     def handle_device(intent: UserIntent) -> CommandResult:
         verb = intent.entities.get("action_verb", "do that")
@@ -343,6 +424,9 @@ def default_handlers(tools: Any = None) -> Dict[str, Callable[[UserIntent], Comm
     handlers["timer"] = handle_timer
     handlers["weather"] = handle_weather
     handlers["time"] = handle_time
+    handlers["date"] = handle_date
+    handlers["temperature"] = handle_temperature
+    handlers["sensors"] = handle_sensors
     handlers["battery"] = handle_battery
     handlers["search"] = handle_search
     handlers["device"] = handle_device

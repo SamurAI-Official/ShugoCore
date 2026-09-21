@@ -357,6 +357,11 @@ def _log_red(logger: List[str], *parts: Any) -> None:
 
 def step_timer_set(serial: str, logger: List[str]) -> bool:
     """Seed a timer, inject the transcript, and look for the ack."""
+    # v1.30.5: drain first. The agent handles one utterance per tick, so an
+    # injection that follows another phase's transcript can wait several model
+    # decisions before it is even parsed — a phase must measure the route it
+    # tests, not the backlog left by the phase before it.
+    await_conversation_idle(serial, logger)
     inject_scanout(
         serial, "set a timer for two seconds and tell me when it goes off"
     )
@@ -466,6 +471,7 @@ def step_service_alive(serial: str, logger: List[str]) -> bool:
 def step_timer_fires_while_away(serial: str, logger: List[str]) -> bool:
     """Force-stop, then verify the expired timer is re-announced."""
     ensure_service_started(serial)
+    await_conversation_idle(serial, logger)
     # An 8 s timer guarantees expiry AFTER the force-stop: the 1-3 s spent
     # finding the ack plus the 10 s suspension always exceed its lifespan,
     # so restore() re-inserts it as fired_while_away on the next boot.
@@ -485,14 +491,27 @@ def step_timer_fires_while_away(serial: str, logger: List[str]) -> bool:
 
 def step_fact_stores(serial: str, logger: List[str]) -> bool:
     """Assert an OS-level fact landed in SQLite."""
+    await_conversation_idle(serial, logger)
+    # v1.30.5: this phase follows timer_fires_while_away, which force-stops and
+    # restarts the app. An observation injected during the runtime's
+    # re-initialisation is dropped entirely (the debug receiver accepts it but
+    # the bus never sees it), which is why the ack was simply "MISSING" with the
+    # agent apparently healthy. Same guard the sibling phases use.
+    if not wait_for_agent_loop(serial, within_s=restart_window()):
+        _log_red(logger, "  agent loop not live before the store inject")
+        return False
     inject_scanout(serial, "remember that my favorite color is midnight blue")
-    ok = expect_in_logs(serial, "I'll remember", within_s=ack_window())
+    # The store ack queues behind pending decisions AND this phase runs on the
+    # freshly restarted node left by timer_fires_while_away, so it needs the
+    # cold-node budget rather than a warm one.
+    ok = expect_in_logs(serial, "I'll remember", within_s=cold_ack_window())
     _log(logger, "  \"I'll remember\" log line:", "FOUND" if ok else "MISSING")
     return ok
 
 
 def step_memory_question(serial: str, logger: List[str]) -> bool:
     """Ask a memory question and confirm the answer uses memory content."""
+    await_conversation_idle(serial, logger)
     clear_logcat(serial)
     inject_transcript(serial, "remember that my favorite color is midnight blue")
     time.sleep(ack_window() * 0.5)
@@ -541,7 +560,10 @@ def step_fact_survives_restart(serial: str, logger: List[str]) -> bool:
         return False
     inject_transcript(serial, "recall my favorite color")
     time.sleep(ack_window() * 0.5)
-    ok = expect_in_logs(serial, "midnight blue", within_s=ack_window())
+    # The recall reply is another queued decision after a restart: give it the
+    # same 4-cadence allowance as the store ack above.
+    ok = expect_in_logs(serial, "midnight blue",
+                        within_s=max(ack_window() * 2.0, _CADENCE_S * 4.0))
     _log(logger, "  fact survives restart:", "FOUND" if ok else "MISSING")
     return ok
 
@@ -564,16 +586,18 @@ def step_full_teardown_announced(serial: str, logger: List[str]) -> bool:
         _log_red(logger, "  agent loop not live before seed inject")
         return False
     inject_scanout(serial, "remember that my middle name is June")
-    # First ack after the cadence measurement: the measurement injects its own
-    # transcripts, so this ack can queue behind 1-2 pending decisions.  On a
-    # ~50 s cadence a single ack_window (2.5x cadence) is not enough; allow
-    # 4 cadences before declaring the seed lost.
-    first_ack = max(ack_window() * 2.0, _CADENCE_S * 4.0)
+    # First ack after the cadence measurement AND after fact_survives_restart's
+    # force-stop+restart: the model has just been reloaded, so this needs the
+    # cold-node budget (measured 148 s cold against 12-38 s warm).
+    first_ack = cold_ack_window()
     if not expect_in_logs(serial, "I'll remember", within_s=first_ack):
         _log_red(logger, "  fact store ack missing before teardown")
         return False
     inject_scanout(serial, "set a timer for eight seconds")
-    if not expect_in_logs(serial, "timer set for 8 seconds", within_s=ack_window()):
+    # v1.30.5: the timer seed queues behind the fact seed's decision for the
+    # same reason the comment above describes, so it gets the same allowance.
+    if not expect_in_logs(serial, "timer set for 8 seconds",
+                          within_s=max(ack_window() * 2.0, _CADENCE_S * 4.0)):
         _log_red(logger, "  timer ack missing before teardown")
         return False
     run("-s", serial, "shell", "am", "force-stop", SHUGOCORE_PACKAGE)
@@ -582,10 +606,16 @@ def step_full_teardown_announced(serial: str, logger: List[str]) -> bool:
     ensure_service_started(serial)
     ok1 = expect_in_logs(serial, "while you were away", within_s=restart_window())
     _log(logger, "  'while you were away' after restart:", "FOUND" if ok1 else "MISSING")
-    clear_logcat(serial)
+    # An observation injected during the runtime's re-initialisation is dropped
+    # (the receiver accepts it, the bus never sees it), so wait for a live loop
+    # before the recall inject.
+    if not wait_for_agent_loop(serial, within_s=restart_window()):
+        _log_red(logger, "  agent loop not live before the recall inject")
+        return False
     inject_transcript(serial, "what is my middle name")
     time.sleep(ack_window() * 0.5)
-    ok2 = expect_in_logs(serial, "june", within_s=ack_window())
+    ok2 = expect_in_logs(serial, "june",
+                         within_s=max(ack_window() * 2.0, _CADENCE_S * 4.0))
     _log(logger, "  restored fact (june) after restart:", "FOUND" if ok2 else "MISSING")
     return ok1 and ok2
 
@@ -862,7 +892,7 @@ def step_time_tool_query(serial: str, logger: List[str]) -> bool:
     """
     await_conversation_idle(serial, logger)
     inject_scanout(serial, "what's the time")
-    line = _spoken_clock(serial, ack_window())
+    line = _spoken_clock(serial, cold_ack_window())
     if line:
         _log(logger, "  clock answered:", line[-64:])
         return True
@@ -881,7 +911,7 @@ def step_measurement_honesty(serial: str, logger: List[str]) -> bool:
     """
     await_conversation_idle(serial, logger)
     inject_scanout(serial, "what is the temperature")
-    deadline = time.time() + ack_window()
+    deadline = time.time() + cold_ack_window()
     while time.time() < deadline:
         for line in log_lines_containing(serial, "SPEAK:"):
             low = line.lower()
@@ -917,7 +947,11 @@ def step_ask_user_round_trip(serial: str, logger: List[str]) -> bool:
     if asked:
         _log(logger, "  question already open:", asked[:60])
     else:
-        window = max(300.0, restart_window() * 4.0)
+        # The agent asks its own questions, but not on a schedule: after a
+        # heavy phase (the growth drive injects ~25 turns) the loop can spend
+        # minutes on model decisions before asking again, so the window is
+        # generous rather than tight.
+        window = max(600.0, restart_window() * 8.0)
         deadline = time.time() + window
         while time.time() < deadline and not asked:
             asked = pending_question(serial)
@@ -929,7 +963,7 @@ def step_ask_user_round_trip(serial: str, logger: List[str]) -> bool:
         _log(logger, "  agent is waiting on:", asked[:60])
 
     inject_transcript(serial, "what's the time")
-    deadline = time.time() + ack_window() * 2.0
+    deadline = time.time() + cold_ack_window()
     while time.time() < deadline:
         for role, text in conversation_turns(serial):
             if (role == "agent" and (role, text) not in before
@@ -992,6 +1026,19 @@ def device_thermal_status(serial: str) -> Optional[int]:
         return None
     match = re.search(r"Thermal Status:\s*(\d+)", out or "")
     return int(match.group(1)) if match else None
+
+
+def cold_ack_window() -> float:
+    """Window for the FIRST injection after a restart or fresh install.
+
+    The restart reloads the model and re-initialises memory, so the first ack
+    costs far more than a warm one: measured 148 s on the Tab against 12-38 s
+    once warm. Phases that inject immediately after a force-stop+restart
+    (fact_stores follows timer_fires_while_away; full_teardown_announced
+    follows fact_survives_restart) use this instead of ack_window(), which is
+    a warm-node budget.
+    """
+    return max(240.0, ack_window() * 2.0)
 
 
 def await_warm_loop(serial: str, timeout_s: float = 300.0) -> float:
@@ -1081,8 +1128,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     ensure_connected(serial)
     ensure_service_started(serial)
 
-    # v1.30.5: bounded warm-up BEFORE anything else, so a freshly started node
-    # fails phases for behaviour rather than for timing (see await_warm_loop).
+    # v1.30.5: drain the conversation BEFORE warming up. The conversational fast
+    # path returns early by design, so while the agent is still working through
+    # queued utterances it emits no "Decision made for task" line — a warm-up
+    # placed first would spend its whole timeout waiting on that backlog
+    # (measured: 302 s on the Tab right after the growth phase's ~25 injections).
+    warm_log: List[str] = []
+    await_conversation_idle(serial, warm_log)
     warm_s = await_warm_loop(serial)
     print(f"warm-up: decisions flowing after {warm_s:.0f}s", flush=True)
     thermal = device_thermal_status(serial)

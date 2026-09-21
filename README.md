@@ -861,11 +861,12 @@ Remaining:
   device loads the RPC backend and its runtime-selected CPU kernels (verified on
   a Tab S9 FE). Running it needs `LD_LIBRARY_PATH=<its directory>`, which the
   launcher sets.
-- Next: an app-side trigger for the peripheral server (debug broadcast +
-  `MeshRpcLauncher` entry point, since the adb shell user cannot exec the app's
-  lib dir), the device smoke phases (`rpc_node_up`, `layers_offloaded`, thermal
-  refusal), and a lower-latency transport (USB `adb forward` / RDMA) before
-  promising a throughput win.
+- ✅ **Device smoke phase + benchmark.** `rpc_node_up` asks the app to start the
+  peripheral (debug broadcast, since the shell cannot exec the app's lib dir),
+  then asserts the socket is reachable and stops it cleanly — passes on the Tab
+  S9 FE. `tests/mesh_rpc_bench.py` reproduces the local/half/all table in one
+  command (plus an optional `--usb` forward; note it only buys latency over a
+  real cable). Thermal refusal stays open work.
 - ⏳ Option 1 (KV-cache / context split) stays prototyped offline in `kv_mesh/`
   with its design in `docs/kv_cache_mesh_split.md`.
 

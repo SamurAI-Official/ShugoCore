@@ -126,6 +126,35 @@ class ShugoCoreService : Service() {
                 IntentFilter("com.samurai.shugocore.INJECT_TRANSCRIPT"),
                 ContextCompat.RECEIVER_EXPORTED
             )
+            // Debug-only mesh RPC trigger (layer-split peripheral): the adb
+            // shell user cannot exec an app's nativeLibraryDir, so the APP has
+            // to start the offload server. Headless probes drive it with:
+            //   adb shell am broadcast -a com.samurai.shugocore.DEBUG_MESH_RPC \
+            //     --es action start --es lan 1 --es port 50052
+            // `lan=1` exposes the (unauthenticated) RPC socket on the network,
+            // which the launcher audits; default stays loopback-only.
+            registerReceiver(
+                object : android.content.BroadcastReceiver() {
+                    override fun onReceive(context: Context?, intent: Intent?) {
+                        if (intent?.action != "com.samurai.shugocore.DEBUG_MESH_RPC") return
+                        val action = intent.getStringExtra("action") ?: "start"
+                        val lan = intent.getStringExtra("lan") ?: "0"
+                        val port = intent.getStringExtra("port") ?: "50052"
+                        val libDir = applicationInfo.nativeLibraryDir ?: ""
+                        val result = try {
+                            pyAgent?.callAttr("debug_mesh_rpc", action, libDir, port, lan)
+                                ?.toString()
+                                ?: "{\"ok\": false, \"error\": \"agent not ready\"}"
+                        } catch (e: Exception) {
+                            "{\"ok\": false, \"error\": \"${e.javaClass.simpleName}\"}"
+                        }
+                        Log.i("ShugoCoreMeshRpc", "mesh rpc $action -> $result")
+                        LogBus.log(LogBus.Category.AGENT, "mesh rpc $action -> $result")
+                    }
+                },
+                IntentFilter("com.samurai.shugocore.DEBUG_MESH_RPC"),
+                ContextCompat.RECEIVER_EXPORTED
+            )
         }
         if (!Python.isStarted()) {
             Python.start(AndroidPlatform(this))

@@ -1415,6 +1415,67 @@ class AndroidAgent:
             self.conversation.on_speak_end(expects_answer=False)
         return delivered
 
+    # -- v1.30.6 mesh RPC peripheral (layer split) ------------------------
+    def debug_mesh_rpc(self, action: str = "start", native_library_dir: str = "",
+                       port: int = 50052, lan: int = 0) -> str:
+        """Start/stop this device's mesh RPC peripheral; returns a JSON summary.
+
+        Called by the service's debug broadcast receiver so the headless probes
+        can drive the layer-split peripheral: the adb shell user cannot execute
+        an app's nativeLibraryDir, so the APP is the only thing that can start
+        the server. `native_library_dir` is Android's own lib dir (where the
+        packaged `libshugocore_rpc_server.so` lives). Never raises — the caller
+        is a broadcast receiver.
+        """
+        import json as _json
+
+        def _flag(value: Any) -> bool:
+            try:
+                return int(value or 0) != 0
+            except (TypeError, ValueError):
+                return str(value or "").strip().lower() in ("1", "true", "yes",
+                                                            "on")
+
+        from mesh_rpc import (DEFAULT_RPC_PORT, MeshRpcLauncher,  # noqa: WPS433
+                              find_rpc_server)
+
+        result: Dict[str, Any] = {"action": str(action or "start"), "ok": False}
+        try:
+            existing = getattr(self, "_mesh_rpc", None)
+            if existing is not None:
+                existing.stop()
+                self._mesh_rpc = None
+            if str(action or "start").strip().lower() != "start":
+                result.update({"ok": True, "running": False,
+                               "stopped": True})
+            else:
+                candidate = ""
+                if native_library_dir:
+                    candidate = os.path.join(
+                        str(native_library_dir), "libshugocore_rpc_server.so")
+                    if not os.path.exists(candidate):
+                        candidate = ""
+                binary = candidate or (find_rpc_server() or "")
+                try:
+                    port_int = max(1, min(65535, int(port)))
+                except (TypeError, ValueError):
+                    port_int = DEFAULT_RPC_PORT
+                expose = _flag(lan)
+                launcher = MeshRpcLauncher(
+                    binary=binary,
+                    host="0.0.0.0" if expose else "127.0.0.1",
+                    port=port_int, allow_lan=expose,
+                    audit=getattr(getattr(self, "engine", None), "audit", None))
+                started = launcher.start()
+                self._mesh_rpc = launcher if started else None
+                result.update({"ok": bool(started), "binary": binary,
+                               "endpoint": launcher.endpoint(),
+                               "running": launcher.running()})
+        except Exception as exc:
+            result["error"] = f"{type(exc).__name__}: {exc}"
+        self.log("MESH", "mesh rpc %s" % _json.dumps(result))
+        return _json.dumps(result)
+
     def _speak_direct(self, text: str) -> bool:
         """Speak text directly through the TTS listener, bypassing the decision
         pipeline. Used for command responses and other deterministic output."""

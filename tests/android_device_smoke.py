@@ -331,6 +331,11 @@ PHASES: List[Dict[str, Any]] = [
         "desc": "a question Shugo asks itself gets an answer it uses",
         "tags": ("conversation", "loop"),
     },
+    {
+        "name": "rpc_node_up",
+        "desc": "the mesh RPC peripheral starts on-device and is reachable",
+        "tags": ("mesh", "rpc"),
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -976,6 +981,95 @@ def step_ask_user_round_trip(serial: str, logger: List[str]) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# v1.30.6 mesh RPC peripheral (layer split)
+# ---------------------------------------------------------------------------
+
+RPC_PORT = 50052
+_RPC_ACTION = "com.samurai.shugocore.DEBUG_MESH_RPC"
+
+
+def device_lan_ip(serial: str) -> str:
+    """The device's IPv4 address on its Wi-Fi interface ('' when unknown)."""
+    rc, out, _ = run("-s", serial, "shell", "ip", "-4", "addr", "show", "wlan0")
+    if rc != 0:
+        return ""
+    match = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)", out or "")
+    return match.group(1) if match else ""
+
+
+def tcp_open(host: str, port: int, timeout: float = 4.0) -> bool:
+    """True when a TCP connect to host:port succeeds (no data exchanged)."""
+    import socket
+    if not host:
+        return False
+    sock = socket.socket()
+    sock.settimeout(timeout)
+    try:
+        sock.connect((host, int(port)))
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
+def _rpc_broadcast(serial: str, *extras: str) -> None:
+    run("-s", serial, "shell", "am", "broadcast", "-a", _RPC_ACTION,
+        *extras)
+
+
+def step_rpc_node_up(serial: str, logger: List[str]) -> bool:
+    """This device can serve as a layer-split peripheral (v1.30.6).
+
+    The adb shell user cannot execute an app's nativeLibraryDir, so the phase
+    asks the APP to start the peripheral server (debug broadcast) and then
+    verifies the socket from the host side, because reachability is what a
+    host's `llama-server --rpc` needs. The socket is unauthenticated (llama.cpp
+    is explicit about that), so the probe starts it on the LAN only for the
+    duration of the check, stops it again, and the launcher audits the exposure.
+    """
+    host = device_lan_ip(serial)
+    if not host:
+        _log_red(logger, "  no wlan0 address — cannot verify reachability")
+        return False
+    # Clean slate: stop anything a previous run left behind.
+    _rpc_broadcast(serial, "--es", "action", "stop")
+    time.sleep(1.0)
+    clear_logcat(serial)
+    _rpc_broadcast(serial, "--es", "action", "start", "--es", "lan", "1",
+                   "--es", "port", str(RPC_PORT))
+
+    started, line = False, ""
+    deadline = time.time() + ack_window()
+    while time.time() < deadline:
+        for entry in log_lines_containing(serial, "ShugoCoreMeshRpc"):
+            if "mesh rpc start" in entry and '"ok": true' in entry:
+                started, line = True, entry.strip()
+                break
+        if started:
+            break
+        time.sleep(1.0)
+    _log(logger, "  app started the peripheral:",
+         "YES" if started else "NO", line[-46:] if line else "")
+    if not started:
+        _log_red(logger, "  no successful start reply (binary missing? or the "
+                         "agent was not ready)")
+        return False
+
+    reachable = tcp_open(host, RPC_PORT)
+    _log(logger, f"  reachable at {host}:{RPC_PORT}:",
+         "YES" if reachable else "NO")
+    _rpc_broadcast(serial, "--es", "action", "stop")
+    time.sleep(2.0)
+    closed = not tcp_open(host, RPC_PORT)
+    _log(logger, "  stopped cleanly:", "YES" if closed else "NO")
+    return reachable and closed
+
+
+# ---------------------------------------------------------------------------
 # CLI + main
 # ---------------------------------------------------------------------------
 
@@ -995,6 +1089,7 @@ STEP_BY_NAME: Dict[str, Callable[[str, List[str]], bool]] = {
     "time_tool_query": step_time_tool_query,
     "measurement_honesty": step_measurement_honesty,
     "ask_user_round_trip": step_ask_user_round_trip,
+    "rpc_node_up": step_rpc_node_up,
 }
 
 

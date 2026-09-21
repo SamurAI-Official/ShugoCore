@@ -114,18 +114,27 @@ The peripheral is real: after loading, the phone's `MemAvailable` fell 504 MB ->
    node from measured headroom; pairing-gated attach/detach with audit events;
    rebalance on leave; fail-closed to local inference when the mesh cannot hold
    the model.
-4. **Device smoke phases**: `rpc_node_up` (launcher starts and binds),
-   `layers_offloaded` (assert the remote layer count, measured host RSS delta
-   and decode rate against local-only), refusing a split on a thermally critical
-   node (status >= 3). These need an **app-side trigger**: the adb shell user
-   cannot traverse the app's `nativeLibraryDir`, so the phase has to ask the app
-   to start the server — a debug broadcast (`DEBUG_RPC_START`/`STOP`) mirroring
-   the existing `INJECT_TRANSCRIPT` receiver, with a Python entry point that
-   drives `MeshRpcLauncher`.
+4. **Device smoke phases**: `rpc_node_up` — the phase asks the app to start the
+   peripheral, then asserts reachability from the host and a clean stop — now
+   passes on the Tab S9 FE. `layers_offloaded` lives instead as the repeatable
+   benchmark `tests/mesh_rpc_bench.py` (needs a host llama-server build and a
+   GGUF, so it is not part of the on-device suite), refusing a split on a
+   thermally critical node stays open work.
 5. **Transport work** (the throughput unlock): measure USB `adb forward`,
    then evaluate RDMA/wired options before promising a speed win.
 
 ## Reproduce
+
+One command, end to end (starts the app's peripheral itself, prints the table
+above, stops the peripheral afterwards):
+
+```bash
+python3 tests/mesh_rpc_bench.py --server /tmp/rpc-host/bin/llama-server \
+    --model /tmp/qwen0.5b.gguf \
+    --serial adb-R52WC05JPMW-4kMS88._adb-tls-connect._tcp
+```
+
+The manual version of the same run (step by step):
 
 ```bash
 # peripheral (NDK cross-build, arm64)

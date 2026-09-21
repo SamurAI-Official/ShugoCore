@@ -682,7 +682,7 @@ for fact in candidates:
 ## Testing
 
 ```bash
-python -m unittest discover -s tests -v     # 1220 tests, no native deps
+python -m unittest discover -s tests -v     # 1247 tests, no native deps
 python -m compileall -q .                   # byte-compile every module
 ruff check .                                # syntax errors + undefined names
 bandit -q -r . -x ./.venv,./.llama_build,./platforms,./dist,./build,./tests -lll

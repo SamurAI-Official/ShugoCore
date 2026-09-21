@@ -854,10 +854,18 @@ Remaining:
   `docs/layer_split_rpc.md` holds the numbers and the constraints (the RPC
   socket is unauthenticated, the device advertises total rather than free
   memory, and throughput is transport-bound: 140 -> ~2 tok/s over Wi-Fi).
-- Next: package `ggml-rpc-server` into the APK (CMake target + `jniLibs`),
-  device smoke phases (`rpc_node_up`, `layers_offloaded`, thermal refusal), and
-  a lower-latency transport (USB `adb forward` / RDMA) before promising a
-  throughput win.
+- ✅ **Packaged and running from the APK.** `SHUGOCORE_RPC_SERVER` builds the
+  peripheral server for arm64-v8a and ships it as
+  `lib/arm64-v8a/libshugocore_rpc_server.so` beside `libggml-rpc.so`; the
+  installer extracts it to `nativeLibraryDir` as an executable file, where the
+  device loads the RPC backend and its runtime-selected CPU kernels (verified on
+  a Tab S9 FE). Running it needs `LD_LIBRARY_PATH=<its directory>`, which the
+  launcher sets.
+- Next: an app-side trigger for the peripheral server (debug broadcast +
+  `MeshRpcLauncher` entry point, since the adb shell user cannot exec the app's
+  lib dir), the device smoke phases (`rpc_node_up`, `layers_offloaded`, thermal
+  refusal), and a lower-latency transport (USB `adb forward` / RDMA) before
+  promising a throughput win.
 - ⏳ Option 1 (KV-cache / context split) stays prototyped offline in `kv_mesh/`
   with its design in `docs/kv_cache_mesh_split.md`.
 

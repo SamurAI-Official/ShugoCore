@@ -232,6 +232,25 @@ class MeshRpcLauncher:
         cmd.extend(self.extra_args)
         return cmd
 
+    def _child_env(self) -> Dict[str, str]:
+        """Child environment, with the loader path the binary needs.
+
+        A directly-exec'd helper does NOT get the native library directory on
+        its search path, so the packaged server fails with
+        ``library "libggml.so" not found`` even though every library it needs
+        sits beside it. Measured on-device (Tab S9 FE, Android 16) after
+        packaging: with LD_LIBRARY_PATH pointing at the binary's directory it
+        loads the RPC backend *and* the runtime-selected CPU variant. Any
+        inherited value is preserved.
+        """
+        env = dict(os.environ)
+        directory = os.path.dirname(str(self.binary or ""))
+        if directory:
+            existing = env.get("LD_LIBRARY_PATH", "")
+            parts = [p for p in (directory, existing) if p]
+            env["LD_LIBRARY_PATH"] = ":".join(parts)
+        return env
+
     def start(self) -> bool:
         """Launch the peripheral RPC server; True when spawned."""
         if not self.binary:
@@ -256,7 +275,7 @@ class MeshRpcLauncher:
         try:
             self._proc = self._popen(
                 self.command(), stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL)
+                stderr=subprocess.DEVNULL, env=self._child_env())
         except Exception as exc:
             self._log.error("MeshRpcLauncher: spawn failed: %s", exc)
             self._proc = None

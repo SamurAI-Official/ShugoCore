@@ -28,6 +28,12 @@ dist/
 *.egg-info/
 .llama_build/
 
+# Native build outputs packaged from CMake (see cpp/CMakeLists.txt):
+# ONNX Runtime AAR extraction, and the mesh RPC peripheral executable that
+# CMake writes into jniLibs so Gradle ships it as lib*.so.
+platforms/android/app/src/main/cpp/onnxruntime/
+platforms/android/app/src/main/jniLibs/
+
 # Android (machine-specific SDK path + generated build outputs)
 local.properties
 platforms/android/app/build/

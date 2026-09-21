@@ -74,14 +74,38 @@ The peripheral is real: after loading, the phone's `MemAvailable` fell 504 MB ->
 
 ## Increments
 
-1. **Cross-build + run the peripheral (done in this spike).** Add a real CMake
-   target so it is reproducible in-repo instead of a `/tmp` build:
-   `SHUGOCORE_RPC_SERVER` option, `GGML_RPC=ON`, minimal executable target
-   linking `ggml` + `ggml-rpc`, output named `libshugocore_rpc_server.so` into a
-   `jniLibs` source dir. The app already sets `useLegacyPackaging true`, so
-   packaged native files are *extracted to disk* and an executable in
-   `nativeLibraryDir` can actually be `exec`'d (this is why the packaging flag
-   matters here, and why the binary must sit next to its `libggml*.so` siblings).
+1. **Cross-build + run the peripheral — DONE, and now packaged in the APK.**
+   `platforms/android/app/src/main/cpp/CMakeLists.txt` gained
+   `SHUGOCORE_RPC_SERVER` (ON; arm64-v8a only, since the x86_64 ABI is for the
+   emulator), which forces `GGML_RPC=ON` before `add_subdirectory(llama.cpp)`
+   and builds a minimal executable from `tools/rpc/rpc-server.cpp` linking only
+   `ggml` (the RPC backend is a dlopen'd module discovered at runtime). The app
+   packages it as `lib/arm64-v8a/libshugocore_rpc_server.so` beside
+   `libggml-rpc.so` — verified in the built APK and on the device, where
+   `useLegacyPackaging true` extracts it to `nativeLibraryDir` as
+   `-rwxr-xr-x`, i.e. a real file that can be `exec`'d (Android blocks exec of
+   app-writable data dirs, so the lib dir is the only viable home).
+
+   **Two runtime requirements found by running it there:**
+   - it needs `LD_LIBRARY_PATH=<its own directory>` — a directly-exec'd helper
+     does not get `nativeLibraryDir` on its search path, so it fails with
+     `library "libggml.so" not found` even though every library it needs is
+     beside it. `MeshRpcLauncher` now sets this for the child (preserving any
+     inherited value).
+   - `libc++_shared.so` and `libomp.so` come from the app's own lib dir; they
+     are already shipped (the app links C++ shared and ggml uses OpenMP), so
+     nothing extra is needed — but a build that disabled OpenMP for the app
+     would need `GGML_OPENMP=OFF` here too.
+
+   Verified end-to-end on the Tab S9 FE (Android 16) by executing the packaged
+   binary as the app uid:
+   ```
+   load_backend: loaded RPC backend from .../lib/arm64/libggml-rpc.so
+   load_backend: loaded CPU backend from .../lib/arm64/libggml-cpu-android_armv8.2_2.so
+   Usage: libshugocore_rpc_server.so [options]
+   ```
+   Note the CPU backend: the peripheral picks the *runtime-selected* kernel set,
+   the same one the app's own inference uses.
 2. **`MeshRpcLauncher`** (Python, next to `TermuxLlamaServer`): fail-closed
    start (no binary / no permission -> refuse), port allocation, thread count
    from `hardware_concurrency`, `running()` / `stop()` idempotent, injectable
@@ -93,7 +117,11 @@ The peripheral is real: after loading, the phone's `MemAvailable` fell 504 MB ->
 4. **Device smoke phases**: `rpc_node_up` (launcher starts and binds),
    `layers_offloaded` (assert the remote layer count, measured host RSS delta
    and decode rate against local-only), refusing a split on a thermally critical
-   node (status >= 3).
+   node (status >= 3). These need an **app-side trigger**: the adb shell user
+   cannot traverse the app's `nativeLibraryDir`, so the phase has to ask the app
+   to start the server — a debug broadcast (`DEBUG_RPC_START`/`STOP`) mirroring
+   the existing `INJECT_TRANSCRIPT` receiver, with a Python entry point that
+   drives `MeshRpcLauncher`.
 5. **Transport work** (the throughput unlock): measure USB `adb forward`,
    then evaluate RDMA/wired options before promising a speed win.
 

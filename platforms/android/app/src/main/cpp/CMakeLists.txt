@@ -61,6 +61,8 @@ option(SHUGOCORE_CPU_VARIANTS
        "Ship every runtime-selectable arm64 CPU kernel variant in one APK" ON)
 option(SHUGOCORE_ARM_DOTPROD
        "Single-arch builds only: compile the baseline for armv8.2-a+dotprod (SIGILL on CPUs without FEAT_DotProd)" OFF)
+option(SHUGOCORE_RPC_SERVER
+       "Build the mesh RPC peripheral server (layer-split offload; arm64-v8a only)" ON)
 
 if(ANDROID AND SHUGOCORE_CPU_VARIANTS)
     # ggml dlopens its backend libraries, so they cannot be static.
@@ -93,7 +95,43 @@ set(LLAMA_BUILD_TOOLS    OFF CACHE BOOL "" FORCE)
 # only used when SHUGOCORE_CPU_VARIANTS is off (the singlearch escape hatch).
 set(BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS} CACHE BOOL "" FORCE)
 
+# Mesh RPC peripheral (Option 2 layer split): this device becomes an offload
+# target for a host's `llama-server --rpc`, contributing RAM and compute.
+#
+# ggml's RPC backend is OFF by default, and llama.cpp only adds tools/rpc when
+# LLAMA_BUILD_TOOLS is ON (which would drag in every other tool), so the one
+# executable we need is built here directly. It links only `ggml`: the RPC
+# backend is a dlopen'd module discovered at runtime from the executable's own
+# directory, which is why the binary must be packaged beside its libggml*.so
+# siblings. arm64-v8a only — the x86_64 ABI exists for the emulator, which has
+# no role as a peripheral.
+set(SHUGOCORE_BUILD_RPC OFF)
+if(ANDROID AND SHUGOCORE_RPC_SERVER AND ANDROID_ABI STREQUAL "arm64-v8a")
+    set(SHUGOCORE_BUILD_RPC ON)
+    set(GGML_RPC ON CACHE BOOL "" FORCE)
+endif()
+
 add_subdirectory(${LLAMA_CPP_DIR} llama_build EXCLUDE_FROM_ALL)
+
+if(SHUGOCORE_BUILD_RPC)
+    add_executable(shugocore_rpc_server
+                   ${LLAMA_CPP_DIR}/tools/rpc/rpc-server.cpp)
+    target_include_directories(shugocore_rpc_server PRIVATE
+                               ${LLAMA_CPP_DIR}/ggml/src)
+    target_link_libraries(shugocore_rpc_server PRIVATE ggml)
+
+    # Ship it as `lib*.so` so Gradle packages it like a native library: with
+    # useLegacyPackaging=true the installer extracts it to nativeLibraryDir as a
+    # real file. That is the only place an app may exec a helper binary on
+    # modern Android (exec of app-writable data dirs is blocked), and
+    # nativeLibraryDir is also where its libggml*.so siblings live.
+    set_target_properties(shugocore_rpc_server PROPERTIES
+        PREFIX "lib" SUFFIX ".so"
+        RUNTIME_OUTPUT_DIRECTORY
+            "${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}"
+        LIBRARY_OUTPUT_DIRECTORY
+            "${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}")
+endif()
 
 add_library(llama_jni SHARED llama_jni.cpp)
 

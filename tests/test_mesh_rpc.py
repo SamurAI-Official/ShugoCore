@@ -47,15 +47,17 @@ class _FakeProc:
 
 
 class _FakePopen:
-    """Records the command it was asked to run."""
+    """Records the command (and env) it was asked to run."""
 
     def __init__(self, alive=True, boom=False):
         self.commands = []
+        self.envs = []
         self.proc = _FakeProc(alive=alive)
         self.boom = boom
 
     def __call__(self, cmd, **kwargs):
         self.commands.append(list(cmd))
+        self.envs.append(kwargs.get("env"))
         if self.boom:
             raise OSError("exec denied")
         return self.proc
@@ -167,6 +169,31 @@ class TestMeshRpcLauncher(unittest.TestCase):
         self.assertTrue(launcher.stop())
         self.assertFalse(launcher.running())
         self.assertTrue(launcher.stop())
+
+    def test_child_env_points_the_loader_at_the_packaged_libraries(self):
+        # Device-measured requirement: a directly-exec'd helper does not get
+        # nativeLibraryDir on its search path, so the packaged server fails with
+        # 'library "libggml.so" not found' unless LD_LIBRARY_PATH is set.
+        popen = _FakePopen()
+        binary = "/data/app/pkg/lib/arm64/libshugocore_rpc_server.so"
+        launcher = MeshRpcLauncher(binary=binary, host="127.0.0.1", popen=popen)
+        self.assertTrue(launcher.start())
+        env = popen.envs[0]
+        self.assertIsNotNone(env)
+        self.assertEqual(env["LD_LIBRARY_PATH"].split(":")[0],
+                         "/data/app/pkg/lib/arm64")
+
+    def test_child_env_preserves_an_inherited_loader_path(self):
+        popen = _FakePopen()
+        os.environ["LD_LIBRARY_PATH"] = "/pre-existing"
+        try:
+            launcher = MeshRpcLauncher(binary="/opt/rpc/ggml-rpc-server",
+                                       host="127.0.0.1", popen=popen)
+            self.assertTrue(launcher.start())
+        finally:
+            os.environ.pop("LD_LIBRARY_PATH", None)
+        self.assertEqual(popen.envs[0]["LD_LIBRARY_PATH"],
+                         "/opt/rpc:/pre-existing")
 
 
 class TestUsableHeadroom(unittest.TestCase):

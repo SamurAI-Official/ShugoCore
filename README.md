@@ -843,6 +843,24 @@ Remaining:
 - Canonical desktop fleet dashboard UI (parsing the server-hosted
   `/api/v1/fleet`)
 
+### In progress: distributed reasoning across nodes
+
+- ✅ **Option 2 (layer split over llama.cpp RPC) proven on hardware.** A
+  peripheral phone runs the vendored `ggml-rpc-server` (NDK arm64 build) and the
+  host's `llama-server --rpc` assigns layers to it: with all 24 layers of a 0.5B
+  on a Tab S9 FE the host's RSS fell **677 MB -> 206 MB** while the phone held
+  **402 MB** resident. `mesh_rpc.py` carries the launcher (fail-closed, audited
+  LAN exposure) and capacity planning from *measured* headroom;
+  `docs/layer_split_rpc.md` holds the numbers and the constraints (the RPC
+  socket is unauthenticated, the device advertises total rather than free
+  memory, and throughput is transport-bound: 140 -> ~2 tok/s over Wi-Fi).
+- Next: package `ggml-rpc-server` into the APK (CMake target + `jniLibs`),
+  device smoke phases (`rpc_node_up`, `layers_offloaded`, thermal refusal), and
+  a lower-latency transport (USB `adb forward` / RDMA) before promising a
+  throughput win.
+- ⏳ Option 1 (KV-cache / context split) stays prototyped offline in `kv_mesh/`
+  with its design in `docs/kv_cache_mesh_split.md`.
+
 ## Contributing
 
 Issues and pull requests are welcome. Please keep changes consistent with

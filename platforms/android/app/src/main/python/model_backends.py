@@ -28,6 +28,7 @@ import os
 import re
 import threading
 import time
+from http.client import HTTPException
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -83,22 +84,38 @@ def _check_response(response: Any) -> None:
 
 
 def _read_bounded(response: Any, cap: int = MAX_RESPONSE_BYTES) -> bytes:
-    """Read a streaming response, refusing to buffer more than ``cap`` bytes."""
+    """Read a streaming response, refusing to buffer more than ``cap`` bytes.
+
+    Fail-closed on transport truncation: a connection reset or incomplete
+    body mid-read cannot yield a trustworthy payload, so those errors are
+    converted to BackendError instead of leaking raw socket exceptions
+    (a RST can race past the size guard under load).
+    """
     chunks: List[bytes] = []
     total = 0
-    for chunk in response.iter_content(chunk_size=65536):
-        if not chunk:
-            continue
-        total += len(chunk)
-        if total > cap:
-            raise BackendError(
-                f"backend response exceeded {cap} bytes (oversized body refused)")
-        chunks.append(chunk)
+    try:
+        for chunk in response.iter_content(chunk_size=65536):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > cap:
+                raise BackendError(
+                    f"backend response exceeded {cap} bytes (oversized body refused)")
+            chunks.append(chunk)
+    except BackendError:
+        raise
+    except (requests.exceptions.RequestException, OSError, HTTPException) as exc:
+        raise BackendError(
+            f"backend connection failed mid-read (truncated body refused): {exc}"
+        ) from exc
     return b"".join(chunks)
 
 
 def _decode_json(raw: bytes) -> Dict[str, Any]:
-    data = json.loads(raw.decode("utf-8"))
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise BackendError(f"backend returned unparseable JSON: {exc}") from exc
     return data if isinstance(data, dict) else {}
 
 

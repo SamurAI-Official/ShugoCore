@@ -23,6 +23,7 @@ from model_backends import (
     OllamaBackend,
     OpenAICompatibleBackend,
     StubBackend,
+    _read_bounded,
     create_backend,
 )
 from android_node import detect_local_launcher, AndroidShugoCoreNode, NodeConfig
@@ -318,6 +319,17 @@ class TestBackendEgressHardening(unittest.TestCase):
                 backend.generate("m", "prompt")
         finally:
             server.stop()
+
+    def test_transport_reset_mid_read_fails_closed(self):
+        """A connection reset mid-read must surface as BackendError, not a
+        raw socket exception (regression: RST racing past the size guard)."""
+        class _ResettingResponse:
+            def iter_content(self, chunk_size=65536):
+                yield b"x" * 1024
+                raise ConnectionResetError(104, "Connection reset by peer")
+
+        with self.assertRaises(BackendError):
+            _read_bounded(_ResettingResponse())
 
 
 if __name__ == "__main__":

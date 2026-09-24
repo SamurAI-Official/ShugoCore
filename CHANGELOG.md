@@ -6,6 +6,66 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### CI integrity: the 3.9 regression, missing optional deps, packaging
+
+The `CI` workflow had been red on every push since 2026-09-15. Two independent
+failure classes were hiding behind the matrix's default `fail-fast`: a genuine
+Python 3.9 incompatibility, and a suite that exercised optional dependencies CI
+never installed. Both are fixed — `test (3.9)` through `test (3.13)` pass
+together now.
+
+- **`py_compat.py`** (new) — one documented home for stdlib features newer than
+  the `requires-python = ">=3.9"` floor. `dataclass_slots` is
+  `dataclasses.dataclass` with `slots=True` on 3.10+, and a plain dataclass on
+  3.9, where the keyword does not exist. `@dataclass(slots=True)` raises
+  `TypeError` at *class definition* time, so the four uses in
+  `kv_mesh/shard.py` (3) and `personality/governor.py` (1) — added in v1.28.1 —
+  made both packages unimportable on 3.9: 189 cascading `TypeError`s and 120
+  errors from that one construct. Slots are still applied everywhere the
+  interpreter supports them; only the 3.9 fallback omits them, so the on-device
+  memory win is kept.
+- **`tests/test_py_compat.py`** (new) — pins both halves of the contract (a
+  working dataclass on every interpreter, `__slots__` retained where supported,
+  `default_factory` still per-instance) and guards the two production classes
+  that broke.
+- **`tests/test_simulation.py`** — skips the module *with a reason* when numpy
+  is absent instead of failing collection: `simulation.base` builds its state
+  vectors with numpy. One bare `import numpy` previously reddened every
+  interpreter in the matrix (the 2026-09-06 `test (3.11)` failure).
+- **`tests/test_pg_memory.py`**, **`tests/test_entity_graph.py`** — the PG tests
+  patch `_HAS_PSYCOPG` to `True` to exercise real `psycopg2.sql.Identifier`
+  composition, which needs the actual driver; without it they now skip with an
+  install hint instead of raising `AttributeError: 'NoneType' object has no
+  attribute 'Identifier'` (21 errors on the runner).
+- **`telemetry.py`** — binds `_otel_trace = None` when the OTel import fails, so
+  patching that name works on a host without the `telemetry` extra (previously
+  the one remaining `test_v1` failure). Real usage stays gated on `_HAS_OTEL`.
+- **`.github/workflows/ci.yml`** — `fail-fast: false` (the matrix is how we see
+  *which* interpreter breaks; fail-fast hid 3.10–3.13 behind 3.9), a
+  `workflow_dispatch` trigger so a work branch can be reviewed on demand with
+  `gh workflow run ci.yml --ref <branch>`, and the test job installs `.[dev]`
+  alongside `requirements.txt`.
+- **`pyproject.toml`** — `dev` carries the optional dependencies the suite
+  exercises for real (`numpy`, `psycopg2-binary`, `opentelemetry-api`), and
+  `py-modules` gains `delegation`, `mesh_election`, `mesh_rpc`, `py_compat`,
+  `security_inventory` and `talker`. None of those were declared, so a built
+  wheel was missing modules that `shugocore_agent` and `shugocore_server`
+  import at runtime — a latent packaging bug independent of CI.
+- **`.github/workflows/release.yml`** — removes `build/` and `dist/` before
+  `python -m build`. setuptools never prunes `build/lib`, so a warm working
+  tree re-packs the previous build's `__pycache__` into the wheel: 73 `.pyc`
+  files (~1.28 MB) inflated a locally built v1.30.5 wheel to 950 KB where a
+  clean build is 340 KB. Runner workspaces are fresh, so published artifacts
+  were never affected — this is belt-and-braces plus a local-build trap
+  removed.
+- **`.github/workflows/android.yml`** — a branch-dispatched APK build could
+  never succeed: `NAME="shugocore-${GITHUB_REF_NAME#v}.apk"` turns
+  `hotfix/pypi-publishes-cia` into a `cp` target inside a directory that does
+  not exist (and an invalid artifact name). The ref is now slash-sanitised, and
+  the release-attach step reuses `$APK_PATH` instead of re-deriving the name.
+- **Dropping the 3.9 floor** is tracked in issue #12 for a later release; until
+  that is decided, `py_compat` keeps 3.9 working and the matrix keeps testing it.
+
 ### Mobile fleet wiring on the desktop server + operator pairing route
 
 - **`shugocore_server.py`** — `main()` now constructs the canonical mobile

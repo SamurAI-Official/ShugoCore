@@ -28,10 +28,11 @@ All verdicts are journaled (the decision engine attaches them to the decision
 dict) so the personality signal is as auditable as the safety signal.
 """
 import re
-from dataclasses import dataclass, field
+from dataclasses import field
 from typing import Any, Dict, Optional
 
 from personality.model import PersonalityModel
+from py_compat import dataclass_slots
 
 
 # Appropriateness at or below this forces a reroute to a safe fallback.
@@ -45,7 +46,7 @@ _TONE_FLOOR = 0.2
 # Verdict
 # ---------------------------------------------------------------------------
 
-@dataclass(slots=True)
+@dataclass_slots
 class PersonalityVerdict:
     """Structured personality annotation of a proposed action.
 

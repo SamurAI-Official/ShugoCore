@@ -6,8 +6,10 @@ shape, and its assignment -- the inputs/outputs of the KVAllocator.
 """
 import hashlib
 import json
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict
 from typing import Optional
+
+from py_compat import dataclass_slots
 
 
 def _digest(obj: dict) -> str:
@@ -16,7 +18,7 @@ def _digest(obj: dict) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-@dataclass(slots=True)
+@dataclass_slots
 class ShardSpec:
     """Static shape of a model's KV cache -- the thing being split."""
     model_id: str
@@ -42,7 +44,7 @@ class ShardSpec:
         return (l_end - l_start) * seq * self.kv_bytes_per_token_per_layer()
 
 
-@dataclass(slots=True)
+@dataclass_slots
 class KVShard:
     """A contiguous slice of the KV cache assigned to one node."""
     shard_id: str
@@ -68,7 +70,7 @@ class KVShard:
                 f":H{head_start}-{head_end}:S{seq_start}-{seq_end}")
 
 
-@dataclass(slots=True)
+@dataclass_slots
 class ContextShard:
     """A contiguous chunk of the input context assigned to one node."""
     shard_id: str

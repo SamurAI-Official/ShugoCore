@@ -26,6 +26,12 @@ jobs:
           python-version: "3.12"
       - name: Build wheel + sdist
         run: |
+          # setuptools never prunes ``build/lib``, so a warm working tree can
+          # re-pack a previous build's ``__pycache__`` into the wheel (73 .pyc
+          # / 1.28 MB measured locally: a 950 KB wheel where a clean build is
+          # 340 KB). Runners are fresh; clean anyway so the published artifact
+          # is always byte-for-byte what the sources produce.
+          rm -rf build dist
           pip install --upgrade build
           python -m build --sdist --wheel --outdir dist
       - name: Generate SBOM (SPDX)

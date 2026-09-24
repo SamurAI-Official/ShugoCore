@@ -21,7 +21,14 @@ termux = ["websocket-client>=1.6"]
 shogunet = ["shugonet>=0.1.0"]
 postgres = ["psycopg2-binary>=2.9"]
 simulation = ["mujoco>=3.0", "numpy>=1.24"]
-dev = ["pytest", "ruff>=0.6", "bandit>=1.7"]
+# ``dev`` is the toolchain CI installs (see .github/workflows/ci.yml). It
+# carries the optional dependencies the *suite* genuinely exercises — numpy
+# arrays (simulation), real psycopg2.sql identifier composition (postgres) and
+# OTel span plumbing (telemetry). Installing only requirements.txt left those
+# paths erroring on CI while passing locally, where the venv happened to have
+# them: a "works on my machine" gap, not a code bug.
+dev = ["pytest", "ruff>=0.6", "bandit>=1.7",
+       "numpy>=1.24", "psycopg2-binary>=2.9", "opentelemetry-api>=1.20"]
 
 [project.scripts]
 shugocore-verify-audit = "audit:cli_main"
@@ -32,14 +39,15 @@ packages = ["benchmarks", "conversation", "kv_mesh", "nrr", "personality",
             "prompts", "simulation", "subsystems"]
 py-modules = ["acceleration", "agent_runtime", "android_bridge", "android_inference", "android_model_manager",
               "android_node", "android_runtime", "attention_layer", "audit", "autonomy", "continuous_agent",
-              "decision_engine", "execution_layer", "fallbacks",
+              "decision_engine", "delegation", "execution_layer", "fallbacks",
               "gazebo_simulation", "human_interaction", "logging_manager", "memory_system",
+              "mesh_election", "mesh_rpc",
               "mobile_nodes", "model_backends", "model_manager",
-              "moveit_planner", "pg_memory", "policy",
+              "moveit_planner", "pg_memory", "policy", "py_compat",
               "reinforcement_learning",
-              "robotics_handler", "ros2_interface", "security",
+              "robotics_handler", "ros2_interface", "security", "security_inventory",
               "shugonet_bridge", "shugocore_agent", "shugocore_server", "state_machine", "subconscious",
-              "task_manager", "telemetry", "token_budget", "vector_db",
+              "talker", "task_manager", "telemetry", "token_budget", "vector_db",
               "version"]
 
 [tool.ruff]

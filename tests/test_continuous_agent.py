@@ -109,7 +109,12 @@ class ContinuousAgentTestCase(unittest.TestCase):
             max_iterations=None,
         )
         agent.start()
-        time.sleep(0.25)
+        # Bound the wait instead of a fixed wall-clock sleep: on a loaded CI
+        # runner the first gated execution (lazy engine/memory init) can take
+        # longer than any fixed sample, which made this assertion flaky.
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and calls["n"] < 2:
+            time.sleep(0.05)
         agent.stop()
         self.assertGreaterEqual(calls["n"], 2)
 

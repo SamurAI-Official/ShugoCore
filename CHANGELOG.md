@@ -50,6 +50,13 @@ together now.
   erroring with `FileNotFoundError: .../cpp/nrr/runtime/onnx_runtime.cpp` on
   every run. Only NRR is fetched — a recursive checkout would clone the whole
   llama.cpp history onto all five matrix legs.
+- **`patches/nrr/0002-godot-plugin-descriptor-ini.patch`** (new) — the NRR Godot
+  descriptor's XML→INI conversion had only ever existed inside a working copy,
+  so a fresh clone restored the Godot-3 XML file and `test_all_descriptors_are_ini`
+  failed on CI while passing locally. It is a re-appliable patch now, and the
+  durability guard's needle list includes `engine_plugins/godot/plugin.cfg` so
+  the gap cannot reopen silently. Verified against a fresh clone of the pinned
+  SHA: the whole series applies and reproduces all four in-submodule fixes.
 - **`pyproject.toml`** — `dev` carries the optional dependencies the suite
   exercises for real (`numpy`, `psycopg2-binary`, `opentelemetry-api`), and
   `py-modules` gains `delegation`, `mesh_election`, `mesh_rpc`, `py_compat`,

@@ -87,8 +87,13 @@ class TestNrrAndroidPortWiring(unittest.TestCase):
         patches = [p for p in os.listdir(patch_dir) if p.endswith(".patch")]
         self.assertTrue(patches, "no NRR patch series in patches/nrr")
         blob = "".join(read(os.path.join(patch_dir, p)) for p in patches)
+        # Every in-submodule fix must be listed here. ``plugin.cfg`` was missing
+        # from this set while the file had only ever been edited in a working
+        # copy: a fresh clone therefore restored the Godot-3 XML descriptor and
+        # test_xr_scaffold's INI sweep failed on CI while passing locally.
         for needle in ("onnx_runtime.cpp", "nrr_android.h",
-                       "nrr_power_manager.cpp"):
+                       "nrr_power_manager.cpp",
+                       "engine_plugins/godot/plugin.cfg"):
             self.assertIn(needle, blob, f"patch series missing {needle}")
 
         apply_script = os.path.join(ROOT, "scripts", "apply_nrr_patches.sh")

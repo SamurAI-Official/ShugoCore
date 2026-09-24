@@ -1,0 +1,35 @@
+diff --git a/engine_plugins/godot/plugin.cfg b/engine_plugins/godot/plugin.cfg
+index cac1fa1..959a927 100644
+--- a/engine_plugins/godot/plugin.cfg
++++ b/engine_plugins/godot/plugin.cfg
+@@ -1,20 +1,12 @@
+-<?xml version="1.0" encoding="UTF-8"?>
+-<!DOCTYPE plugin PUBLIC "-//Godot plugin//EN" "plugin.dtd">
+-<plugin>
+-    <name>NRR</name>
+-    <displayName>Neural Rendering Runtime</displayName>
+-    <description>
+-        NRR (Neural Rendering Runtime) integration for Godot.
+-        Provides neural rendering capabilities via portable C API.
+-    </description>
+-    <author>NRR Project</author>
+-    <version>1.0.0</version>
++; NRR plugin descriptor — Godot editor plugin format (INI).
++; Corrected from the XML variant this file previously shipped; Godot's
++; PluginConfig parses INI only (see tests/test_xr_scaffold.py).
+ 
+-    <dependencies>
+-        <dependency name="NRR" version="1.0.0" />
+-    </dependencies>
++[plugin]
++
++name="NRR"
++description="Neural Rendering Runtime (NRR) integration for Godot. Provides neural rendering capabilities via portable C API."
++author="NRR Project"
++version="1.0.0"
++script="NRR.gd"
+ 
+-    <scripting>
+-        <language>GDScript</language>
+-    </scripting>
+-</plugin>

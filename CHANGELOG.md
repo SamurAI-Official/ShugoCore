@@ -44,7 +44,12 @@ together now.
   *which* interpreter breaks; fail-fast hid 3.10–3.13 behind 3.9), a
   `workflow_dispatch` trigger so a work branch can be reviewed on demand with
   `gh workflow run ci.yml --ref <branch>`, and the test job installs `.[dev]`
-  alongside `requirements.txt`.
+  alongside `requirements.txt`. It also provisions the vendored NRR submodule
+  and re-applies `patches/nrr/`: three tests read that tree (`nrr_android_port`'s
+  submodule + portability checks, `xr_scaffold`'s descriptor sweep) and had been
+  erroring with `FileNotFoundError: .../cpp/nrr/runtime/onnx_runtime.cpp` on
+  every run. Only NRR is fetched — a recursive checkout would clone the whole
+  llama.cpp history onto all five matrix legs.
 - **`pyproject.toml`** — `dev` carries the optional dependencies the suite
   exercises for real (`numpy`, `psycopg2-binary`, `opentelemetry-api`), and
   `py-modules` gains `delegation`, `mesh_election`, `mesh_rpc`, `py_compat`,

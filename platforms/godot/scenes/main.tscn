@@ -1,0 +1,54 @@
+[gd_scene load_steps=8 format=3]
+
+[ext_resource type="Script" path="res://scripts/xr_bootstrap.gd" id="1_xrboot"]
+[ext_resource type="Script" path="res://scripts/controller_rig.gd" id="2_rig"]
+[ext_resource type="PackedScene" path="res://scenes/shugo_presence.tscn" id="3_presence"]
+[ext_resource type="Script" path="res://scripts/panel_manager.gd" id="4_panels"]
+
+[sub_resource type="ProceduralSkyMaterial" id="SkyMat_main"]
+sky_horizon_color = Color(0.64625, 0.65575, 0.67075, 1)
+ground_horizon_color = Color(0.64625, 0.65575, 0.67075, 1)
+
+[sub_resource type="Sky" id="Sky_main"]
+sky_material = SubResource("SkyMat_main")
+
+[sub_resource type="Environment" id="Environment_main"]
+background_mode = 2
+background_color = Color(0, 0, 0, 0)
+sky = SubResource("Sky_main")
+ambient_light_source = 2
+ambient_light_color = Color(0.35, 0.38, 0.45, 1)
+ambient_light_energy = 1.2
+
+[node name="Main" type="Node3D"]
+script = ExtResource("1_xrboot")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_main")
+
+[node name="KeyLight" type="DirectionalLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.7, 0.7, 0, -0.7, 0.7, 0, 4, 2)
+light_energy = 1.0
+
+[node name="XROrigin3D" type="XROrigin3D" parent="."]
+
+[node name="XRCamera3D" type="XRCamera3D" parent="XROrigin3D"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.6, 0)
+
+[node name="ControllerRig" type="Node3D" parent="XROrigin3D"]
+script = ExtResource("2_rig")
+groups = ["xr_controller_rig"]
+
+[node name="HandLeft" type="XRController3D" parent="XROrigin3D"]
+tracker = &"left_hand"
+show_when_tracked = true
+
+[node name="HandRight" type="XRController3D" parent="XROrigin3D"]
+tracker = &"right_hand"
+show_when_tracked = true
+
+[node name="ShugoPresence" parent="." instance=ExtResource("3_presence")]
+
+[node name="PanelManager" type="Node3D" parent="."]
+script = ExtResource("4_panels")
+visible = true

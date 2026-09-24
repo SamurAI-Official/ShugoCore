@@ -49,3 +49,10 @@ platforms/android/build/
 # don't commit). The C headers come from the same AAR so they always match.
 platforms/android/app/src/main/cpp/onnxruntime/include/
 platforms/android/app/src/main/cpp/onnxruntime/lib/
+
+# Godot editor/import/export caches and generated Android export files
+platforms/godot/.godot/
+platforms/godot/android/
+platforms/godot/*.bak*
+platforms/godot/*.state_backup
+nohup.out

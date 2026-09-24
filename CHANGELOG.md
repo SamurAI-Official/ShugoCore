@@ -4,6 +4,73 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [Unreleased]
+
+### Mobile fleet wiring on the desktop server + operator pairing route
+
+- **`shugocore_server.py`** — `main()` now constructs the canonical mobile
+  stack (`MobileNodeManager` + `MobileComputeBroker` + `MobileExecutionHandler`)
+  and injects it as `engine_kwargs["mobile_handler"]`, so `GET /api/v1/fleet`
+  reports `enabled: true` instead of the previous hard-wired `enabled: false`
+  (the CLI never passed a handler). Opt out with `--no-mobile`; a construction
+  failure degrades to `enabled: false` rather than refusing to start. New
+  bearer-authenticated `POST /api/v1/fleet` implements the documented operator
+  pairing flow (`{"device_id", "action": "pair"|"unpair", "manifest", ...}`):
+  pairing allowlists the node, keeps the ingest topic-ACL allowlist in sync
+  (set semantics — pair adds, unpair removes), and subscribes the device's
+  contract topics. `GET /api/v1/sensors` still reports `enabled: false` on a
+  bare desktop engine by design — a sensor stream is only reported when the
+  hosted agent's telemetry actually exists, never fabricated.
+- **`tests/test_shugocore_server.py`** — two new tests cover the pairing route
+  (400 on bad input, allowlist sync on pair *and* unpair, fleet visibility,
+  503 when the fleet is disabled).
+
+### Distributed mesh primary election, security baselines, XR scaffold
+
+The Android custodian (Exynos-1380 page-robot family) and a paired desktop can
+now form a mesh with exactly one primary: the primary runs the agent loop's
+side-effects (speech, `ask_user`), every other live node falls back to
+peripheral mode (sensors + journal + RPC offload). Design rule: **paired + fresh
+heartbeat + thermal < 3 + headroom > 0 are candidates; lowest priority wins,
+tie-break on smallest node_id**. Lease 10s, heartbeat timeout 30s. A partitioned
+node fails closed to standalone; re-merge is a fresh election.
+
+- **`mesh_election.py`** (new) — deterministic, thermal-aware election plus the
+  split-layer command builder. `observe_heartbeat(payload, now=None)` accepts an
+  injectable clock for tests and replay.
+- **`shugocore_agent.py`** — each tick feeds local thermal/memory and the
+  peer snapshots Kotlin pushes, then re-evaluates the lease
+  (`_mesh_heartbeat_tick`). All four side-effect chokepoints
+  (`_execute_speak`, `_execute_ask_user`, `_speak_direct`, `speak_test`) are
+  gated on the lease and a follower refusal is journaled, not silently dropped.
+  `get_status()` reports `mesh_role` (`primary` / `follower` / `standalone` /
+  `none`) and `mesh_primary` — **a lone node holding its own single-node lease
+  reports `standalone`, never `primary`**.
+- **`shugocore_server.py`** — `/api/v1/status` surfaces `mesh_role` /
+  `mesh_primary` additively; absent keys are never fabricated.
+- **`security_inventory.py`** (new) — one bounded, observational snapshot of a
+  node's posture (audit-chain integrity via the real `verify()`, policy
+  invariants, network policy, granted caps, consent actions, mesh role) plus a
+  documented baseline evaluator. Violations are `drift` (control present but
+  wrong) or `unverifiable` (control absent — always critical: silence is not
+  safety). A not-yet-written audit chain reports `empty`, not tampered.
+  `GET /api/v1/security` exposes the server's own controls and any drift,
+  including a tokenless dev server reported *as* drift.
+- **`platforms/godot/`** (new) — Godot 4 OpenXR scaffold wired to the real wire
+  contracts (`/health`, `/api/v1/status`, `/api/v1/sensors`, `POST /api/generate`,
+  policy-gated `POST /api/v1/task`), bearer token via `SHUGOCORE_SERVER_TOKEN`.
+  XR bootstrap reports only observed modes (`xr` / `desktop_preview` /
+  `unavailable`); agent presence never claims a headset it does not have, and
+  LISTENING is opt-in only. Boots clean headless (Godot 4.7.2) with zero script
+  or scene errors.
+- **Kotlin** — `NodeStatusHeader` shows the mesh role (`a lone node renders
+  STANDALONE, never PRIMARY`); a peripheral can now advertise its election
+  fitness over RFCOMM as a `mesh/health` message (`thermal_status`,
+  `mem_available_bytes`, `priority`, monotone `seq`). Fields are clamped on
+  receipt (thermal 0..4, priority 1..9999), and **both** peer serializers emit
+  them only when the peer actually advertised health — a silent peer stays
+  ineligible rather than having values invented for it.
+
 ## [1.30.5] - 2026-09-20
 
 ### Closed conversational loop: toolable-question routing, honest measurements, ask_user answers

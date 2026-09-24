@@ -65,6 +65,16 @@ from urllib.parse import urlparse, urlsplit
 
 from security import RateLimiter
 
+# Track 2: security inventory & baseline (observational, optional).
+try:
+    from security_inventory import (collect_agent_inventory,
+                                    collect_server_inventory,
+                                    evaluate_baseline)
+    from security_inventory import SERVER_BASELINE as _SERVER_BASELINE
+    _HAS_SECURITY_INVENTORY = True
+except Exception:
+    _HAS_SECURITY_INVENTORY = False
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -330,6 +340,8 @@ class ShugoCoreServer:
                 return "fleet"
             if path == "/api/v1/sensors":
                 return "sensors"
+            if path == "/api/v1/security":
+                return "security"
         elif method == "POST":
             if path == "/api/generate":
                 return "generate"
@@ -337,6 +349,8 @@ class ShugoCoreServer:
                 return "chat"
             if path == "/api/v1/task":
                 return "task"
+            if path == "/api/v1/fleet":
+                return "fleet_pair"
             if _approval_request_id(path) is not None:
                 return ("approve" if path.endswith("/approve") else "deny")
         return None
@@ -390,7 +404,8 @@ class ShugoCoreServer:
         if not isinstance(snap, dict):
             return None
         agent = {key: snap[key] for key in
-                 ("loop", "loop_stages", "mesh_activity", "uptime_seconds")
+                 ("loop", "loop_stages", "mesh_activity", "uptime_seconds",
+                  "mesh_role", "mesh_primary")
                  if key in snap}
         return agent or None
 
@@ -435,6 +450,30 @@ class ShugoCoreServer:
         agent = self._agent_activity()
         if agent is not None:
             body["agent"] = agent
+        return 200, body
+
+    def handle_security(self) -> Tuple[int, Dict[str, Any]]:
+        """GET /api/v1/security -> Track 2 security inventory + baseline.
+
+        Wire-facing server controls (token, rate limiting) and the hosted
+        engine's audit chain are always inventoried when the module is
+        importable. Honest and additive: absent surfaces are omitted;
+        unverifiable baseline controls are violations, never assumed safe.
+        """
+        body: Dict[str, Any] = {"version": self._version}
+        if not _HAS_SECURITY_INVENTORY:
+            body["security_inventory"] = None
+            body["security_baseline"] = None
+            body["security_module"] = "unavailable"
+            return 200, body
+        inventory = {"server": collect_server_inventory(self)}
+        # Flatten the hosted engine's controls to the top level so the
+        # baseline evaluator sees audit/policy sections directly.
+        for key, value in collect_agent_inventory(self.engine).items():
+            inventory[key] = value
+        body["security_inventory"] = inventory
+        body["security_baseline"] = evaluate_baseline(
+            inventory, baseline=_SERVER_BASELINE)
         return 200, body
 
     def handle_uptime(self) -> Tuple[int, Dict[str, Any]]:
@@ -553,6 +592,90 @@ class ShugoCoreServer:
                              for k, v in manifest.items()},
             })
         return 200, {"nodes": out, "count": len(out), "enabled": True}
+
+    def handle_fleet_pair(self, body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+        """POST /api/v1/fleet -> operator pairing/unpairing of mobile nodes.
+
+        Pairing is consent (docs/android_integration.md): it allowlists the
+        device in the registry, keeps the ingest topic-ACL allowlist in sync,
+        and subscribes the device's contract topics. Body:
+        ``{"device_id": "...", "action": "pair"|"unpair", "manifest": {...}}``.
+        Bearer auth and rate limiting already ran in ``_dispatch``.
+        """
+        if not isinstance(body, dict):
+            return 400, {"error": "body must be a JSON object"}
+        raw_id = body.get("device_id")
+        device_id = (str(raw_id).strip().strip("/")
+                     if isinstance(raw_id, (str, int)) else "")
+        if not device_id or len(device_id) > 48 or "/" in device_id \
+                or device_id in (".", ".."):
+            return 400, {"error": "device_id required (max 48 chars)"}
+        raw_action = body.get("action")
+        action = (raw_action.strip().lower()
+                  if isinstance(raw_action, str) and raw_action.strip()
+                  else "pair")
+        if action not in ("pair", "unpair"):
+            return 400, {"error": "action must be 'pair' or 'unpair'"}
+        handler = getattr(self.engine, "mobile_handler", None)
+        if handler is None:
+            return 503, {"error": "mobile fleet not enabled"}
+        registry = getattr(handler, "registry", None)
+        if registry is None:
+            registry = getattr(handler, "node_registry", None)
+        if callable(registry):
+            try:
+                registry = registry()
+            except Exception:
+                registry = None
+        if registry is None or not hasattr(registry, "pair"):
+            return 503, {"error": "mobile fleet not enabled"}
+        if action == "unpair":
+            removed = bool(registry.unpair(device_id))
+            # Revoke consent symmetrically: drop the device from the
+            # ingest topic-ACL allowlist too (set in policy.CapabilityRegistry).
+            try:
+                manager = getattr(handler, "manager", None)
+                caps = getattr(manager, "capabilities", None)
+                allow = getattr(caps, "mobile_devices_allowlist", None)
+                if isinstance(allow, set):
+                    allow.discard(device_id)
+                elif isinstance(allow, list) and device_id in allow:
+                    allow.remove(device_id)
+            except Exception as exc:
+                logger.warning("fleet unpair allowlist sync failed for %s: %s",
+                               device_id, type(exc).__name__)
+            return 200, {"enabled": True, "action": "unpair",
+                         "device_id": device_id, "removed": removed}
+        manifest = body.get("manifest")
+        if not isinstance(manifest, dict):
+            manifest = {}
+        paired_by = body.get("paired_by")
+        paired_by = (str(paired_by).strip()
+                     if isinstance(paired_by, str) and paired_by.strip()
+                     else "operator")
+        try:
+            entry = registry.pair(device_id, manifest, paired_by=paired_by)
+        except ValueError as exc:
+            return 400, {"error": str(exc)}
+        # Pairing == consent: keep the topic-ACL allowlist in sync and
+        # subscribe the contract topics (best-effort, never fatal).
+        try:
+            manager = getattr(handler, "manager", None)
+            caps = getattr(manager, "capabilities", None)
+            allow = getattr(caps, "mobile_devices_allowlist", None)
+            if isinstance(allow, set):
+                allow.add(device_id)
+            elif isinstance(allow, list) and device_id not in allow:
+                allow.append(device_id)
+            if callable(getattr(manager, "subscribe_device", None)):
+                manager.subscribe_device(device_id)
+        except Exception as exc:
+            logger.warning("fleet pair post-steps failed for %s: %s",
+                           device_id, type(exc).__name__)
+        return 200, {"enabled": True, "action": "pair",
+                     "device_id": device_id, "paired": True,
+                     "alive": bool(registry.alive(device_id)),
+                     "expires_at": entry.get("expires_at")}
 
     # -- C3: sensor live-stream (poll-based, bounded) -------------------------
 
@@ -803,8 +926,12 @@ class ShugoCoreHandler(http_server.BaseHTTPRequestHandler):
             status, payload = core.handle_approvals()
         elif norm_path == "/api/v1/fleet" and method == "GET":
             status, payload = core.handle_fleet()
+        elif norm_path == "/api/v1/fleet" and method == "POST":
+            status, payload = core.handle_fleet_pair(_read_json_body(self))
         elif norm_path == "/api/v1/sensors" and method == "GET":
             status, payload = core.handle_sensors()
+        elif norm_path == "/api/v1/security" and method == "GET":
+            status, payload = core.handle_security()
         elif method == "POST" and norm_path.endswith("/approve"):
             # Path shape: /api/v1/approvals/<id>/approve
             rid = _approval_request_id(norm_path)
@@ -978,6 +1105,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--rate-limit-burst", type=int,
                         default=DEFAULT_RATE_LIMIT_BURST,
                         help="per-client burst capacity (default: 120)")
+    parser.add_argument("--no-mobile", action="store_true",
+                        help="disable the mobile fleet/sensor subsystem "
+                             "(enabled by default)")
     args = parser.parse_args(argv)
 
     # Fail-closed exposure: a non-loopback bind must be authenticated unless
@@ -1010,6 +1140,33 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.episodic_journal_path:
         engine_kwargs["episodic_journal_path"] = args.episodic_journal_path
 
+    # Mobile fleet/sensor subsystem (enabled by default; --no-mobile opts out).
+    # Construction mirrors tests/test_mobile.py: registry + capabilities ->
+    # manager + broker -> handler, handed to the engine as mobile_handler so
+    # /api/v1/fleet and /api/v1/sensors report enabled=true. Any failure here
+    # degrades to the historical behavior (enabled=false) instead of refusing
+    # to start the server.
+    if not args.no_mobile:
+        try:
+            from mobile_nodes import (MobileNodeManager, MobileComputeBroker,
+                                      MobileExecutionHandler,
+                                      MobileNodeRegistry)
+            from policy import CapabilityRegistry
+            from ros2_interface import create_ros2_interface
+
+            _ros2 = create_ros2_interface(node_name="shugocore_server")
+            _caps = CapabilityRegistry()
+            _mregistry = MobileNodeRegistry()
+            _manager = MobileNodeManager(_ros2, _mregistry, _caps)
+            _broker = MobileComputeBroker(_ros2, _mregistry, _caps)
+            engine_kwargs["mobile_handler"] = MobileExecutionHandler(
+                _manager, _broker)
+            logger.info("mobile fleet: enabled "
+                        "(nodes appear in /api/v1/fleet once paired)")
+        except Exception as exc:
+            logger.warning("mobile fleet disabled (%s: %s)",
+                           type(exc).__name__, exc)
+
     try:
         engine = build_engine(
             models=[{"id": args.model, "type": "text", "backend": backend_config}],
@@ -1036,7 +1193,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     logger.info("Auth: %s", "bearer token required"
                 if token else "disabled (loopback or --allow-unauthenticated)")
     logger.info("Ollama wire contract: /api/generate /api/chat /api/tags /health")
-    logger.info("Engine API:           /api/v1/status  POST /api/v1/task")
+    logger.info("Engine API:           /api/v1/status  /api/v1/security  POST /api/v1/task")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

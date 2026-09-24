@@ -1,0 +1,22 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/shugo_presence.gd" id="1_presence"]
+
+[node name="ShugoPresence" type="Node3D"]
+script = ExtResource("1_presence")
+
+[node name="StateLabel" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.6, -1.2)
+billboard = 1
+no_depth_test = true
+pixel_size = 0.004
+text = "SHUGO — offline"
+font_size = 96
+
+[node name="DetailLabel" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.15, -1.2)
+billboard = 1
+no_depth_test = true
+pixel_size = 0.004
+text = ""
+font_size = 40

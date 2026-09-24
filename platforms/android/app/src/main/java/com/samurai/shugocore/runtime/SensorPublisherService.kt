@@ -5,6 +5,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
@@ -14,6 +15,7 @@ import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import com.samurai.shugocore.inference.ThermalMonitor
 
 class SensorPublisherService : Service() {
     companion object {
@@ -23,8 +25,12 @@ class SensorPublisherService : Service() {
         private const val STREAM_INTERVAL_MS = 200L
         private const val STREAM_INTERVAL_MS_HOT = 500L
         private const val HEARTBEAT_INTERVAL_MS = 2_000L
+        /** v1.28: health broadcast interval */
+        private const val HEALTH_INTERVAL_MS = 5_000L
         const val EXTRA_PRIMARY_ID = "primary_id"
         const val EXTRA_STREAM_INTERVAL_MS = "stream_interval_ms"
+        /** v1.28: election priority override */
+        const val EXTRA_ELECTION_PRIORITY = "election_priority"
         var isRunning = false; private set
         /** v1.27: exposed so the primary can show peripheral push freshness. */
         @Volatile var lastSensorPushMs: Long = 0L
@@ -39,6 +45,10 @@ class SensorPublisherService : Service() {
     private var primaryDeviceId: String? = null
     private var streamIntervalMs: Long = STREAM_INTERVAL_MS
     private var connected = false
+    private var healthTask: ScheduledFuture<*>? = null
+    private var meshSeq: Long = 0L
+    private var thermalMonitor: ThermalMonitor? = null
+    private var electionPriority: Int = 500
 
     override fun onCreate() {
         super.onCreate(); createNotificationChannel()
@@ -58,6 +68,10 @@ class SensorPublisherService : Service() {
         }
         // v1.27: scale interval down if the device is already warm.
         streamIntervalMs = selectInterval(streamIntervalMs)
+        // v1.28: read optional election priority override.
+        intent?.getIntExtra(EXTRA_ELECTION_PRIORITY, 500)?.let {
+            if (it in 1..9999) electionPriority = it
+        }
         // v1.29: ONE shared RFCOMM transport per process. SPS used to build
         // its own BluetoothTransport on MESH_SERVICE_UUID, giving the
         // peripheral TWO listeners on the same SDP record — the primary's
@@ -68,6 +82,8 @@ class SensorPublisherService : Service() {
         val mgr = DeviceMeshManager.getOrCreate(applicationContext)
         mesh = mgr
         mgr.start()
+        // v1.28: instantiate thermal monitor for mesh health broadcasts.
+        thermalMonitor = ThermalMonitor(this)
         // v1.27: announce ourselves as a sensor agent so the primary knows our
         // role + capabilities immediately (previously the peripheral never sent
         // device_announce, so the primary could not distinguish sensor agents).
@@ -87,7 +103,9 @@ class SensorPublisherService : Service() {
             }
         }
         Log.i(TAG, "peripheral streaming via shared mesh transport ($MESH_SERVICE_UUID)")
-        startStreaming(); startHeartbeat(); return START_STICKY
+        startStreaming(); startHeartbeat()
+        startHealthBroadcast()
+        return START_STICKY
     }
 
     /** v1.27: pick a streaming interval based on thermal state (best-effort). */
@@ -133,7 +151,7 @@ class SensorPublisherService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        streamTask?.cancel(true); heartbeatTask?.cancel(true); isRunning = false
+        streamTask?.cancel(true); heartbeatTask?.cancel(true); healthTask?.cancel(true); isRunning = false
         Log.i(TAG, "sensor publisher stopped"); super.onDestroy()
     }
     private fun startStreaming() {
@@ -203,6 +221,34 @@ class SensorPublisherService : Service() {
             mgr.broadcastToPeers(msg)
         }, HEARTBEAT_INTERVAL_MS, HEARTBEAT_INTERVAL_MS, TimeUnit.MILLISECONDS)
     }
+    /** v1.28: periodic mesh/health broadcast so the primary can evaluate
+     *  this peripheral as an election candidate. Omitted when no thermal
+     *  monitor is available -- the peripheral stays ineligible rather than
+     *  fabricating health data. */
+    private fun startHealthBroadcast() {
+        if (thermalMonitor == null) {
+            Log.i(TAG, "health broadcast skipped: no thermal monitor")
+            return
+        }
+        healthTask = executor.scheduleAtFixedRate({
+            val mgr = mesh ?: return@scheduleAtFixedRate
+            val info = thermalMonitor?.getThermalInfo() ?: return@scheduleAtFixedRate
+            val am = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+            val mem = android.app.ActivityManager.MemoryInfo()
+            am.getMemoryInfo(mem)
+            val msg = JSONObject().apply {
+                put("type", "mesh/health")
+                put("device_id", android.os.Build.MODEL)
+                put("thermal_status", info.state.ordinal)
+                put("mem_available_bytes", mem.availMem)
+                put("priority", electionPriority)
+                put("seq", ++meshSeq)
+            }
+            mgr.broadcastToPeers(msg)
+        }, HEALTH_INTERVAL_MS, HEALTH_INTERVAL_MS, TimeUnit.MILLISECONDS)
+        Log.i(TAG, "health broadcast started")
+    }
+
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val c = NotificationChannel(CHANNEL_ID, "ShugoCore Sensor",

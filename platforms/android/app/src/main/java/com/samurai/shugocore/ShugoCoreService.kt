@@ -242,6 +242,13 @@ class ShugoCoreService : Service() {
                                         .put("online", peer.online)
                                         .put("sensor_status",
                                             org.json.JSONObject(peer.sensorStatus))
+                                        // v1.28: election fitness -- only when advertised.
+                                        .apply { peer.health?.let { h ->
+                                            put("thermal_status", h.thermalStatus)
+                                            put("mem_available_bytes", h.memAvailableBytes)
+                                            put("priority", h.priority)
+                                            put("seq", h.seq)
+                                        } }
                                         // v1.28: real remote perception facts
                                         // (carried — the primary fuses these
                                         // into its visual-audio binding).

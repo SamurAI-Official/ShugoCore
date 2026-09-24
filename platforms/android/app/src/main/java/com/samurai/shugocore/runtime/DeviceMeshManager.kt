@@ -14,6 +14,18 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
+/** v1.28: health snapshot carried by a peer. Only present when the peer
+ *  advertises it via a `mesh/health` heartbeat — a peer that never
+ *  advertises stays `null` and is excluded from candidate selection on
+ *  the Python side (absence is not fabrication). */
+data class PeerHealth(
+    val thermalStatus: Int,      // ThermalState ordinal (0..4)
+    val memAvailableBytes: Long, // bytes of free RAM
+    val priority: Int,           // 1..9999 — lower wins
+    val seq: Long,               // monotone liveness counter
+    val receivedMs: Long,        // System.currentTimeMillis() on receipt
+)
+
 data class MeshPeer(
     val deviceId: String,
     var name: String,
@@ -22,6 +34,7 @@ data class MeshPeer(
     var lastSeenMs: Long = 0L,
     var online: Boolean = true,
     val sensorStatus: MutableMap<String, String> = ConcurrentHashMap(),
+    var health: PeerHealth? = null,
 )
 
 class DeviceMeshManager(private val context: Context) {
@@ -211,6 +224,26 @@ class DeviceMeshManager(private val context: Context) {
                 pushSensorAgents()
             }
             "sensor/compute" -> peer.sensorStatus["compute"] = json.optString("status")
+            "mesh/health" -> {
+                // v1.28: a peer advertises its election fitness so the Python
+                // MeshElection can consider it as a primary candidate. Only
+                // fields actually present in the message are read — we never
+                // fabricate thermal/mem values.
+                val thermal = json.optInt("thermal_status", -1)
+                val mem = json.optLong("mem_available_bytes", -1L)
+                val priority = json.optInt("priority", 500)
+                val seq = json.optLong("seq", 0L)
+                if (thermal >= 0 && mem >= 0) {
+                    peer.health = PeerHealth(
+                        thermalStatus = kotlin.math.max(0, kotlin.math.min(4, thermal)),
+                        memAvailableBytes = mem,
+                        priority = kotlin.math.max(1, kotlin.math.min(9999, priority)),
+                        seq = seq,
+                        receivedMs = System.currentTimeMillis(),
+                    )
+                }
+                pushSensorAgents()
+            }
             "heartbeat" -> { pushSensorAgents() }
         }
         onPeerMessage?.invoke(deviceId, json)
@@ -230,6 +263,16 @@ class DeviceMeshManager(private val context: Context) {
                 .put("mic", peer.capabilities.contains("microphone"))
                 .put("online", peer.online)
                 .put("sensor_status", org.json.JSONObject(peer.sensorStatus))
+                // v1.28: election fitness — emitted only when the peer has
+                // advertised a mesh/health heartbeat (never fabricated).
+                .apply {
+                    peer.health?.let { h ->
+                        put("thermal_status", h.thermalStatus)
+                        put("mem_available_bytes", h.memAvailableBytes)
+                        put("priority", h.priority)
+                        put("seq", h.seq)
+                    }
+                }
                 // v1.28: real remote perception facts (carried — never
                 // assumed). The primary fuses these into its own binding.
                 .put("remote_face_present", PerceptionState.remoteFacePresent)

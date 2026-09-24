@@ -26,6 +26,26 @@ try:
     _HAS_ATTENTION = True
 except Exception:
     _HAS_ATTENTION = False
+
+# Track 1: mesh primary election. Exactly one paired node holds the
+# primary lease and runs the loop side-effects; every other live node
+# falls back to peripheral mode (sensors + journal + RPC offload, never
+# speaks). Import failure degrades to standalone — never blocks boot.
+try:
+    from mesh_election import MeshElection
+    _HAS_MESH_ELECTION = True
+except Exception:
+    _HAS_MESH_ELECTION = False
+
+# Track 2: security inventory & baseline. Observational only; import
+# failure degrades to an absent (never fabricated) inventory surface.
+try:
+    from security_inventory import (collect_agent_inventory,
+                                    evaluate_baseline)
+    _HAS_SECURITY_INVENTORY = True
+except Exception:
+    _HAS_SECURITY_INVENTORY = False
+
 from security import sanitize_text
 
 
@@ -88,7 +108,9 @@ class AndroidAgent:
     def __init__(self, device_caps: Optional[str] = None,
                  api_url: Optional[str] = None,
                  data_dir: Optional[str] = None,
-                 auth_token: Optional[str] = None):
+                 auth_token: Optional[str] = None,
+                 mesh_node_id: Optional[str] = None,
+                 mesh_priority: int = 500):
         self.device_caps = device_caps or "Unknown"
         self.api_url = api_url or "http://127.0.0.1:11434"
         # Writable app-private dir injected by the Kotlin shell. Android apps
@@ -139,6 +161,19 @@ class AndroidAgent:
         self._open_question: Optional[Dict[str, Any]] = None
         # v1.20 attention verification layer (provider-side).
         self.attention = AttentionLayer() if _HAS_ATTENTION else None
+        # Track 1: mesh primary election. Android hardware is the
+        # page-robot custodian (Exynos-1380 family): a HIGH priority number,
+        # so a paired desktop (lower priority) holds the primary lease and
+        # this node falls back to peripheral mode. With no live peers the
+        # election yields no primary and the node acts standalone.
+        self.mesh_election = None
+        if _HAS_MESH_ELECTION:
+            try:
+                self.mesh_election = MeshElection(
+                    node_id=mesh_node_id or f"android-{self.device_caps}",
+                    priority=mesh_priority)
+            except Exception:
+                self.mesh_election = None
         # Last-tick decision source for cycle-truth observability.
         self._decision_source: str = "none"
         # v1.20: dedup cursor for conversation memory storage.
@@ -940,6 +975,11 @@ class AndroidAgent:
         bounded here; the listener (Kotlin TTS) performs the actual output.
         The AgentResponse lands on the interaction bus so the UI and telemetry
         tell the truth about what the agent said."""
+        # Track 1: primary-only guardrail — followers journal, never speak.
+        if not self._mesh_may_act("speak"):
+            return {"status": "refused", "reason": "mesh_follower",
+                    "primary": (self.mesh_election.primary()
+                                if self.mesh_election is not None else None)}
         params = decision.get("params") or {}
         # Dialect tolerance: small models put the words in params.text,
         # params.utterance, or (after parser normalization) top-level text
@@ -978,6 +1018,11 @@ class AndroidAgent:
         marked on the bus as expecting an answer, and the next speech
         observation within the TTL is paired with it. A spoken reply is DATA
         the agent may reason over — it is never a consent record."""
+        # Track 1: primary-only guardrail — followers never ask the user.
+        if not self._mesh_may_act("ask_user"):
+            return {"status": "refused", "reason": "mesh_follower",
+                    "primary": (self.mesh_election.primary()
+                                if self.mesh_election is not None else None)}
         params = decision.get("params") or {}
         # v1.18: sentence-aware bound (never a spoken fragment).
         text = truncate_sentence(
@@ -1476,11 +1521,124 @@ class AndroidAgent:
         self.log("MESH", "mesh rpc %s" % _json.dumps(result))
         return _json.dumps(result)
 
+    def _mesh_heartbeat_tick(self) -> None:
+        """Track 1: feed local + peer heartbeats into the election and
+        re-evaluate the primary lease. Local thermal state comes from the
+        Kotlin ThermalMonitor (self.telemetry['thermal_state']); peer
+        heartbeats arrive via update_mesh_peers (telemetry['mesh_peers']).
+        Best-effort: an election failure must never break the agent loop —
+        it degrades to standalone behavior."""
+        election = self.mesh_election
+        if election is None:
+            return
+        try:
+            # Attach the engine's audit chain lazily (it does not exist at
+            # __init__ time); MeshElection tolerates audit=None.
+            if election.audit is None:
+                election.audit = getattr(self.engine, "audit", None)
+            telemetry = self.telemetry if isinstance(self.telemetry, dict) else {}
+            try:
+                thermal = int(telemetry.get(
+                    "thermal_state", telemetry.get("thermal_status", 0)) or 0)
+            except (TypeError, ValueError):
+                thermal = 0
+            try:
+                mem = int(telemetry.get(
+                    "mem_available_bytes", telemetry.get("mem_available", 0)) or 0)
+            except (TypeError, ValueError):
+                mem = 0
+            election.local_heartbeat(thermal_status=thermal,
+                                     mem_available_bytes=mem)
+            for peer in (telemetry.get("mesh_peers") or [])[:16]:
+                if not isinstance(peer, dict):
+                    continue
+                peer_id = str(peer.get("device_id") or peer.get("node_id")
+                              or peer.get("id") or "").strip()
+                if not peer_id:
+                    continue
+                election.observe_heartbeat({
+                    "node_id": peer_id,
+                    "priority": peer.get("priority", 500),
+                    "thermal_status": peer.get(
+                        "thermal_status", peer.get("thermal_state", 0)),
+                    "mem_available_bytes": peer.get("mem_available_bytes", 0),
+                    "paired": peer.get("paired", True),
+                    "seq": peer.get("seq", 0),
+                })
+            election.tick()
+        except Exception as exc:
+            self.log("MESH", f"election tick failed: {exc}", level="WARN")
+
+    def _mesh_may_act(self, action: str) -> bool:
+        """Track 1 primary-only guardrail: True when this node may run the
+        side-effect `action`. Allowed when there is no election module, no
+        live primary other than us (standalone / partition — fail closed to
+        standalone per the design), or we hold the lease. A follower logs a
+        refusal and the caller journals instead of acting."""
+        election = self.mesh_election
+        if election is None:
+            return True
+        try:
+            result = election.tick()
+        except Exception:
+            return True
+        primary = result.get("primary")
+        if primary is None or primary == election.node_id:
+            return True
+        self.log("MESH", f"follower refusal: {action} "
+                         f"(primary={primary})", level="WARN")
+        return False
+
+    def _mesh_role_label(self) -> str:
+        """Compact role for the status surface: 'none' (module missing),
+        'primary' (lease held with live peers), 'follower', 'standalone'
+        (lone node / no live candidates) or 'unknown' (election error)."""
+        election = self.mesh_election
+        if election is None:
+            return "none"
+        try:
+            result = election.tick()
+        except Exception:
+            return "unknown"
+        primary = result.get("primary")
+        if primary != election.node_id:
+            return "follower" if primary else "standalone"
+        # We hold the lease: distinguish a true primary (live peers) from
+        # a lone node acting standalone (partition, no quorum needed).
+        return "primary" if election.live_peers() else "standalone"
+
+    def _security_inventory(self) -> Optional[Dict[str, Any]]:
+        """Track 2: one bounded snapshot of this node's security posture.
+        None when the module is unavailable (absent, never fabricated)."""
+        if not _HAS_SECURITY_INVENTORY:
+            return None
+        try:
+            return collect_agent_inventory(self)
+        except Exception as exc:
+            self.log("POLICY", f"security inventory failed: {exc}",
+                     level="WARN")
+            return None
+
+    def _security_baseline(self) -> Optional[Dict[str, Any]]:
+        """Track 2: baseline drift for the inventory above. Absent
+        controls are violations (unverifiable), never assumed safe."""
+        if not _HAS_SECURITY_INVENTORY:
+            return None
+        try:
+            return evaluate_baseline(self._security_inventory() or {})
+        except Exception as exc:
+            self.log("POLICY", f"security baseline failed: {exc}",
+                     level="WARN")
+            return None
+
     def _speak_direct(self, text: str) -> bool:
         """Speak text directly through the TTS listener, bypassing the decision
         pipeline. Used for command responses and other deterministic output."""
         from security import sanitize_text
         from human_interaction import AgentResponse
+        # Track 1: primary-only guardrail — followers never speak.
+        if not self._mesh_may_act("speak_direct"):
+            return False
         if self._speak_listener is None:
             return False
         clean = sanitize_text(text, 400)
@@ -1602,6 +1760,11 @@ class AndroidAgent:
         content = sanitize_text(
             str(text or "I am here. Shugo can speak."), 200)
         self.log("AGENT", f"speak_test: {content!r}")
+        # Track 1: primary-only guardrail — operator speech included.
+        if not self._mesh_may_act("speak_test"):
+            return {"status": "refused", "reason": "mesh_follower",
+                    "primary": (self.mesh_election.primary()
+                                if self.mesh_election is not None else None)}
         if self.engine is None:
             return {"status": "error", "message": "engine unavailable"}
         decision = {"action_type": "speak",
@@ -1849,6 +2012,9 @@ class AndroidAgent:
 
     def tick(self) -> None:
         self.tick_count += 1
+        # Track 1: heartbeat + election refresh each cycle. Best-effort and
+        # never raising (see _mesh_heartbeat_tick).
+        self._mesh_heartbeat_tick()
         cycle_started = time.monotonic()
         # Available to the instrumentation even on paths that never reach the
         # engine (conversational fast path, no-engine ticks).
@@ -2606,6 +2772,15 @@ class AndroidAgent:
             # sensor status (from the last observation).
             "mesh_peer_count": self.last_observation.get("mesh_peer_count", 0),
             "mesh_peers": self.last_observation.get("mesh_peers", []),
+            # Track 1: election role — "primary", "follower", "standalone",
+            # "none" (no election module) or "unknown" (election error).
+            "mesh_role": self._mesh_role_label(),
+            "mesh_primary": (self.mesh_election.primary()
+                             if self.mesh_election is not None else None),
+            # Track 2: security inventory + baseline drift (observational,
+            # bounded; None when the module is unavailable).
+            "security_inventory": self._security_inventory(),
+            "security_baseline": self._security_baseline(),
             # v1.28: visual-audio binding — remote speech attribution carried
             # from the mesh (face+voice fused; metadata only).
             "remote_binding": self.last_observation.get("remote_binding"),
@@ -2709,9 +2884,15 @@ class AndroidAgent:
 def create_agent(device_caps: Optional[str] = None,
                  api_url: Optional[str] = None,
                  data_dir: Optional[str] = None,
-                 auth_token: Optional[str] = None) -> AndroidAgent:
+                 auth_token: Optional[str] = None,
+                 mesh_node_id: Optional[str] = None,
+                 mesh_priority: int = 500) -> AndroidAgent:
     """Build an AndroidAgent. The bearer token is forwarded to the
     AndroidBackend so token-protected desktop servers can be paired
-    without --allow-unauthenticated."""
+    without --allow-unauthenticated. mesh_node_id / mesh_priority feed the
+    Track 1 mesh primary election (Android defaults: high priority number,
+    so a paired desktop wins the lease)."""
     return AndroidAgent(device_caps=device_caps, api_url=api_url,
-                        data_dir=data_dir, auth_token=auth_token)
+                        data_dir=data_dir, auth_token=auth_token,
+                        mesh_node_id=mesh_node_id,
+                        mesh_priority=mesh_priority)

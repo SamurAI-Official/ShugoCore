@@ -1,0 +1,65 @@
+; Engine configuration file.
+; Godot 4.x — ShugoCore XR scaffold (Track 3).
+;
+; OpenXR is enabled here. When no runtime/HMD is present the XRBootstrap
+; autoload degrades to an honest desktop preview mode (never a fake
+; headset state), so the scaffold runs on any dev machine.
+
+config_version=5
+
+[application]
+config/name="ShugoCore XR"
+config/icon="res://icon.svg"
+config/description="OpenXR operator console for ShugoCore agents (Track 3 scaffold)."
+run/main_scene="res://scenes/main.tscn"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+
+[autoload]
+
+ShugoCoreBridge="*res://scripts/shugocore_agent_bridge.gd"
+XRBootstrap="*res://scripts/xr_bootstrap.gd"
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/vram_compression/import_etc2_astc=true
+anti_aliasing/quality/msaa_3d=2
+environment/defaults/default_clear_color=Color(0, 0, 0, 0)
+
+[xr]
+
+openxr/enabled=true
+openxr/reference_space=2
+; AR passthrough. environment_blend_mode is the CORE OpenXR compositor
+; switch, and the enum VALUE ORDER is the XRInterface one:
+;   0 = Opaque, 1 = Additive, 2 = Alpha Blend
+; (verified against the engine's own hint string "Opaque,Additive,Alpha
+; Blend" — an earlier revision of this file carried 1 with a comment
+; claiming 1 was Alpha Blend, which is Additive: that single wrong digit
+; is why the headset composited the alpha-0 framebuffer as solid black
+; instead of showing the camera feed.)
+; Without 2 the transparent_bg viewport is STILL composited opaque. The
+; meta/passthrough extension below only adds the
+; com.oculus.feature.PASSTHROUGH manifest privilege; it does NOT change
+; the blend mode, so both are required.
+openxr/environment_blend_mode=2
+openxr/extensions/meta/passthrough=true
+; Hand tracking must be DECLARED for the runtime to offer it, and the
+; hand-interaction profile must be enabled for the action map's
+; /interaction_profiles/ext/hand_interaction_ext bindings to be legal.
+; The working body-tracking sample sets both.
+openxr/extensions/hand_tracking=true
+openxr/extensions/hand_interaction_profile=true
+; Meta deactivates the Touch controllers whenever an app binds the
+; hand-interaction profile but does NOT opt into coexistence, which is
+; the "both controllers disconnect while the app runs" symptom. This is
+; the vendor-supported switch for keeping BOTH input modalities live, so
+; a controller-driven app is never forced into hands-only mode.
+openxr/extensions/meta/simultaneous_hands_and_controllers=true
+shaders/enabled=true

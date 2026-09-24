@@ -1,0 +1,12 @@
+{
+  "_comment": [
+    "ShugoCore XR shipped defaults (read-only at runtime).",
+    "Set `agent_url` to the desktop's LAN address before installing on a headset:",
+    "127.0.0.1 points at the headset itself, not the Mac. The in-headset Settings",
+    "panel writes user://shugocore_xr.json, which overrides this read-only file."
+  ],
+  "agent_url": "http://192.0.2.10:11435",
+  "bearer_token": "",
+  "poll_seconds": 2.0,
+  "fleet_poll_seconds": 5.0
+}

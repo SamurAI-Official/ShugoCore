@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import re
 import threading
 import time
 import traceback
@@ -25,6 +26,26 @@ try:
     _HAS_ATTENTION = True
 except Exception:
     _HAS_ATTENTION = False
+
+# Track 1: mesh primary election. Exactly one paired node holds the
+# primary lease and runs the loop side-effects; every other live node
+# falls back to peripheral mode (sensors + journal + RPC offload, never
+# speaks). Import failure degrades to standalone — never blocks boot.
+try:
+    from mesh_election import MeshElection
+    _HAS_MESH_ELECTION = True
+except Exception:
+    _HAS_MESH_ELECTION = False
+
+# Track 2: security inventory & baseline. Observational only; import
+# failure degrades to an absent (never fabricated) inventory surface.
+try:
+    from security_inventory import (collect_agent_inventory,
+                                    evaluate_baseline)
+    _HAS_SECURITY_INVENTORY = True
+except Exception:
+    _HAS_SECURITY_INVENTORY = False
+
 from security import sanitize_text
 
 
@@ -66,12 +87,30 @@ _BACKEND_ERROR_CLASSES = ("transport_error", "model_unavailable", "invalid_model
 
 _LOG_BUFFER_MAX = 300
 
+# v1.30.5: a measurement claim in model output. Toolable questions are routed
+# to a tool BEFORE the model is consulted, so any reading in the model's reply
+# is invented — and the device log shows exactly that happening ("The
+# temperature outside is currently 20 degrees Celsius"). Such a text is never
+# spoken; the honest refusal below is.
+_MEASUREMENT_CLAIM_RE = re.compile(
+    r"\b\d+(?:\.\d+)?\s*(?:degrees?|°)\b"
+    r"|\b(?:temperature|thermometer)\b[^.]{0,30}?\b\d+(?:\.\d+)?\b"
+    r"|\bbattery\b[^.]{0,20}?\b\d+\s*%"
+    r"|\b\d+\s*%\s*(?:battery|charge)\b",
+    re.IGNORECASE)
+
+_MEASUREMENT_REFUSAL = ("I can't measure that here — I have no weather "
+                        "service and no ambient sensor, so I won't guess a "
+                        "number.")
+
 
 class AndroidAgent:
     def __init__(self, device_caps: Optional[str] = None,
                  api_url: Optional[str] = None,
                  data_dir: Optional[str] = None,
-                 auth_token: Optional[str] = None):
+                 auth_token: Optional[str] = None,
+                 mesh_node_id: Optional[str] = None,
+                 mesh_priority: int = 500):
         self.device_caps = device_caps or "Unknown"
         self.api_url = api_url or "http://127.0.0.1:11434"
         # Writable app-private dir injected by the Kotlin shell. Android apps
@@ -115,8 +154,26 @@ class AndroidAgent:
         # contract: observations flow in here; the engine only ever sees
         # them as task `context` data (import-guard enforced in tests).
         self.interaction = InteractionBus() if _HAS_INTERACTION else None
+        # v1.30.5: the open ask_user question (thin honest loop). While a
+        # question is open, the next utterance within the pairing TTL is
+        # verified as its answer, journalled, and answered; an unanswered
+        # question expires loudly instead of dangling.
+        self._open_question: Optional[Dict[str, Any]] = None
         # v1.20 attention verification layer (provider-side).
         self.attention = AttentionLayer() if _HAS_ATTENTION else None
+        # Track 1: mesh primary election. Android hardware is the
+        # page-robot custodian (Exynos-1380 family): a HIGH priority number,
+        # so a paired desktop (lower priority) holds the primary lease and
+        # this node falls back to peripheral mode. With no live peers the
+        # election yields no primary and the node acts standalone.
+        self.mesh_election = None
+        if _HAS_MESH_ELECTION:
+            try:
+                self.mesh_election = MeshElection(
+                    node_id=mesh_node_id or f"android-{self.device_caps}",
+                    priority=mesh_priority)
+            except Exception:
+                self.mesh_election = None
         # Last-tick decision source for cycle-truth observability.
         self._decision_source: str = "none"
         # v1.20: dedup cursor for conversation memory storage.
@@ -308,7 +365,8 @@ class AndroidAgent:
             try:
                 from subsystems import (IntentParser, CommandExecutor,
                                         MemoryManager, DialogueState)
-                from subsystems.command_router import default_handlers
+                from subsystems.command_router import (CommandResult,
+                                                       default_handlers)
                 from subsystems.tools import default_tools, TimerManager
 
                 self.intent_parser = IntentParser()
@@ -362,6 +420,15 @@ class AndroidAgent:
                 for name, handler in default_handlers(
                         self.tool_registry).items():
                     self.command_executor.register_handler(name, handler)
+                # v1.30.5: an unrecognised "command" is not a dead end. With no
+                # fallback registered the user heard "I can't do that yet, but
+                # I'm learning!"; an empty response lets the conversational
+                # path handle it instead (the command block only returns when a
+                # handler actually produced text).
+                self.command_executor.set_fallback(
+                    lambda intent: CommandResult(
+                        success=True, response="",
+                        action_taken="unhandled_command"))
                 # v1.30: fleet memory mesh tools. They resolve the ShugoNet
                 # runtime lazily, since _start_shugonet() runs after this.
                 self.tool_registry.register_handler(
@@ -908,6 +975,11 @@ class AndroidAgent:
         bounded here; the listener (Kotlin TTS) performs the actual output.
         The AgentResponse lands on the interaction bus so the UI and telemetry
         tell the truth about what the agent said."""
+        # Track 1: primary-only guardrail — followers journal, never speak.
+        if not self._mesh_may_act("speak"):
+            return {"status": "refused", "reason": "mesh_follower",
+                    "primary": (self.mesh_election.primary()
+                                if self.mesh_election is not None else None)}
         params = decision.get("params") or {}
         # Dialect tolerance: small models put the words in params.text,
         # params.utterance, or (after parser normalization) top-level text
@@ -931,6 +1003,12 @@ class AndroidAgent:
         if self.interaction is not None:
             self.interaction.record_agent_response(AgentResponse(
                 type="speech", content=text, target="user"))
+        if self.conversation is not None:
+            # v1.30.5: a plain utterance is not a question, so it clears any
+            # WAITING state. The listener returns once the platform holds the
+            # text, so this is an approximation of "TTS finished" — an exact
+            # completion signal would need a Kotlin bridge callback.
+            self.conversation.on_speak_end(expects_answer=False)
         return {"status": "success", "spoken": text, "delivered": delivered}
 
     def _execute_ask_user(self, decision: Dict[str, Any]) -> Dict[str, Any]:
@@ -940,6 +1018,11 @@ class AndroidAgent:
         marked on the bus as expecting an answer, and the next speech
         observation within the TTL is paired with it. A spoken reply is DATA
         the agent may reason over — it is never a consent record."""
+        # Track 1: primary-only guardrail — followers never ask the user.
+        if not self._mesh_may_act("ask_user"):
+            return {"status": "refused", "reason": "mesh_follower",
+                    "primary": (self.mesh_election.primary()
+                                if self.mesh_election is not None else None)}
         params = decision.get("params") or {}
         # v1.18: sentence-aware bound (never a spoken fragment).
         text = truncate_sentence(
@@ -965,7 +1048,80 @@ class AndroidAgent:
         if self.memory is not None:
             self.memory.record_event(
                 "agent_question", {"question": text})
-        return {"status": "success", "asked": text, "delivered": delivered}
+        # v1.30.5: open the loop. The question is tracked by the AGENT (not
+        # merely paired on the bus as metadata), so the next utterance is
+        # verified as its answer within the TTL, journalled, and answered.
+        self._open_question = {"text": text, "ts": time.time()}
+        if self.conversation is not None:
+            self.conversation.on_speak_end(expects_answer=True)
+        return {"status": "success", "asked": text, "delivered": delivered,
+                "awaiting_answer": True, "answer_ttl_s": self._question_ttl_s()}
+
+    # -- v1.30.5 ask_user loop -------------------------------------------
+    def _question_ttl_s(self) -> float:
+        """Pairing window for an open question (mirrors the interaction bus)."""
+        try:
+            from human_interaction import _ANSWER_TTL_S
+            return float(_ANSWER_TTL_S)
+        except Exception:
+            return 120.0
+
+    def _note_question_event(self, kind: str, question: Dict[str, Any],
+                             answer: str, age: float) -> None:
+        """Journal a question outcome.
+
+        Metadata only, exactly like `_drain_conversation_events`: the words
+        stay in the bounded bus, the journal gets counts and the round trip.
+        """
+        if self.memory is None:
+            return
+        try:
+            self.memory.record_event(kind, {
+                "question_chars": len(str(question.get("text") or "")),
+                "answer_chars": len(str(answer or "")),
+                "round_trip_s": round(float(age), 2),
+            })
+        except Exception:
+            pass
+
+    def _take_open_question(self, transcript: str) -> Optional[str]:
+        """Verify + consume the open question for this utterance.
+
+        Returns the question text when this utterance is its (fresh) answer, so
+        the reply can be shaped as an answer to it. An expired question is
+        recorded as unanswered rather than being silently dropped; a stale
+        transcript that is clearly a new request is handled by the caller as a
+        normal utterance.
+        """
+        question = self._open_question
+        self._open_question = None
+        if question is None or not str(transcript or "").strip():
+            return None
+        age = time.time() - float(question.get("ts") or 0.0)
+        if age > self._question_ttl_s():
+            self._note_question_event("question_expired", question, transcript,
+                                      age)
+            self.log("AGENT", f"question expired after {age:.0f}s: "
+                              f"{str(question.get('text'))[:60]!r}",
+                     level="WARN")
+            return None
+        self._note_question_event("question_answered", question, transcript, age)
+        self.log("AGENT", f"question answered in {age:.1f}s: "
+                          f"{str(question.get('text'))[:60]!r}")
+        return str(question.get("text") or "")
+
+    def _expire_open_question(self) -> None:
+        """Tick hook: record a question that nobody ever answered."""
+        question = self._open_question
+        if question is None:
+            return
+        age = time.time() - float(question.get("ts") or 0.0)
+        if age <= self._question_ttl_s():
+            return
+        self._open_question = None
+        self._note_question_event("question_expired", question, "", age)
+        self.log("AGENT", f"question expired unanswered after {age:.0f}s: "
+                          f"{str(question.get('text'))[:60]!r}", level="WARN")
 
     def _drain_conversation_events(self) -> None:
         """v1.17 closed-loop Record: completed question/answer round trips
@@ -1029,10 +1185,23 @@ class AndroidAgent:
           3. record durable facts + topic (MemoryManager)
           4. command intents execute through real tools (retry + fallback)
           5. everything else -> personality-driven conversational prompt
+
+        v1.30.5 additions:
+          0.  verify + consume the answer to an open ask_user question
+          4b. route toolable questions (clock/date/battery/weather/temperature/
+              sensors) to their tool, so the model can never supply a reading
+          5b. guarantee exactly ONE spoken outcome — a blocked, empty or
+              unusable decision degrades to an honest line, never silence
         """
         transcript = observation.get("transcript", "").strip()
         if not transcript:
             return
+
+        # v1.30.5: is this utterance the answer to an open question? The bus
+        # pairs it as metadata; here it is verified against the TTL and
+        # journalled (question_answered / question_expired) before the reply is
+        # shaped as an answer to it.
+        answer_to = self._take_open_question(transcript)
 
         # Phase B: growth bookkeeping — every turn counts, explicit
         # feedback is captured as trait signals.
@@ -1092,12 +1261,7 @@ class AndroidAgent:
                 and self.user_memory is not None):
             answer = self._memory_question_answer(transcript)
             if answer:
-                # Mirror to the agent log (same headless-probe rationale as
-                # the command path above).
-                self.log("AGENT", f"say: {answer}")
-                self._speak_direct(answer)
-                if self.conversation is not None:
-                    self.conversation.on_speak_begin(answer)
+                self._speak_turn(answer)
                 self.log("AGENT", "memory recall (question path)")
                 return
 
@@ -1119,16 +1283,27 @@ class AndroidAgent:
                     self.dialogue.begin_clarification(
                         category, intent.transcript, intent.entities)
                 if result.response:
-                    # Speak the command result directly; ALSO in the agent log:
-                    # headless adb-driven probes assert on these log lines, and
-                    # TTS may be muted/absent on test devices (log still proves
-                    # the decision path executed).
-                    self.log("AGENT", f"say: {result.response}")
-                    self._speak_direct(result.response)
-                    if self.conversation is not None:
-                        self.conversation.on_speak_begin(result.response)
+                    # Speak the command result directly. _speak_turn brackets
+                    # the turn on the conversation state machine and still logs
+                    # "say:" for the headless adb probes.
+                    self._speak_turn(result.response)
                     self.log("AGENT", f"command: {result.action_taken}")
                     return
+
+        # v1.30.5: a question about the clock, date, battery, weather,
+        # temperature or the sensors has a deterministic answer. Route it to
+        # the tool path so the phrasing never decides whether a tool is
+        # reached — and so the language model can never supply a measurement.
+        if intent is not None and intent.intent_type.value in ("question",
+                                                              "chitchat"):
+            topic = None
+            try:
+                if self.intent_parser is not None:
+                    topic = self.intent_parser.tool_topic(transcript)
+            except Exception:
+                topic = None
+            if topic and self._answer_tool_question(topic, transcript):
+                return
 
         # Otherwise: personality-driven conversational response
         history_text = ""
@@ -1157,6 +1332,7 @@ class AndroidAgent:
             history_text=history_text,
             facts=facts,
             perception=perception,
+            answering=answer_to,
         )
 
         # Build the conversational task
@@ -1169,34 +1345,300 @@ class AndroidAgent:
         }
 
         try:
-            decision = self.engine.make_decision(task)
+            decision = self.engine.make_decision(task) or {}
             # Execute the decision directly (speak/ask_user)
             action_type = decision.get("action_type")
             if action_type == "speak":
-                result = self._execute_speak(decision)
-                spoken = decision.get("params", {}).get("text", "")
-                if self.conversation is not None and spoken:
-                    self.conversation.on_speak_begin(spoken)
-                self.log("AGENT", f"conversation: spoke -> {spoken[:80]!r}")
+                # v1.30.5: the model never supplies a measurement. A toolable
+                # question was already answered above, so a reading here can
+                # only have been invented.
+                spoken = self._guard_fabricated_measurement(
+                    self._decision_text(decision))
+                if not spoken:
+                    self._speak_fallback(transcript)
+                else:
+                    if spoken != self._decision_text(decision):
+                        decision = dict(
+                            decision,
+                            params=dict(decision.get("params") or {},
+                                        text=spoken))
+                    if self.conversation is not None:
+                        self.conversation.on_speak_begin(spoken)
+                    self._execute_speak(decision)
+                    self.log("AGENT", f"conversation: spoke -> {spoken[:80]!r}")
             elif action_type == "ask_user":
-                result = self._execute_ask_user(decision)
-                asked = decision.get("params", {}).get("question", "")
+                asked = self._decision_text(decision, "question")
                 if self.conversation is not None and asked:
                     self.conversation.on_speak_begin(asked)
+                self._execute_ask_user(decision)
                 self.log("AGENT", f"conversation: asked -> {asked[:80]!r}")
             else:
+                # v1.30.5: a blocked, empty or unexpected decision must still
+                # produce ONE honest spoken outcome instead of silence.
                 self.log("AGENT",
-                         f"conversation: unexpected action {action_type}",
-                         level="WARN")
+                         f"conversation: no usable action ({action_type!r}) "
+                         f"-> honest fallback", level="WARN")
+                self._speak_fallback(transcript)
         except Exception as exc:
             self.log("ERROR", f"conversation handling failed: {exc}",
                      level="ERROR")
+            # A crash must not leave the turn silent either.
+            self._speak_fallback(transcript)
+
+    def _decision_text(self, decision: Dict[str, Any],
+                       key: str = "text") -> str:
+        """Text of a speak/ask_user decision (params first, then top level)."""
+        params = decision.get("params") or {}
+        for candidate in (key, "text", "utterance", "question"):
+            value = params.get(candidate)
+            if value:
+                return str(value)
+        return str(decision.get("text") or "")
+
+    def _guard_fabricated_measurement(self, text: str) -> str:
+        """Replace a model-invented measurement with an honest refusal.
+
+        Toolable questions reach a tool before the model is consulted, so a
+        reading in the model's reply can only be invented. The device log
+        contains exactly that failure ("The temperature outside is currently 20
+        degrees Celsius"), so it is never allowed through the speaker.
+        """
+        text = str(text or "").strip()
+        if not text:
+            return ""
+        if not _MEASUREMENT_CLAIM_RE.search(text):
+            return text
+        self.log("AGENT", "suppressed a model-supplied measurement reading",
+                 level="WARN")
+        return _MEASUREMENT_REFUSAL
+
+    def _speak_fallback(self, transcript: str) -> None:
+        """Last-resort honest line so a user turn is never silent."""
+        try:
+            self._speak_turn("I couldn't put that together just now — could "
+                             "you ask me again?")
+        except Exception as exc:
+            self.log("ERROR",
+                     f"fallback speak failed: {type(exc).__name__}",
+                     level="ERROR")
+
+    def _answer_tool_question(self, topic: str, transcript: str) -> bool:
+        """Answer a toolable question deterministically; True when spoken.
+
+        Used for question/chitchat intents that a tool can answer, so they
+        never reach the language model. An unavailable tool still answers
+        honestly in the handler's own words — that is the point: no invented
+        readings, and no silence.
+        """
+        if self.command_executor is None:
+            return False
+        from subsystems.intent import IntentType, UserIntent
+        intent = UserIntent(IntentType.COMMAND, transcript, confidence=0.9,
+                            entities={"tool_topic": topic})
+        try:
+            result = self.command_executor.execute(intent)
+        except Exception as exc:
+            self.log("ERROR", f"tool question failed: {type(exc).__name__}",
+                     level="ERROR")
+            return False
+        if not result.response:
+            return False
+        self._speak_turn(result.response)
+        self.log("AGENT", f"command: {result.action_taken}")
+        return True
+
+    def _speak_turn(self, text: str) -> bool:
+        """Speak a deterministic answer and bracket the turn on the manager.
+
+        Mirrors the model paths (begin -> speak -> end) so the conversation
+        state machine never sticks in SPEAKING after a command answer.
+        """
+        if self.conversation is not None and text:
+            self.conversation.on_speak_begin(text)
+        delivered = self._speak_direct(text)
+        if self.conversation is not None:
+            self.conversation.on_speak_end(expects_answer=False)
+        return delivered
+
+    # -- v1.30.6 mesh RPC peripheral (layer split) ------------------------
+    def debug_mesh_rpc(self, action: str = "start", native_library_dir: str = "",
+                       port: int = 50052, lan: int = 0) -> str:
+        """Start/stop this device's mesh RPC peripheral; returns a JSON summary.
+
+        Called by the service's debug broadcast receiver so the headless probes
+        can drive the layer-split peripheral: the adb shell user cannot execute
+        an app's nativeLibraryDir, so the APP is the only thing that can start
+        the server. `native_library_dir` is Android's own lib dir (where the
+        packaged `libshugocore_rpc_server.so` lives). Never raises — the caller
+        is a broadcast receiver.
+        """
+        import json as _json
+
+        def _flag(value: Any) -> bool:
+            try:
+                return int(value or 0) != 0
+            except (TypeError, ValueError):
+                return str(value or "").strip().lower() in ("1", "true", "yes",
+                                                            "on")
+
+        from mesh_rpc import (DEFAULT_RPC_PORT, MeshRpcLauncher,  # noqa: WPS433
+                              find_rpc_server)
+
+        result: Dict[str, Any] = {"action": str(action or "start"), "ok": False}
+        try:
+            existing = getattr(self, "_mesh_rpc", None)
+            if existing is not None:
+                existing.stop()
+                self._mesh_rpc = None
+            if str(action or "start").strip().lower() != "start":
+                result.update({"ok": True, "running": False,
+                               "stopped": True})
+            else:
+                candidate = ""
+                if native_library_dir:
+                    candidate = os.path.join(
+                        str(native_library_dir), "libshugocore_rpc_server.so")
+                    if not os.path.exists(candidate):
+                        candidate = ""
+                binary = candidate or (find_rpc_server() or "")
+                try:
+                    port_int = max(1, min(65535, int(port)))
+                except (TypeError, ValueError):
+                    port_int = DEFAULT_RPC_PORT
+                expose = _flag(lan)
+                launcher = MeshRpcLauncher(
+                    binary=binary,
+                    host="0.0.0.0" if expose else "127.0.0.1",
+                    port=port_int, allow_lan=expose,
+                    audit=getattr(getattr(self, "engine", None), "audit", None))
+                started = launcher.start()
+                self._mesh_rpc = launcher if started else None
+                result.update({"ok": bool(started), "binary": binary,
+                               "endpoint": launcher.endpoint(),
+                               "running": launcher.running()})
+        except Exception as exc:
+            result["error"] = f"{type(exc).__name__}: {exc}"
+        self.log("MESH", "mesh rpc %s" % _json.dumps(result))
+        return _json.dumps(result)
+
+    def _mesh_heartbeat_tick(self) -> None:
+        """Track 1: feed local + peer heartbeats into the election and
+        re-evaluate the primary lease. Local thermal state comes from the
+        Kotlin ThermalMonitor (self.telemetry['thermal_state']); peer
+        heartbeats arrive via update_mesh_peers (telemetry['mesh_peers']).
+        Best-effort: an election failure must never break the agent loop —
+        it degrades to standalone behavior."""
+        election = self.mesh_election
+        if election is None:
+            return
+        try:
+            # Attach the engine's audit chain lazily (it does not exist at
+            # __init__ time); MeshElection tolerates audit=None.
+            if election.audit is None:
+                election.audit = getattr(self.engine, "audit", None)
+            telemetry = self.telemetry if isinstance(self.telemetry, dict) else {}
+            try:
+                thermal = int(telemetry.get(
+                    "thermal_state", telemetry.get("thermal_status", 0)) or 0)
+            except (TypeError, ValueError):
+                thermal = 0
+            try:
+                mem = int(telemetry.get(
+                    "mem_available_bytes", telemetry.get("mem_available", 0)) or 0)
+            except (TypeError, ValueError):
+                mem = 0
+            election.local_heartbeat(thermal_status=thermal,
+                                     mem_available_bytes=mem)
+            for peer in (telemetry.get("mesh_peers") or [])[:16]:
+                if not isinstance(peer, dict):
+                    continue
+                peer_id = str(peer.get("device_id") or peer.get("node_id")
+                              or peer.get("id") or "").strip()
+                if not peer_id:
+                    continue
+                election.observe_heartbeat({
+                    "node_id": peer_id,
+                    "priority": peer.get("priority", 500),
+                    "thermal_status": peer.get(
+                        "thermal_status", peer.get("thermal_state", 0)),
+                    "mem_available_bytes": peer.get("mem_available_bytes", 0),
+                    "paired": peer.get("paired", True),
+                    "seq": peer.get("seq", 0),
+                })
+            election.tick()
+        except Exception as exc:
+            self.log("MESH", f"election tick failed: {exc}", level="WARN")
+
+    def _mesh_may_act(self, action: str) -> bool:
+        """Track 1 primary-only guardrail: True when this node may run the
+        side-effect `action`. Allowed when there is no election module, no
+        live primary other than us (standalone / partition — fail closed to
+        standalone per the design), or we hold the lease. A follower logs a
+        refusal and the caller journals instead of acting."""
+        election = self.mesh_election
+        if election is None:
+            return True
+        try:
+            result = election.tick()
+        except Exception:
+            return True
+        primary = result.get("primary")
+        if primary is None or primary == election.node_id:
+            return True
+        self.log("MESH", f"follower refusal: {action} "
+                         f"(primary={primary})", level="WARN")
+        return False
+
+    def _mesh_role_label(self) -> str:
+        """Compact role for the status surface: 'none' (module missing),
+        'primary' (lease held with live peers), 'follower', 'standalone'
+        (lone node / no live candidates) or 'unknown' (election error)."""
+        election = self.mesh_election
+        if election is None:
+            return "none"
+        try:
+            result = election.tick()
+        except Exception:
+            return "unknown"
+        primary = result.get("primary")
+        if primary != election.node_id:
+            return "follower" if primary else "standalone"
+        # We hold the lease: distinguish a true primary (live peers) from
+        # a lone node acting standalone (partition, no quorum needed).
+        return "primary" if election.live_peers() else "standalone"
+
+    def _security_inventory(self) -> Optional[Dict[str, Any]]:
+        """Track 2: one bounded snapshot of this node's security posture.
+        None when the module is unavailable (absent, never fabricated)."""
+        if not _HAS_SECURITY_INVENTORY:
+            return None
+        try:
+            return collect_agent_inventory(self)
+        except Exception as exc:
+            self.log("POLICY", f"security inventory failed: {exc}",
+                     level="WARN")
+            return None
+
+    def _security_baseline(self) -> Optional[Dict[str, Any]]:
+        """Track 2: baseline drift for the inventory above. Absent
+        controls are violations (unverifiable), never assumed safe."""
+        if not _HAS_SECURITY_INVENTORY:
+            return None
+        try:
+            return evaluate_baseline(self._security_inventory() or {})
+        except Exception as exc:
+            self.log("POLICY", f"security baseline failed: {exc}",
+                     level="WARN")
+            return None
 
     def _speak_direct(self, text: str) -> bool:
         """Speak text directly through the TTS listener, bypassing the decision
         pipeline. Used for command responses and other deterministic output."""
         from security import sanitize_text
         from human_interaction import AgentResponse
+        # Track 1: primary-only guardrail — followers never speak.
+        if not self._mesh_may_act("speak_direct"):
+            return False
         if self._speak_listener is None:
             return False
         clean = sanitize_text(text, 400)
@@ -1318,6 +1760,11 @@ class AndroidAgent:
         content = sanitize_text(
             str(text or "I am here. Shugo can speak."), 200)
         self.log("AGENT", f"speak_test: {content!r}")
+        # Track 1: primary-only guardrail — operator speech included.
+        if not self._mesh_may_act("speak_test"):
+            return {"status": "refused", "reason": "mesh_follower",
+                    "primary": (self.mesh_election.primary()
+                                if self.mesh_election is not None else None)}
         if self.engine is None:
             return {"status": "error", "message": "engine unavailable"}
         decision = {"action_type": "speak",
@@ -1565,12 +2012,18 @@ class AndroidAgent:
 
     def tick(self) -> None:
         self.tick_count += 1
+        # Track 1: heartbeat + election refresh each cycle. Best-effort and
+        # never raising (see _mesh_heartbeat_tick).
+        self._mesh_heartbeat_tick()
         cycle_started = time.monotonic()
         # Available to the instrumentation even on paths that never reach the
         # engine (conversational fast path, no-engine ticks).
         engine_result: Dict[str, Any] = {}
         # Phase 3.2: poll background timers each tick — no sleep threads.
         self._check_timers()
+        # v1.30.5: an open question that nobody answered is recorded as
+        # expired (never silently forgotten).
+        self._expire_open_question()
         decision, action = "—", "—"
         outcome = "ENGINE_FAILURE"
         trail: Tuple[str, ...] = ("OBSERVE",)
@@ -2319,6 +2772,15 @@ class AndroidAgent:
             # sensor status (from the last observation).
             "mesh_peer_count": self.last_observation.get("mesh_peer_count", 0),
             "mesh_peers": self.last_observation.get("mesh_peers", []),
+            # Track 1: election role — "primary", "follower", "standalone",
+            # "none" (no election module) or "unknown" (election error).
+            "mesh_role": self._mesh_role_label(),
+            "mesh_primary": (self.mesh_election.primary()
+                             if self.mesh_election is not None else None),
+            # Track 2: security inventory + baseline drift (observational,
+            # bounded; None when the module is unavailable).
+            "security_inventory": self._security_inventory(),
+            "security_baseline": self._security_baseline(),
             # v1.28: visual-audio binding — remote speech attribution carried
             # from the mesh (face+voice fused; metadata only).
             "remote_binding": self.last_observation.get("remote_binding"),
@@ -2422,9 +2884,15 @@ class AndroidAgent:
 def create_agent(device_caps: Optional[str] = None,
                  api_url: Optional[str] = None,
                  data_dir: Optional[str] = None,
-                 auth_token: Optional[str] = None) -> AndroidAgent:
+                 auth_token: Optional[str] = None,
+                 mesh_node_id: Optional[str] = None,
+                 mesh_priority: int = 500) -> AndroidAgent:
     """Build an AndroidAgent. The bearer token is forwarded to the
     AndroidBackend so token-protected desktop servers can be paired
-    without --allow-unauthenticated."""
+    without --allow-unauthenticated. mesh_node_id / mesh_priority feed the
+    Track 1 mesh primary election (Android defaults: high priority number,
+    so a paired desktop wins the lease)."""
     return AndroidAgent(device_caps=device_caps, api_url=api_url,
-                        data_dir=data_dir, auth_token=auth_token)
+                        data_dir=data_dir, auth_token=auth_token,
+                        mesh_node_id=mesh_node_id,
+                        mesh_priority=mesh_priority)

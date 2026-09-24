@@ -36,6 +36,11 @@ try:
     from opentelemetry import trace as _otel_trace
     _HAS_OTEL = _otel_trace is not None
 except Exception:  # pragma: no cover - import can fail for many reasons
+    # Bind the name even when the import fails. Tests patch ``_otel_trace``
+    # directly (test_v1.test_otel_span_mirrors_to_recent_and_ends), and an
+    # unbound name turns that into an AttributeError on any host without the
+    # ``telemetry`` extra installed. Real usage stays gated on ``_HAS_OTEL``.
+    _otel_trace = None
     _HAS_OTEL = False
 
 _MAX_RECENT_SPANS = 1024

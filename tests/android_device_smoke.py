@@ -65,7 +65,7 @@ def measure_decision_cadence(serial: str) -> float:
     decisions appear within 100 s, returns a conservative real-model floor
     of 50 s so phase windows still tolerate slow generations.
     """
-    ts_pat = re.compile(r"(\d{2}:\d{2}:\d{2})\.\d{3}")
+    ts_pat = re.compile(r"(\d{2}:\d{2}:\d{2})[.,]\d{3}")
     clear_logcat(serial)
     start = time.time()
     seen: set = set()
@@ -316,6 +316,26 @@ PHASES: List[Dict[str, Any]] = [
         "desc": "growth report can be read from SQLite and diffed offline",
         "tags": ("personality", "growth", "offline"),
     },
+    {
+        "name": "time_tool_query",
+        "desc": "a RE-WORDED clock question reaches the get_time tool",
+        "tags": ("routing", "tool"),
+    },
+    {
+        "name": "measurement_honesty",
+        "desc": "a temperature question is answered by a tool or refused",
+        "tags": ("routing", "tool", "honesty"),
+    },
+    {
+        "name": "ask_user_round_trip",
+        "desc": "a question Shugo asks itself gets an answer it uses",
+        "tags": ("conversation", "loop"),
+    },
+    {
+        "name": "rpc_node_up",
+        "desc": "the mesh RPC peripheral starts on-device and is reachable",
+        "tags": ("mesh", "rpc"),
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -342,6 +362,11 @@ def _log_red(logger: List[str], *parts: Any) -> None:
 
 def step_timer_set(serial: str, logger: List[str]) -> bool:
     """Seed a timer, inject the transcript, and look for the ack."""
+    # v1.30.5: drain first. The agent handles one utterance per tick, so an
+    # injection that follows another phase's transcript can wait several model
+    # decisions before it is even parsed — a phase must measure the route it
+    # tests, not the backlog left by the phase before it.
+    await_conversation_idle(serial, logger)
     inject_scanout(
         serial, "set a timer for two seconds and tell me when it goes off"
     )
@@ -451,6 +476,7 @@ def step_service_alive(serial: str, logger: List[str]) -> bool:
 def step_timer_fires_while_away(serial: str, logger: List[str]) -> bool:
     """Force-stop, then verify the expired timer is re-announced."""
     ensure_service_started(serial)
+    await_conversation_idle(serial, logger)
     # An 8 s timer guarantees expiry AFTER the force-stop: the 1-3 s spent
     # finding the ack plus the 10 s suspension always exceed its lifespan,
     # so restore() re-inserts it as fired_while_away on the next boot.
@@ -470,14 +496,27 @@ def step_timer_fires_while_away(serial: str, logger: List[str]) -> bool:
 
 def step_fact_stores(serial: str, logger: List[str]) -> bool:
     """Assert an OS-level fact landed in SQLite."""
+    await_conversation_idle(serial, logger)
+    # v1.30.5: this phase follows timer_fires_while_away, which force-stops and
+    # restarts the app. An observation injected during the runtime's
+    # re-initialisation is dropped entirely (the debug receiver accepts it but
+    # the bus never sees it), which is why the ack was simply "MISSING" with the
+    # agent apparently healthy. Same guard the sibling phases use.
+    if not wait_for_agent_loop(serial, within_s=restart_window()):
+        _log_red(logger, "  agent loop not live before the store inject")
+        return False
     inject_scanout(serial, "remember that my favorite color is midnight blue")
-    ok = expect_in_logs(serial, "I'll remember", within_s=ack_window())
+    # The store ack queues behind pending decisions AND this phase runs on the
+    # freshly restarted node left by timer_fires_while_away, so it needs the
+    # cold-node budget rather than a warm one.
+    ok = expect_in_logs(serial, "I'll remember", within_s=cold_ack_window())
     _log(logger, "  \"I'll remember\" log line:", "FOUND" if ok else "MISSING")
     return ok
 
 
 def step_memory_question(serial: str, logger: List[str]) -> bool:
     """Ask a memory question and confirm the answer uses memory content."""
+    await_conversation_idle(serial, logger)
     clear_logcat(serial)
     inject_transcript(serial, "remember that my favorite color is midnight blue")
     time.sleep(ack_window() * 0.5)
@@ -526,7 +565,10 @@ def step_fact_survives_restart(serial: str, logger: List[str]) -> bool:
         return False
     inject_transcript(serial, "recall my favorite color")
     time.sleep(ack_window() * 0.5)
-    ok = expect_in_logs(serial, "midnight blue", within_s=ack_window())
+    # The recall reply is another queued decision after a restart: give it the
+    # same 4-cadence allowance as the store ack above.
+    ok = expect_in_logs(serial, "midnight blue",
+                        within_s=max(ack_window() * 2.0, _CADENCE_S * 4.0))
     _log(logger, "  fact survives restart:", "FOUND" if ok else "MISSING")
     return ok
 
@@ -549,16 +591,18 @@ def step_full_teardown_announced(serial: str, logger: List[str]) -> bool:
         _log_red(logger, "  agent loop not live before seed inject")
         return False
     inject_scanout(serial, "remember that my middle name is June")
-    # First ack after the cadence measurement: the measurement injects its own
-    # transcripts, so this ack can queue behind 1-2 pending decisions.  On a
-    # ~50 s cadence a single ack_window (2.5x cadence) is not enough; allow
-    # 4 cadences before declaring the seed lost.
-    first_ack = max(ack_window() * 2.0, _CADENCE_S * 4.0)
+    # First ack after the cadence measurement AND after fact_survives_restart's
+    # force-stop+restart: the model has just been reloaded, so this needs the
+    # cold-node budget (measured 148 s cold against 12-38 s warm).
+    first_ack = cold_ack_window()
     if not expect_in_logs(serial, "I'll remember", within_s=first_ack):
         _log_red(logger, "  fact store ack missing before teardown")
         return False
     inject_scanout(serial, "set a timer for eight seconds")
-    if not expect_in_logs(serial, "timer set for 8 seconds", within_s=ack_window()):
+    # v1.30.5: the timer seed queues behind the fact seed's decision for the
+    # same reason the comment above describes, so it gets the same allowance.
+    if not expect_in_logs(serial, "timer set for 8 seconds",
+                          within_s=max(ack_window() * 2.0, _CADENCE_S * 4.0)):
         _log_red(logger, "  timer ack missing before teardown")
         return False
     run("-s", serial, "shell", "am", "force-stop", SHUGOCORE_PACKAGE)
@@ -567,10 +611,16 @@ def step_full_teardown_announced(serial: str, logger: List[str]) -> bool:
     ensure_service_started(serial)
     ok1 = expect_in_logs(serial, "while you were away", within_s=restart_window())
     _log(logger, "  'while you were away' after restart:", "FOUND" if ok1 else "MISSING")
-    clear_logcat(serial)
+    # An observation injected during the runtime's re-initialisation is dropped
+    # (the receiver accepts it, the bus never sees it), so wait for a live loop
+    # before the recall inject.
+    if not wait_for_agent_loop(serial, within_s=restart_window()):
+        _log_red(logger, "  agent loop not live before the recall inject")
+        return False
     inject_transcript(serial, "what is my middle name")
     time.sleep(ack_window() * 0.5)
-    ok2 = expect_in_logs(serial, "june", within_s=ack_window())
+    ok2 = expect_in_logs(serial, "june",
+                         within_s=max(ack_window() * 2.0, _CADENCE_S * 4.0))
     _log(logger, "  restored fact (june) after restart:", "FOUND" if ok2 else "MISSING")
     return ok1 and ok2
 
@@ -750,6 +800,276 @@ def step_personality_growth_log(serial: str, logger: List[str]) -> bool:
     return ok
 
 # ---------------------------------------------------------------------------
+# v1.30.5 conversation-loop phases
+# ---------------------------------------------------------------------------
+
+def _journal_human(serial: str) -> Dict[str, Any]:
+    """The richest recent human-context block from the on-device journal.
+
+    v1.30.5 `pending_question` is set by the ask_user executor alone (the bus
+    pairs the next utterance with it), so a non-empty value is the proof that
+    the AGENT asked a question and is waiting — a model `speak` that merely ends
+    in "?" does not set it.
+    """
+    rc, text, _ = run("-s", serial, "exec-out", "run-as", SHUGOCORE_PACKAGE,
+                      "tail", "-c", "60000", "files/episodic_journal.jsonl")
+    if rc != 0 or not text:
+        return {}
+    import json as _json
+    best: Dict[str, Any] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            doc = _json.loads(line)
+        except Exception:
+            continue
+        human = (((doc.get("payload") or {}).get("observation") or {})
+                 .get("human") or {})
+        if len(human.get("conversation") or []) >= len(
+                best.get("conversation") or []):
+            best = human
+    return best
+
+
+def conversation_turns(serial: str) -> List[Tuple[str, str]]:
+    """Recent (role, text) turns from the on-device interaction bus."""
+    return [(str(t.get("role") or ""), str(t.get("text") or ""))
+            for t in (_journal_human(serial).get("conversation") or [])]
+
+
+def pending_question(serial: str) -> str:
+    """The question the agent is waiting for an answer to ('' when none)."""
+    return str(_journal_human(serial).get("pending_question") or "").strip()
+
+
+def await_conversation_idle(serial: str, logger: List[str],
+                            quiet_s: float = 25.0,
+                            timeout_s: float = 240.0) -> bool:
+    """Wait until the conversation record stops changing.
+
+    The agent handles ONE utterance per tick, so on a slow node (the A51's idle
+    loop measured ~100 s per decision) injections queue behind each other and a
+    phase can fail for backlog rather than for behaviour. Draining first makes
+    each phase measure the route it is testing.
+    """
+    start = time.time()
+    last = conversation_turns(serial)
+    last_change = time.time()
+    while time.time() - start < timeout_s:
+        time.sleep(4.0)
+        now = conversation_turns(serial)
+        if now != last:
+            last = now
+            last_change = time.time()
+            continue
+        if time.time() - last_change >= quiet_s:
+            _log(logger, f"  conversation idle after {time.time()-start:.0f}s")
+            return True
+    _log_red(logger, "  conversation never went idle")
+    return False
+
+
+_CLOCK_RE = re.compile(r"it'?s\s+\d{1,2}:\d{2}", re.IGNORECASE)
+
+
+def _spoken_clock(serial: str, within_s: float) -> str:
+    """The first SPEAK: line carrying a clock time, or ''."""
+    deadline = time.time() + within_s
+    while time.time() < deadline:
+        for line in log_lines_containing(serial, "SPEAK:"):
+            if _CLOCK_RE.search(line):
+                return line.strip()
+        time.sleep(1.0)
+    return ""
+
+
+def step_time_tool_query(serial: str, logger: List[str]) -> bool:
+    """A RE-WORDED clock question must still reach the get_time tool.
+
+    v1.30.5 regression guard. `_COMMAND_PATTERNS` promoted only the literal
+    "what time is it", so every other wording became a QUESTION: it went to the
+    language model, which either answered something else, invented a time, or
+    (measured on device 2026-09-20) produced no spoken outcome at all. The
+    deterministic answer prints a `SPEAK:` line; a model answer does not — so
+    the clock in logcat is the evidence.
+    """
+    await_conversation_idle(serial, logger)
+    inject_scanout(serial, "what's the time")
+    line = _spoken_clock(serial, cold_ack_window())
+    if line:
+        _log(logger, "  clock answered:", line[-64:])
+        return True
+    _log_red(logger, "  no clock answer — the question bypassed the tool")
+    return False
+
+
+def step_measurement_honesty(serial: str, logger: List[str]) -> bool:
+    """A temperature question is answered by a tool, or refused honestly.
+
+    Never invented. Before v1.30.5 this question reached the language model and
+    the device log contains a fabricated reading ("The temperature outside is
+    currently 20 degrees Celsius."); a bare number here with no sensor framing
+    is the failure this guards. On both test devices the thermal monitor reports
+    0 (no reading), so the honest refusal is the expected line.
+    """
+    await_conversation_idle(serial, logger)
+    inject_scanout(serial, "what is the temperature")
+    deadline = time.time() + cold_ack_window()
+    while time.time() < deadline:
+        for line in log_lines_containing(serial, "SPEAK:"):
+            low = line.lower()
+            if "can't measure a temperature" in low:
+                _log(logger, "  honest refusal:", line.strip()[-64:])
+                return True
+            if "degrees celsius" in low:
+                if "not the room" in low or "thermal sensor" in low:
+                    _log(logger, "  real device reading:", line.strip()[-64:])
+                    return True
+                _log_red(logger, "  a reading was spoken with no sensor behind it")
+                return False
+        time.sleep(1.0)
+    _log_red(logger, "  no temperature answer at all (a silent turn)")
+    return False
+
+
+def step_ask_user_round_trip(serial: str, logger: List[str]) -> bool:
+    """An ask_user question is answered, and the answer is used.
+
+    v1.30.5: ask_user was fire-and-forget — the question was spoken, the answer
+    was paired on the bus as metadata and then ignored (measured on device: no
+    agent turn ever followed the answer). `pending_question` is set by the
+    ask_user executor alone, so a non-empty value is deterministic proof that
+    the AGENT asked and is waiting (a model `speak` ending in "?" does not set
+    it). The answer is then injected and must come back as a reply carrying the
+    clock — the deterministic tool answer proves the utterance was both
+    processed and routed after the question.
+    """
+    await_conversation_idle(serial, logger)
+    before = conversation_turns(serial)
+    asked = pending_question(serial)
+    if asked:
+        _log(logger, "  question already open:", asked[:60])
+    else:
+        # The agent asks its own questions, but not on a schedule: after a
+        # heavy phase (the growth drive injects ~25 turns) the loop can spend
+        # minutes on model decisions before asking again, so the window is
+        # generous rather than tight.
+        window = max(600.0, restart_window() * 8.0)
+        deadline = time.time() + window
+        while time.time() < deadline and not asked:
+            asked = pending_question(serial)
+            if not asked:
+                time.sleep(4.0)
+        if not asked:
+            _log_red(logger, f"  the agent asked nothing within {window:.0f}s")
+            return False
+        _log(logger, "  agent is waiting on:", asked[:60])
+
+    inject_transcript(serial, "what's the time")
+    deadline = time.time() + cold_ack_window()
+    while time.time() < deadline:
+        for role, text in conversation_turns(serial):
+            if (role == "agent" and (role, text) not in before
+                    and _CLOCK_RE.search(text)):
+                _log(logger, "  the answer was used:", text.strip()[-60:])
+                return True
+        time.sleep(3.0)
+    _log_red(logger, "  the answer produced no reply (loop not closed)")
+    return False
+
+
+# ---------------------------------------------------------------------------
+# v1.30.6 mesh RPC peripheral (layer split)
+# ---------------------------------------------------------------------------
+
+RPC_PORT = 50052
+_RPC_ACTION = "com.samurai.shugocore.DEBUG_MESH_RPC"
+
+
+def device_lan_ip(serial: str) -> str:
+    """The device's IPv4 address on its Wi-Fi interface ('' when unknown)."""
+    rc, out, _ = run("-s", serial, "shell", "ip", "-4", "addr", "show", "wlan0")
+    if rc != 0:
+        return ""
+    match = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)", out or "")
+    return match.group(1) if match else ""
+
+
+def tcp_open(host: str, port: int, timeout: float = 4.0) -> bool:
+    """True when a TCP connect to host:port succeeds (no data exchanged)."""
+    import socket
+    if not host:
+        return False
+    sock = socket.socket()
+    sock.settimeout(timeout)
+    try:
+        sock.connect((host, int(port)))
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
+def _rpc_broadcast(serial: str, *extras: str) -> None:
+    run("-s", serial, "shell", "am", "broadcast", "-a", _RPC_ACTION,
+        *extras)
+
+
+def step_rpc_node_up(serial: str, logger: List[str]) -> bool:
+    """This device can serve as a layer-split peripheral (v1.30.6).
+
+    The adb shell user cannot execute an app's nativeLibraryDir, so the phase
+    asks the APP to start the peripheral server (debug broadcast) and then
+    verifies the socket from the host side, because reachability is what a
+    host's `llama-server --rpc` needs. The socket is unauthenticated (llama.cpp
+    is explicit about that), so the probe starts it on the LAN only for the
+    duration of the check, stops it again, and the launcher audits the exposure.
+    """
+    host = device_lan_ip(serial)
+    if not host:
+        _log_red(logger, "  no wlan0 address — cannot verify reachability")
+        return False
+    # Clean slate: stop anything a previous run left behind.
+    _rpc_broadcast(serial, "--es", "action", "stop")
+    time.sleep(1.0)
+    clear_logcat(serial)
+    _rpc_broadcast(serial, "--es", "action", "start", "--es", "lan", "1",
+                   "--es", "port", str(RPC_PORT))
+
+    started, line = False, ""
+    deadline = time.time() + ack_window()
+    while time.time() < deadline:
+        for entry in log_lines_containing(serial, "ShugoCoreMeshRpc"):
+            if "mesh rpc start" in entry and '"ok": true' in entry:
+                started, line = True, entry.strip()
+                break
+        if started:
+            break
+        time.sleep(1.0)
+    _log(logger, "  app started the peripheral:",
+         "YES" if started else "NO", line[-46:] if line else "")
+    if not started:
+        _log_red(logger, "  no successful start reply (binary missing? or the "
+                         "agent was not ready)")
+        return False
+
+    reachable = tcp_open(host, RPC_PORT)
+    _log(logger, f"  reachable at {host}:{RPC_PORT}:",
+         "YES" if reachable else "NO")
+    _rpc_broadcast(serial, "--es", "action", "stop")
+    time.sleep(2.0)
+    closed = not tcp_open(host, RPC_PORT)
+    _log(logger, "  stopped cleanly:", "YES" if closed else "NO")
+    return reachable and closed
+
+
+# ---------------------------------------------------------------------------
 # CLI + main
 # ---------------------------------------------------------------------------
 
@@ -766,6 +1086,10 @@ STEP_BY_NAME: Dict[str, Callable[[str, List[str]], bool]] = {
     "nrr_camera_render": step_nrr_camera_render,
     "personality_model_genesis": step_personality_model_genesis,
     "personality_growth_log": step_personality_growth_log,
+    "time_tool_query": step_time_tool_query,
+    "measurement_honesty": step_measurement_honesty,
+    "ask_user_round_trip": step_ask_user_round_trip,
+    "rpc_node_up": step_rpc_node_up,
 }
 
 
@@ -782,6 +1106,65 @@ def _select_phases(
     if tags_filter:
         return [p for p in PHASES if tags_filter and not set(tags_filter).isdisjoint(p["tags"])]
     return PHASES
+
+
+def device_thermal_status(serial: str) -> Optional[int]:
+    """Android thermal status: 0 none, 1 light, 2 moderate, 3 severe, 4 critical.
+
+    Surfaced because a throttled node answers in minutes rather than seconds —
+    measured on the A51 after a long inference session (status 4, decisions
+    ~100 s apart, a phase window can no longer be met) — and a phase failure
+    then says nothing about the behaviour under test.
+    """
+    rc, out, _ = run("-s", serial, "shell", "dumpsys", "thermalservice")
+    if rc != 0:
+        return None
+    match = re.search(r"Thermal Status:\s*(\d+)", out or "")
+    return int(match.group(1)) if match else None
+
+
+def cold_ack_window() -> float:
+    """Window for the FIRST injection after a restart or fresh install.
+
+    The restart reloads the model and re-initialises memory, so the first ack
+    costs far more than a warm one: measured 148 s on the Tab against 12-38 s
+    once warm. Phases that inject immediately after a force-stop+restart
+    (fact_stores follows timer_fires_while_away; full_teardown_announced
+    follows fact_survives_restart) use this instead of ack_window(), which is
+    a warm-node budget.
+    """
+    return max(240.0, ack_window() * 2.0)
+
+
+def await_warm_loop(serial: str, timeout_s: float = 300.0) -> float:
+    """Bounded warm-up: wait until the node is producing decisions again.
+
+    A freshly installed or freshly started build spends its first minutes
+    installing the profile and warming the model + memory. During that window
+    every `ack_window()` is too small and phases fail for TIMING, not for
+    behaviour — measured 2026-09-20: the first post-install ack took 148 s
+    against a 125 s window, while the same operations took 12-38 s once warm.
+    Waiting here keeps the suite honest instead of lucky, and lets
+    `measure_decision_cadence` report a real cadence rather than its floor.
+    """
+    clear_logcat(serial)
+    start = time.time()
+    seen: set = set()
+    # logcat -v brief has no timestamp prefix, so the only clock on a decision
+    # line is the logger's own — and the engine's writers use BOTH separators
+    # ("15:03:07.992" and "15:04:49,311"). Matching only the dot is why the
+    # cadence sampler always fell back to its 50 s floor, pinning every phase
+    # window to a value unrelated to the node's real cadence.
+    ts_pat = re.compile(r"(\d{2}:\d{2}:\d{2})[.,]\d{3}")
+    while time.time() - start < timeout_s:
+        for ln in log_lines_containing(serial, "Decision made for task"):
+            m = ts_pat.search(ln)
+            if m:
+                seen.add(m.group(1))
+        if len(seen) >= 1:
+            break
+        time.sleep(2.0)
+    return time.time() - start
 
 
 def _run_phase(serial: str, phase: Dict[str, Any], logger: List[str]) -> bool:
@@ -839,6 +1222,23 @@ def main(argv: Optional[List[str]] = None) -> int:
     serial = args.device
     ensure_connected(serial)
     ensure_service_started(serial)
+
+    # v1.30.5: drain the conversation BEFORE warming up. The conversational fast
+    # path returns early by design, so while the agent is still working through
+    # queued utterances it emits no "Decision made for task" line — a warm-up
+    # placed first would spend its whole timeout waiting on that backlog
+    # (measured: 302 s on the Tab right after the growth phase's ~25 injections).
+    warm_log: List[str] = []
+    await_conversation_idle(serial, warm_log)
+    warm_s = await_warm_loop(serial)
+    print(f"warm-up: decisions flowing after {warm_s:.0f}s", flush=True)
+    thermal = device_thermal_status(serial)
+    if thermal is not None:
+        note = ""
+        if thermal >= 3:
+            note = ("  <-- THROTTLED: a phase failure here may be thermal, "
+                    "not behavioural")
+        print(f"device thermal status: {thermal}{note}", flush=True)
 
     # v1.28.2: sample the decision cadence once so phase windows tolerate
     # real on-device model latency (delegation fix).  Sampled BEFORE the

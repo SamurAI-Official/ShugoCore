@@ -17,25 +17,32 @@ class TestAndroidTreeSync(unittest.TestCase):
     def test_every_bundled_module_matches_root(self):
         self.assertTrue(os.path.isdir(BUNDLED), "bundled python tree missing")
         drifted, bundled_count = [], 0
-        for name in sorted(os.listdir(BUNDLED)):
-            if not name.endswith(".py"):
+        # v1.30.5: recurse into subpackages (subsystems/, prompts/, nrr/,
+        # conversation/, personality/ …). Walking only the top level meant a
+        # change to e.g. subsystems/command_router.py could ship to the device
+        # stale while the guard still passed.
+        for dirpath, _dirs, files in os.walk(BUNDLED):
+            if "__pycache__" in dirpath:
                 continue
-            bundled_count += 1
-            root_path = os.path.join(ROOT, name)
-            bundled_path = os.path.join(BUNDLED, name)
-            if not os.path.isfile(root_path):
-                # Android-only adapters (android_*) are legitimately
-                # bundled-only; anything else is a tree inconsistency.
-                if name.startswith("android_"):
+            for name in sorted(files):
+                if not name.endswith(".py"):
                     continue
-                drifted.append(f"{name}: no root counterpart")
-                continue
-            with open(root_path, "rb") as fh:
-                root_bytes = fh.read()
-            with open(bundled_path, "rb") as fh:
-                bundled_bytes = fh.read()
-            if root_bytes != bundled_bytes:
-                drifted.append(name)
+                bundled_count += 1
+                rel = os.path.relpath(os.path.join(dirpath, name), BUNDLED)
+                root_path = os.path.join(ROOT, rel)
+                if not os.path.isfile(root_path):
+                    # Android-only adapters (android_*) are legitimately
+                    # bundled-only; anything else is a tree inconsistency.
+                    if name.startswith("android_"):
+                        continue
+                    drifted.append(f"{rel}: no root counterpart")
+                    continue
+                with open(root_path, "rb") as fh:
+                    root_bytes = fh.read()
+                with open(os.path.join(dirpath, name), "rb") as fh:
+                    bundled_bytes = fh.read()
+                if root_bytes != bundled_bytes:
+                    drifted.append(rel)
         self.assertGreater(bundled_count, 20, "bundled tree looks truncated")
         self.assertEqual(
             drifted, [],

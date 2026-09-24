@@ -28,6 +28,12 @@ dist/
 *.egg-info/
 .llama_build/
 
+# Native build outputs packaged from CMake (see cpp/CMakeLists.txt):
+# ONNX Runtime AAR extraction, and the mesh RPC peripheral executable that
+# CMake writes into jniLibs so Gradle ships it as lib*.so.
+platforms/android/app/src/main/cpp/onnxruntime/
+platforms/android/app/src/main/jniLibs/
+
 # Android (machine-specific SDK path + generated build outputs)
 local.properties
 platforms/android/app/build/
@@ -43,3 +49,10 @@ platforms/android/build/
 # don't commit). The C headers come from the same AAR so they always match.
 platforms/android/app/src/main/cpp/onnxruntime/include/
 platforms/android/app/src/main/cpp/onnxruntime/lib/
+
+# Godot editor/import/export caches and generated Android export files
+platforms/godot/.godot/
+platforms/godot/android/
+platforms/godot/*.bak*
+platforms/godot/*.state_backup
+nohup.out

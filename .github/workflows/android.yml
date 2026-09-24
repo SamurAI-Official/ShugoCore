@@ -104,7 +104,12 @@ jobs:
       - name: Name the APK after the tag
         run: |
           test -f platforms/android/app/build/outputs/apk/release/app-release.apk
-          NAME="shugocore-${GITHUB_REF_NAME#v}.apk"
+          # ``workflow_dispatch`` can run on a *branch* ref, where
+          # GITHUB_REF_NAME is e.g. "hotfix/pypi-publishes-cia". The slash made
+          # the cp target a non-existent directory and the artifact name
+          # invalid, so branch-dispatched builds could never produce an APK.
+          SAFE_REF=$(printf '%s' "${GITHUB_REF_NAME#v}" | tr '/' '-')
+          NAME="shugocore-${SAFE_REF}.apk"
           cp platforms/android/app/build/outputs/apk/release/app-release.apk "$NAME"
           echo "APK_PATH=$NAME" >> "$GITHUB_ENV"
 
@@ -113,7 +118,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          NAME="shugocore-${GITHUB_REF_NAME#v}.apk"
+          NAME="$APK_PATH"
           # A tag push does not create a GitHub release, so create it if the
           # tag has none (auto-generated notes; refine with `gh release edit`).
           gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1 || \

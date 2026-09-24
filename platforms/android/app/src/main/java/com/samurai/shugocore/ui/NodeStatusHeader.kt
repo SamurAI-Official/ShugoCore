@@ -20,6 +20,7 @@ class NodeStatusHeader(context: Context) : LinearLayout(context) {
     private val inference: TextView
     private val memory: TextView
     private val sensors: TextView
+    private val mesh: TextView
     private val human: TextView
     private val policy: TextView
     private val network: TextView
@@ -80,6 +81,7 @@ class NodeStatusHeader(context: Context) : LinearLayout(context) {
         inference = addRow("Inference")
         memory = addRow("Memory")
         sensors = addRow("Sensors")
+        mesh = addRow("Mesh")
         human = addRow("Human")
         policy = addRow("Policy")
         network = addRow("Network")
@@ -130,6 +132,25 @@ class NodeStatusHeader(context: Context) : LinearLayout(context) {
         val acked = caps.values.count { (it as? Map<*, *>)?.get("agent_ack") == true }
         sensors.text = if (agentRunning) "$acked / ${caps.size}" else "—"
         sensors.setTextColor(if (agentRunning && caps.isNotEmpty()) Ui.OK else Ui.DIM)
+
+        // Track 1: mesh primary election role (agent_status.mesh_role from
+        // the Python election). Honest states only — the value comes from
+        // the real lease holder; "—" when the agent is off or has no
+        // election module. A lone node reports STANDALONE, never PRIMARY.
+        val meshRole = Ui.str(agent, "mesh_role", "")
+        mesh.text = when {
+            !agentRunning -> "—"
+            meshRole == "primary" -> "PRIMARY"
+            meshRole == "follower" -> "FOLLOWER"
+            meshRole == "standalone" -> "STANDALONE"
+            meshRole.isNotEmpty() -> meshRole.uppercase(Locale.US)
+            else -> "—"
+        }
+        mesh.setTextColor(when (meshRole) {
+            "primary" -> Ui.OK
+            "follower" -> Ui.WARN
+            else -> Ui.DIM
+        })
 
         // HUMAN row: real device-side interaction events only. "seen Ns ago"
         // within the presence window; never a decorative green dot.

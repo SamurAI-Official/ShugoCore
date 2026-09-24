@@ -411,6 +411,44 @@ def default_tools(timer_manager: Optional[TimerManager] = None,
         registry.register_handler("check_sensors", _sensors,
                                   description="Read current sensor readings")
 
+        # v1.30.5: a REAL temperature reading, or an honest refusal — never a
+        # guess. Keys are checked most-specific-first and a value that is
+        # missing, non-numeric, <= 0 or implausible means "no reading" (the A51
+        # ThermalMonitor reports 0 when it has nothing), not "0 degrees".
+        def _temperature() -> ToolResult:
+            try:
+                data = sensor_provider() or {}
+            except Exception as exc:
+                return ToolResult.err_result(f"Temperature check failed: {exc}")
+            for key, kind in (("ambient_temp_c", "ambient"),
+                              ("temperature_c", "ambient"),
+                              ("cpu_temp_c", "device")):
+                if key not in data:
+                    continue
+                try:
+                    value = float(data[key])
+                except (TypeError, ValueError):
+                    continue
+                if value <= 0.0 or value > 150.0:
+                    continue
+                if kind == "device":
+                    return ToolResult.ok_result(
+                        f"My own device is running at {value:.1f} degrees "
+                        "Celsius — that is my thermal sensor, not the room.",
+                        data={"temperature_c": value, "source": key,
+                              "kind": kind})
+                return ToolResult.ok_result(
+                    f"It's {value:.1f} degrees Celsius here.",
+                    data={"temperature_c": value, "source": key, "kind": kind})
+            return ToolResult.err_result(
+                "I can't measure a temperature here — this device has no "
+                "ambient sensor and no weather service is connected.")
+
+        registry.register_handler(
+            "get_temperature", _temperature,
+            description="Read a real temperature, or report honestly that "
+                        "none is available")
+
     # Phase 4 — durable memory tools, backed by the agent's FactMemory.
     if memory_provider is not None:
         def _remember(text: str) -> ToolResult:

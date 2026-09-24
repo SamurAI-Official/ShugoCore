@@ -9,6 +9,12 @@ sys.path.insert(0, "")
 
 from memory_system import SemanticMemory
 
+try:
+    import psycopg2  # type: ignore  # noqa: F401  (presence probe for the PG parity test)
+    _HAS_PG_DRIVER = True
+except ImportError:
+    _HAS_PG_DRIVER = False
+
 
 class EntityGraphSqliteTestCase(unittest.TestCase):
     def setUp(self):
@@ -90,6 +96,10 @@ class EntityGraphSqliteTestCase(unittest.TestCase):
 class EntityGraphPgParityTestCase(unittest.TestCase):
     """PgSemanticMemory mirrors the SQLite graph API (mock connection)."""
 
+    @unittest.skipUnless(
+        _HAS_PG_DRIVER,
+        "psycopg2 is not installed: PgSemanticMemory composes psycopg2.sql "
+        "identifiers at construction (pip install 'shugocore[postgres]')")
     def test_pg_has_link_and_subgraph_methods(self):
         from unittest import mock
         import pg_memory

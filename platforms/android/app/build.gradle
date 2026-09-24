@@ -14,8 +14,8 @@ android {
         applicationId "com.samurai.shugocore"
         minSdk 28
         targetSdk 34
-        versionCode 21
-        versionName "1.30.4"
+        versionCode 22
+        versionName "1.30.5"
 
         ndk {
             // arm64-v8a: 2020+ devices; x86_64: emulator testing
@@ -130,6 +130,11 @@ android {
     sourceSets {
         main {
             jniLibs.srcDirs += 'src/main/cpp/onnxruntime/lib'
+            // Mesh RPC peripheral server (layer split): CMake writes
+            // libshugocore_rpc_server.so here (see cpp/CMakeLists.txt,
+            // SHUGOCORE_RPC_SERVER) so it ships as a real extracted file the
+            // app can exec as a helper process.
+            jniLibs.srcDirs += 'src/main/jniLibs'
         }
     }
 }

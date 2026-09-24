@@ -27,6 +27,17 @@ except ImportError:
     _pg_sql = None  # type: ignore
     _HAS_PG_SQL = False
 
+# ``PgSemanticMemory.__init__`` composes ``psycopg2.sql.Identifier`` objects up
+# front, and these tests patch ``_HAS_PSYCOPG`` to True to exercise that real
+# path — so they need the actual driver, not merely the fail-closed stub. When
+# psycopg2 is absent they skip with an actionable reason instead of raising
+# ``AttributeError: 'NoneType' object has no attribute 'Identifier'`` (21 such
+# errors on a bare runner before this guard).
+_NO_PG_DRIVER = (
+    "psycopg2 is not installed: this test exercises the real "
+    "psycopg2.sql identifier composition "
+    "(pip install 'shugocore[postgres]')")
+
 
 def _flatten_sql(stmt):
     """Render a ``psycopg2.sql.Composed`` (or plain string) into a real SQL string.
@@ -121,6 +132,8 @@ class FakeConnection:
 
 
 def make_pg(**conn_kwargs):
+    if not _HAS_PG_SQL:
+        raise unittest.SkipTest(_NO_PG_DRIVER)
     conn = FakeConnection(**conn_kwargs)
     with mock.patch.object(pg_memory, "_HAS_PSYCOPG", True):
         store = PgSemanticMemory("postgresql://user:pw@db:5432/fleet",
@@ -142,6 +155,7 @@ class FailureModeTestCase(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 open_semantic_memory("postgres://db/fleet")
 
+    @unittest.skipUnless(_HAS_PG_SQL, _NO_PG_DRIVER)
     def test_table_prefix_is_strictly_validated(self):
         for bad in ("ShugoCore", "shugo; DROP TABLE users", "shugo core",
                     "shugocore-facts", "-lead", "9lead", "x" * 42, ""):
@@ -151,6 +165,7 @@ class FailureModeTestCase(unittest.TestCase):
                     PgSemanticMemory("postgresql://db/fleet",
                                      table_prefix=bad, connection=conn)
 
+    @unittest.skipUnless(_HAS_PG_SQL, _NO_PG_DRIVER)
     def test_valid_table_prefixes_accepted(self):
         for good in ("shugocore", "fleet_a1", "a"):
             conn = FakeConnection()
@@ -160,6 +175,7 @@ class FailureModeTestCase(unittest.TestCase):
             self.assertEqual(store._t_facts, f"{good}_facts")
             store.close()
 
+    @unittest.skipUnless(_HAS_PG_SQL, _NO_PG_DRIVER)
     def test_extension_failure_is_fail_closed(self):
         conn = FakeConnection(fail_on={"CREATE EXTENSION":
                                        RuntimeError("permission denied")})

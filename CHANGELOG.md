@@ -4,6 +4,212 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [Unreleased]
+
+### CI integrity: the 3.9 regression, missing optional deps, packaging
+
+The `CI` workflow had been red on every push since 2026-09-15. Two independent
+failure classes were hiding behind the matrix's default `fail-fast`: a genuine
+Python 3.9 incompatibility, and a suite that exercised optional dependencies CI
+never installed. Both are fixed — `test (3.9)` through `test (3.13)` pass
+together now.
+
+- **`py_compat.py`** (new) — one documented home for stdlib features newer than
+  the `requires-python = ">=3.9"` floor. `dataclass_slots` is
+  `dataclasses.dataclass` with `slots=True` on 3.10+, and a plain dataclass on
+  3.9, where the keyword does not exist. `@dataclass(slots=True)` raises
+  `TypeError` at *class definition* time, so the four uses in
+  `kv_mesh/shard.py` (3) and `personality/governor.py` (1) — added in v1.28.1 —
+  made both packages unimportable on 3.9: 189 cascading `TypeError`s and 120
+  errors from that one construct. Slots are still applied everywhere the
+  interpreter supports them; only the 3.9 fallback omits them, so the on-device
+  memory win is kept.
+- **`tests/test_py_compat.py`** (new) — pins both halves of the contract (a
+  working dataclass on every interpreter, `__slots__` retained where supported,
+  `default_factory` still per-instance) and guards the two production classes
+  that broke.
+- **`tests/test_simulation.py`** — skips the module *with a reason* when numpy
+  is absent instead of failing collection: `simulation.base` builds its state
+  vectors with numpy. One bare `import numpy` previously reddened every
+  interpreter in the matrix (the 2026-09-06 `test (3.11)` failure).
+- **`tests/test_pg_memory.py`**, **`tests/test_entity_graph.py`** — the PG tests
+  patch `_HAS_PSYCOPG` to `True` to exercise real `psycopg2.sql.Identifier`
+  composition, which needs the actual driver; without it they now skip with an
+  install hint instead of raising `AttributeError: 'NoneType' object has no
+  attribute 'Identifier'` (21 errors on the runner).
+- **`telemetry.py`** — binds `_otel_trace = None` when the OTel import fails, so
+  patching that name works on a host without the `telemetry` extra (previously
+  the one remaining `test_v1` failure). Real usage stays gated on `_HAS_OTEL`.
+- **`.github/workflows/ci.yml`** — `fail-fast: false` (the matrix is how we see
+  *which* interpreter breaks; fail-fast hid 3.10–3.13 behind 3.9), a
+  `workflow_dispatch` trigger so a work branch can be reviewed on demand with
+  `gh workflow run ci.yml --ref <branch>`, and the test job installs `.[dev]`
+  alongside `requirements.txt`. It also provisions the vendored NRR submodule
+  and re-applies `patches/nrr/`: three tests read that tree (`nrr_android_port`'s
+  submodule + portability checks, `xr_scaffold`'s descriptor sweep) and had been
+  erroring with `FileNotFoundError: .../cpp/nrr/runtime/onnx_runtime.cpp` on
+  every run. Only NRR is fetched — a recursive checkout would clone the whole
+  llama.cpp history onto all five matrix legs.
+- **`patches/nrr/0002-godot-plugin-descriptor-ini.patch`** (new) — the NRR Godot
+  descriptor's XML→INI conversion had only ever existed inside a working copy,
+  so a fresh clone restored the Godot-3 XML file and `test_all_descriptors_are_ini`
+  failed on CI while passing locally. It is a re-appliable patch now, and the
+  durability guard's needle list includes `engine_plugins/godot/plugin.cfg` so
+  the gap cannot reopen silently. Verified against a fresh clone of the pinned
+  SHA: the whole series applies and reproduces all four in-submodule fixes.
+- **`pyproject.toml`** — `dev` carries the optional dependencies the suite
+  exercises for real (`numpy`, `psycopg2-binary`, `opentelemetry-api`), and
+  `py-modules` gains `delegation`, `mesh_election`, `mesh_rpc`, `py_compat`,
+  `security_inventory` and `talker`. None of those were declared, so a built
+  wheel was missing modules that `shugocore_agent` and `shugocore_server`
+  import at runtime — a latent packaging bug independent of CI.
+- **`.github/workflows/release.yml`** — removes `build/` and `dist/` before
+  `python -m build`. setuptools never prunes `build/lib`, so a warm working
+  tree re-packs the previous build's `__pycache__` into the wheel: 73 `.pyc`
+  files (~1.28 MB) inflated a locally built v1.30.5 wheel to 950 KB where a
+  clean build is 340 KB. Runner workspaces are fresh, so published artifacts
+  were never affected — this is belt-and-braces plus a local-build trap
+  removed.
+- **`.github/workflows/android.yml`** — a branch-dispatched APK build could
+  never succeed: `NAME="shugocore-${GITHUB_REF_NAME#v}.apk"` turns
+  `hotfix/pypi-publishes-cia` into a `cp` target inside a directory that does
+  not exist (and an invalid artifact name). The ref is now slash-sanitised, and
+  the release-attach step reuses `$APK_PATH` instead of re-deriving the name.
+- **Dropping the 3.9 floor** is tracked in issue #12 for a later release; until
+  that is decided, `py_compat` keeps 3.9 working and the matrix keeps testing it.
+
+### Mobile fleet wiring on the desktop server + operator pairing route
+
+- **`shugocore_server.py`** — `main()` now constructs the canonical mobile
+  stack (`MobileNodeManager` + `MobileComputeBroker` + `MobileExecutionHandler`)
+  and injects it as `engine_kwargs["mobile_handler"]`, so `GET /api/v1/fleet`
+  reports `enabled: true` instead of the previous hard-wired `enabled: false`
+  (the CLI never passed a handler). Opt out with `--no-mobile`; a construction
+  failure degrades to `enabled: false` rather than refusing to start. New
+  bearer-authenticated `POST /api/v1/fleet` implements the documented operator
+  pairing flow (`{"device_id", "action": "pair"|"unpair", "manifest", ...}`):
+  pairing allowlists the node, keeps the ingest topic-ACL allowlist in sync
+  (set semantics — pair adds, unpair removes), and subscribes the device's
+  contract topics. `GET /api/v1/sensors` still reports `enabled: false` on a
+  bare desktop engine by design — a sensor stream is only reported when the
+  hosted agent's telemetry actually exists, never fabricated.
+- **`tests/test_shugocore_server.py`** — two new tests cover the pairing route
+  (400 on bad input, allowlist sync on pair *and* unpair, fleet visibility,
+  503 when the fleet is disabled).
+
+### Distributed mesh primary election, security baselines, XR scaffold
+
+The Android custodian (Exynos-1380 page-robot family) and a paired desktop can
+now form a mesh with exactly one primary: the primary runs the agent loop's
+side-effects (speech, `ask_user`), every other live node falls back to
+peripheral mode (sensors + journal + RPC offload). Design rule: **paired + fresh
+heartbeat + thermal < 3 + headroom > 0 are candidates; lowest priority wins,
+tie-break on smallest node_id**. Lease 10s, heartbeat timeout 30s. A partitioned
+node fails closed to standalone; re-merge is a fresh election.
+
+- **`mesh_election.py`** (new) — deterministic, thermal-aware election plus the
+  split-layer command builder. `observe_heartbeat(payload, now=None)` accepts an
+  injectable clock for tests and replay.
+- **`shugocore_agent.py`** — each tick feeds local thermal/memory and the
+  peer snapshots Kotlin pushes, then re-evaluates the lease
+  (`_mesh_heartbeat_tick`). All four side-effect chokepoints
+  (`_execute_speak`, `_execute_ask_user`, `_speak_direct`, `speak_test`) are
+  gated on the lease and a follower refusal is journaled, not silently dropped.
+  `get_status()` reports `mesh_role` (`primary` / `follower` / `standalone` /
+  `none`) and `mesh_primary` — **a lone node holding its own single-node lease
+  reports `standalone`, never `primary`**.
+- **`shugocore_server.py`** — `/api/v1/status` surfaces `mesh_role` /
+  `mesh_primary` additively; absent keys are never fabricated.
+- **`security_inventory.py`** (new) — one bounded, observational snapshot of a
+  node's posture (audit-chain integrity via the real `verify()`, policy
+  invariants, network policy, granted caps, consent actions, mesh role) plus a
+  documented baseline evaluator. Violations are `drift` (control present but
+  wrong) or `unverifiable` (control absent — always critical: silence is not
+  safety). A not-yet-written audit chain reports `empty`, not tampered.
+  `GET /api/v1/security` exposes the server's own controls and any drift,
+  including a tokenless dev server reported *as* drift.
+- **`platforms/godot/`** (new) — Godot 4 OpenXR scaffold wired to the real wire
+  contracts (`/health`, `/api/v1/status`, `/api/v1/sensors`, `POST /api/generate`,
+  policy-gated `POST /api/v1/task`), bearer token via `SHUGOCORE_SERVER_TOKEN`.
+  XR bootstrap reports only observed modes (`xr` / `desktop_preview` /
+  `unavailable`); agent presence never claims a headset it does not have, and
+  LISTENING is opt-in only. Boots clean headless (Godot 4.7.2) with zero script
+  or scene errors.
+- **Kotlin** — `NodeStatusHeader` shows the mesh role (`a lone node renders
+  STANDALONE, never PRIMARY`); a peripheral can now advertise its election
+  fitness over RFCOMM as a `mesh/health` message (`thermal_status`,
+  `mem_available_bytes`, `priority`, monotone `seq`). Fields are clamped on
+  receipt (thermal 0..4, priority 1..9999), and **both** peer serializers emit
+  them only when the peer actually advertised health — a silent peer stays
+  ineligible rather than having values invented for it.
+
+## [1.30.5] - 2026-09-20
+
+### Closed conversational loop: toolable-question routing, honest measurements, ask_user answers
+
+Measured on the A51 (SM-S515DL) + Tab S9 FE (SM-X518U): asking the agent basic
+things (*what time is it*, *what is the temperature*) produced no proper tool use
+and often no response at all. Three separable defects:
+
+- **A question's phrasing decided whether a tool was reached.** Only the literal
+  string `what time is it` was promoted to a command; `what's the time`,
+  `do you have the time`, `current time`, `what's the date`, `what day is it`,
+  `what is the temperature`, `how hot is it`, `what's my battery` all stayed
+  QUESTIONs and were answered by the language model — which invented readings
+  (`"The temperature outside is currently 20 degrees Celsius."`, an older window
+  even a fabricated city). `tell me the time` mis-routed to `search`
+  ("I can search for that. Let me think about it.") and `get_date` /
+  `check_sensors` were unreachable from any transcript. `handle_time` also
+  executed the `get_time` tool twice per query.
+- **A turn could end with no spoken outcome at all.** An injected `what's the
+  time` was recorded as heard and then produced no tool answer, no model speak
+  and no fallback line — silence.
+- **`ask_user` was fire-and-forget.** `_execute_ask_user` returned
+  `{status, asked, delivered}`; the answer was paired on the bus as metadata
+  only and never answered; expiry at `_ANSWER_TTL_S` was silent;
+  `ConversationManager.on_speak_end` had zero callers so `ConversationState.
+  WAITING` was unreachable; and the one existing loop (timer clarification) only
+  accepted digits — on device `five minutes` produced *"I didn't catch that"*
+  while `5 minutes` set the timer.
+
+Fixes: `IntentParser.tool_topic()` + `_categorize(verb, transcript, tool_topic)`
+make routing phrasing-independent (new `handle_date` / `handle_temperature` /
+`handle_sensors`, single-call `handle_time`); `get_temperature` reports a real
+reading (ambient vs device/CPU framed, `<= 0` = no reading) or refuses honestly;
+the agent re-routes toolable questions before the model, guarantees exactly one
+spoken outcome per turn (blocked/empty/unusable/crashing decisions degrade to an
+honest line), suppresses model-supplied measurement claims, and closes the
+ask_user loop (verified answer, `question_answered` / `question_expired`
+journalled, tick-time expiry, verified question passed to the prompt); the
+clarification resolver accepts number words; unknown commands now fall through
+to the conversational path instead of "I can't do that yet, but I'm learning!";
+`handle_search` no longer promises a backend that does not exist.
+
+Tests: `tests/test_tool_routing.py` (21 — phrasing matrix, parser↔router
+consistency, temperature honesty, no-fabrication guard, word-number clarify) and
+`TestAskUserLoop` in `tests/test_speech_output.py` (9), plus the root↔bundled
+drift guard now recurses into subpackages. `DialogueState`'s clarification window
+is now 120 s, matching the interaction bus's answer TTL — at 90 s a spoken answer
+could be parsed after it expired, because the conversational fast path waits
+behind the loop's own model decision (20-90 s measured).
+
+- **Release gate** — three new device phases: `time_tool_query` (a RE-WORDED
+  clock question must reach the tool), `measurement_honesty` (a temperature
+  question is answered by a tool or refused, never an invented number) and
+  `ask_user_round_trip` (the agent's own question, detected via the bus's
+  `pending_question`, gets an answered reply). All three pass on hardware. Also
+  fixed two harness bugs the phases exposed: `measure_decision_cadence` matched
+  only dotted timestamps (`logcat -v brief` has no prefix and the engine writes
+  `15:04:49,311`), so it always returned its 50 s floor — the Tab now measures a
+  real 21.8 s cadence; and a bounded warm-up plus `await_conversation_idle` stop
+  a slow node failing phases for backlog rather than behaviour. The run now also
+  prints the device thermal status (the A51 hit status 4/critical with decisions
+  ~100 s apart — a phase failure there is thermal, not behavioural).
+- **`shugocore_server.py`** — `build_server` binds `_BoundHTTPServer`
+  (`request_queue_size = 128`) instead of socketserver's default 5: macOS resets
+  a SYN that arrives while the accept queue is full, before the handler or the
+  rate limiter runs, and the fleet/approvals surfaces invite concurrent clients.
+
 ## [1.30.4] - 2026-09-18
 
 ### CSFA hardening: bandit B608, remote audit, fleet auth, embedders, backend pools, pg memory, approvals console, Termux/NPU/memory-policy infra, server hardening

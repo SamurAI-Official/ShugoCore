@@ -4,11 +4,18 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Long-lived work branches can be reviewed on demand without opening a PR
+  # first: `gh workflow run ci.yml --ref hotfix/...`
+  workflow_dispatch:
 
 jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      # One interpreter failing must not cancel the other four. The matrix is
+      # how we see *which* versions break — fail-fast hid 3.10-3.13 behind the
+      # 3.9 leg (a single `@dataclass(slots=True)`) for three weeks.
+      fail-fast: false
       matrix:
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
     steps:
@@ -16,8 +23,24 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Provide the NRR submodule + its patch series
+        # The port-wiring and XR-descriptor tests read the vendored NRR tree
+        # (include/nrr.h, runtime/onnx_runtime.cpp, engine_plugins/godot/...) and
+        # assert the patch series still applies to the pinned SHA. Only NRR is
+        # fetched: `submodules: recursive` would also clone the whole llama.cpp
+        # history on all five matrix legs. This mirrors the Android workflow,
+        # which builds against exactly this tree.
+        run: |
+          git submodule update --init platforms/android/app/src/main/cpp/nrr
+          bash scripts/apply_nrr_patches.sh
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        # ``.[dev]`` adds the optional deps the suite exercises for real
+        # (numpy / psycopg2-binary / opentelemetry-api). With only
+        # requirements.txt installed, those tests errored on the runner while
+        # passing locally.
+        run: |
+          pip install -r requirements.txt
+          pip install '.[dev]'
       - name: Byte-compile all modules
         run: python -m compileall -q .
       - name: Run security & integration tests

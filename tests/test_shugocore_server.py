@@ -629,6 +629,62 @@ class NewSurfacesTestCase(unittest.TestCase):
         import json
         self.assertLess(len(json.dumps(seen["params"])), 10000)
 
+    def test_fleet_pair_route_operator_pairing(self):
+        from mobile_nodes import MobileComputeBroker, MobileExecutionHandler, \
+            MobileNodeManager, MobileNodeRegistry
+        from policy import CapabilityRegistry
+        from ros2_interface import StubROS2Interface
+        engine = build_engine(
+            models=[{"id": "m", "backend": {"type": "stub"}}],
+            memory_db_path=":memory:",
+            audit_path=None,
+        )
+        registry = MobileNodeRegistry()
+        caps = CapabilityRegistry()
+        ros2 = StubROS2Interface(rate_limit_hz=500.0)
+        manager = MobileNodeManager(ros2, registry, caps)
+        broker = MobileComputeBroker(ros2, registry, caps)
+        engine.mobile_handler = MobileExecutionHandler(manager, broker)
+        server = ShugoCoreServer(engine, _build_backend("stub"), model="m")
+        # Missing/invalid device_id -> 400, nothing paired.
+        status, body = server.handle_fleet_pair({})
+        self.assertEqual(status, 400)
+        status, body = server.handle_fleet_pair(
+            {"device_id": "android-A51", "manifest": {"model": "SM-S515DL"}})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["paired"])
+        # Pairing keeps the topic-ACL allowlist in sync (consent == allowlist).
+        self.assertIn("android-A51", caps.mobile_devices_allowlist)
+        status, fleet = server.handle_fleet()
+        self.assertEqual(status, 200)
+        self.assertTrue(fleet["enabled"])
+        self.assertEqual([n["device_id"] for n in fleet["nodes"]],
+                         ["android-A51"])
+        # Unknown action -> 400.
+        status, body = server.handle_fleet_pair(
+            {"device_id": "android-A51", "action": "teleport"})
+        self.assertEqual(status, 400)
+        # Unpair removes the node.
+        status, body = server.handle_fleet_pair(
+            {"device_id": "android-A51", "action": "unpair"})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["removed"])
+        # Unpair revokes consent: the allowlist entry goes too.
+        self.assertNotIn("android-A51", caps.mobile_devices_allowlist)
+        status, fleet = server.handle_fleet()
+        self.assertEqual(fleet["nodes"], [])
+
+    def test_fleet_pair_disabled_fleet_is_503(self):
+        engine = build_engine(
+            models=[{"id": "m", "backend": {"type": "stub"}}],
+            memory_db_path=":memory:",
+            audit_path=None,
+        )
+        server = ShugoCoreServer(engine, _build_backend("stub"), model="m")
+        status, body = server.handle_fleet_pair({"device_id": "android-A51"})
+        self.assertEqual(status, 503)
+        self.assertIn("not enabled", body.get("error", ""))
+
     def test_fleet_aggregates_paired_nodes(self):
         from audit import AuditChain
         from mobile_nodes import MobileComputeBroker, MobileExecutionHandler, \
@@ -689,6 +745,74 @@ class NewSurfacesTestCase(unittest.TestCase):
         self.assertEqual(body["stream"][0]["telemetry"]["thermal_c"], "37.5")
         self.assertEqual(body["stream"][0]["mesh_peer_count"], 1)
         self.assertEqual(second[1]["count"], 2)  # two polls -> two samples
+
+class TestListenBacklog(unittest.TestCase):
+    """The accept queue must suit a fleet, not a demo (v1.30.5).
+
+    macOS RESETS a SYN that arrives while the accept queue is full (Linux drops
+    it and the client's retry succeeds), so socketserver's default of 5 loses
+    concurrent clients before the handler — or even the rate limiter — runs.
+    Phase 0 measured 8-9 of 16 simultaneous loopback connects being reset at the
+    default and none at 128.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.port = _free_port()
+        cls.engine = build_engine(
+            models=[{"id": "test-model", "type": "text",
+                     "backend": {"type": "stub"}}],
+            memory_db_path=":memory:",
+            audit_path=os.path.join(cls._tmp.name, "audit.jsonl"),
+        )
+        cls.server = build_server(
+            engine=cls.engine, backend=_build_backend("stub"),
+            model="test-model", host="127.0.0.1", port=cls.port,
+        )
+        cls.thread = threading.Thread(
+            target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        time.sleep(0.2)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+        cls._tmp.cleanup()
+
+    def test_backlog_is_raised(self):
+        self.assertGreaterEqual(self.server.request_queue_size, 64)
+        self.assertTrue(self.server.daemon_threads)
+
+    def test_sixteen_simultaneous_clients_all_connect(self):
+        barrier = threading.Barrier(16)
+        statuses = []
+        errors = []
+        lock = threading.Lock()
+
+        def one():
+            barrier.wait()
+            try:
+                resp = requests.get(f"http://127.0.0.1:{self.port}/health",
+                                    timeout=10)
+                with lock:
+                    statuses.append(resp.status_code)
+            except Exception as exc:  # noqa: BLE001 - reported, not raised
+                with lock:
+                    errors.append(type(exc).__name__)
+
+        workers = [threading.Thread(target=one) for _ in range(16)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=20)
+        self.assertEqual(errors, [], f"connection errors: {errors}")
+        self.assertEqual(len(statuses), 16)
+        self.assertEqual(set(statuses), {200})
+
+
 
 
 if __name__ == "__main__":

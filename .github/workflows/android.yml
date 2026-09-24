@@ -45,7 +45,7 @@ jobs:
         # The Gradle daemon is pinned by gradle-daemon-jvm.properties to
         # toolchainVendor=jetbrains / toolchainVersion=21 (the Android Studio
         # runtime), so the CI JDK must match exactly.
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: jetbrains
           java-version: '21'

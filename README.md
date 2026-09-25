@@ -115,6 +115,8 @@ decoupled maintenance worker that never blocks the primary loop.
 | `android_inference.py` | Android local inference backend (OpenAI-compatible) |
 | `shugocore_server.py` | Desktop server: Ollama wire contract + engine API (`shugocore-server`) |
 | `platforms/android/` | Android node app: 5-tab control-plane UI, embedded llama.cpp (JNI) + Ollama-compatible local API, foreground service, bundled Python agent tree |
+| `clients/desktop/` | Desktop control plane: backend/model chooser + node dashboard (SERVER / AGENT / ACTIVITY / SENSORS / SECURITY / LOG) |
+| `scripts/desktop_agent.py` | Headless host node: agent + Tier 2 + ShugoNet mesh (`mesh_peers.json` or `SHUGOCORE_MESH_PEERS`) |
 
 ## Memory architecture
 
@@ -799,7 +801,8 @@ ShugoCore/
 └── requirements.txt
 ```
 
-Runtime artifacts (`semantic_memory.db`, logs) are local and gitignored.
+Runtime artifacts (`runtime/`: `semantic_memory.db`, the audit chain, logs and a
+node's local `mesh_peers.json`) are local and gitignored.
 
 ## Roadmap
 

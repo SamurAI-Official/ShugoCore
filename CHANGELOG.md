@@ -6,6 +6,59 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### Desktop control plane, host-node launcher, and a strict-server json_mode
+
+The desktop side had no control surface: the only ways to run a node were the
+Android app and the CLI, so a mixed fleet could not be operated or inspected
+from a desktop.
+
+- **`clients/desktop/shugocore_desktop.py`** (new) - a stdlib-only (tkinter)
+  control plane that mirrors the Android one: a pinned node-status header
+  (node/backend/model/engine/memory/mesh/uptime/ticks) over
+  SERVER | AGENT | ACTIVITY | SENSORS | SECURITY | LOG, polled at 1 Hz. The
+  SERVER pane is the backend/model chooser: Ollama, LM Studio (or any
+  OpenAI-compatible endpoint), llama.cpp `llama-server`, a ShugoCore server
+  bridge, or the offline stub, with a live "Detect models" probe
+  (`/api/tags` vs `/v1/models`), an endpoint preview, node/mesh fields,
+  Start / Apply (restart) / Stop, health rows read from real agent signals, and
+  one-click audit-chain verification. `--selftest` probes every backend
+  headlessly. Not part of the Android bundle; nothing to mirror.
+- **`scripts/desktop_agent.py`** (new) - the headless host node behind it: a
+  full agent (engine, Tier 2, policy gates, audit) plus the memory mesh, with
+  `--peer/--token/--seed-fact/--sync`, mesh identity/priority, and a status line
+  reporting node/prio/role/primary/connected/imported. `mesh_peers.json` (or
+  `SHUGOCORE_MESH_PEERS`) still decides the fleet: the launcher logs what was
+  configured versus what is connected, so a missing peer is visible rather than
+  implied.
+- **`model_backends.py`** - `json_mode` for the OpenAI-compatible backend
+  (default unchanged). A grammar request used to map to the legacy
+  `response_format: {"type": "json_object"}`, which strict servers reject
+  (LM Studio: HTTP 400 "'response_format.type' must be 'json_schema' or
+  'text'"). The rejection was invisible in the agent loop - it looked like a
+  model that never proposed an action - so every decision fell back to rules.
+  `json_schema` sends a permissive object schema; `text`/`none` omits the hint
+  entirely. Mirrored into the bundled Android tree and pinned by
+  `tests/test_model_execution_stress.TestStructuredOutputMode`.
+- **`tests/two_agent_memory_smoke.py`** - the harness now presents
+  `SHUGOCORE_MESH_TOKEN` when it is set. A token-gated peer rejects every
+  message without the secret, so the probe reported "request failed: timed out"
+  and a hardened mesh could not be verified at all.
+- **`tests/test_memory_sharing.py`** - the async-dial test restored `_dial_peer`
+  as a bare function instead of a `staticmethod`, which re-binds `self`; every
+  later dial thread in the same process then died with
+  `TypeError: _dial_peer() takes 1 positional argument but 2 were given`. The
+  suite still reported success because the traceback goes to stderr from the
+  thread, not to the test result. Restoring the descriptor keeps the merged
+  async dial honest for the rest of the run.
+- **`.gitignore`** - ignore `runtime/` (per-node state: memory database, audit
+  chain, personality files, local `mesh_peers.json`).
+
+Verified on a four-node LAN mesh (Windows desktop, macOS laptop, two Android
+nodes): the desktop held 224 facts imported from its peers with `shared_from`
+provenance, and the desktop client drove a node whose decisions came from LM
+Studio (`proposal_source` = the model id, zero model-call failures) instead of
+the rule fallback.
+
 ### Android lifecycle: a race that escaped as an exception from on_resume
 
 `AndroidRuntime.on_pause()` set ``state = "paused"`` and **then** called

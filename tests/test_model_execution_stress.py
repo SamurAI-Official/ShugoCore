@@ -332,5 +332,52 @@ class TestBackendEgressHardening(unittest.TestCase):
             _read_bounded(_ResettingResponse())
 
 
+class TestStructuredOutputMode(unittest.TestCase):
+    """``json_mode`` decides what the OpenAI wire is told to constrain.
+
+    Strict OpenAI-compatible servers reject the legacy ``json_object`` hint
+    (LM Studio answers HTTP 400: "'response_format.type' must be 'json_schema'
+    or 'text'"), and a rejected request silently forced every decision onto the
+    rule fallback instead of reaching the model.
+    """
+
+    def _request_body(self, mode, grammar='root ::= "x"'):
+        server = start_fake_server(mode="ok")
+        try:
+            with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+                backend = OpenAICompatibleBackend(server.base_url(),
+                                                  json_mode=mode)
+                backend.generate("m", "prompt", grammar=grammar)
+            return dict(server.requests[-1]["body"])
+        finally:
+            server.stop()
+
+    def test_default_keeps_the_legacy_json_object_hint(self):
+        self.assertEqual(self._request_body("json_object").get("response_format"),
+                         {"type": "json_object"})
+
+    def test_text_mode_omits_response_format(self):
+        self.assertNotIn("response_format", self._request_body("text"))
+
+    def test_none_mode_omits_response_format(self):
+        self.assertNotIn("response_format", self._request_body("none"))
+
+    def test_json_schema_mode_sends_a_schema(self):
+        body = self._request_body("json_schema").get("response_format") or {}
+        self.assertEqual(body.get("type"), "json_schema")
+        self.assertIn("json_schema", body)
+
+    def test_without_a_grammar_no_hint_is_sent(self):
+        """The hint is a structured-output request, not a per-call default."""
+        self.assertNotIn("response_format",
+                         self._request_body("json_object", grammar=None))
+
+    def test_config_key_reaches_the_backend(self):
+        backend = create_backend({"type": "openai",
+                                  "base_url": "http://127.0.0.1:9",
+                                  "json_mode": "text"})
+        self.assertEqual(backend.json_mode, "text")
+
+
 if __name__ == "__main__":
     unittest.main()

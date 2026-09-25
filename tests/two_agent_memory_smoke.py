@@ -20,6 +20,10 @@ Modes
        python3 tests/two_agent_memory_smoke.py --remote 127.0.0.1:19000 \
            --peer-id shugo-device --query "favorite color"
 
+   Against a token-protected peer, export the same secret here too
+   (``SHUGOCORE_MESH_TOKEN``) -- a hardened node rejects every message that
+   does not carry it, so without this the probe reports "timed out".
+
 Exit code 0 = verdict STABLE, 1 = FAILED. Read-only with respect to the
 process environment; all memory is written to a temp directory.
 """
@@ -62,8 +66,13 @@ class Agent:
             agent_id=agent_id,
             semantic=SemanticMemory(db_path=os.path.join(tmpdir, f"{agent_id}.db")),
             auto_start=False)
+        # A token-protected peer (SHUGOCORE_MESH_TOKEN) rejects every message
+        # that does not carry the shared secret, so this side must present it
+        # too -- otherwise --remote reports "request failed: timed out" against
+        # a hardened node. Unset keeps the previous tokenless behaviour.
         self.runtime = ShugonetAgentRuntime(
-            agent_id=agent_id, host="127.0.0.1", port=port, memory=self.memory)
+            agent_id=agent_id, host="127.0.0.1", port=port, memory=self.memory,
+            auth_token=os.environ.get("SHUGOCORE_MESH_TOKEN") or None)
 
     def start(self) -> int:
         self.runtime.start()

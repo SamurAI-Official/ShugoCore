@@ -188,10 +188,16 @@ class OpenAICompatibleBackend(BaseBackend):
     name = "openai"
 
     def __init__(self, base_url: str, api_key_env: str = "OPENAI_API_KEY",
-                 timeout: float = 30.0):
+                 timeout: float = 30.0, json_mode: str = "json_object"):
         self.base_url = _validated_base_url(base_url)
         self.api_key_env = str(api_key_env)
         self.timeout = float(timeout)
+        # Structured-output hint sent when the caller asks for a grammar.
+        # ``json_object`` is the legacy OpenAI mode and stays the default;
+        # strict servers reject it (LM Studio: HTTP 400 "'response_format.type'
+        # must be 'json_schema' or 'text'"), so it is configurable per backend:
+        #   json_object (default) | json_schema | text/none (omit entirely).
+        self.json_mode = str(json_mode or "json_object").strip().lower()
 
     def generate(self, model_id: str, prompt: str, timeout: float = None,
                  grammar: Optional[str] = None) -> str:
@@ -203,8 +209,17 @@ class OpenAICompatibleBackend(BaseBackend):
             "messages": [{"role": "user", "content": str(prompt)}],
         }
         if grammar:
-            # Closest OpenAI-compatible structured-output mode.
-            body["response_format"] = {"type": "json_object"}
+            # Structured-output constraint for the OpenAI wire, in the mode
+            # this backend is configured for (see ``json_mode``).
+            if self.json_mode in ("text", "none", "off"):
+                pass                      # server infers JSON from the prompt
+            elif self.json_mode == "json_schema":
+                body["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {"name": "shugocore_proposal",
+                                    "schema": {"type": "object"}}}
+            else:
+                body["response_format"] = {"type": "json_object"}
         with requests.post(
             f"{self.base_url}/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}"},

@@ -6,6 +6,10 @@ __pycache__/
 *.log
 chroma_db/
 
+# Per-node state written by a running agent (memory db, audit chain,
+# personality files, local mesh_peers.json). Node-local, never committed.
+runtime/
+
 # Local memory databases
 *.db
 *.sqlite3

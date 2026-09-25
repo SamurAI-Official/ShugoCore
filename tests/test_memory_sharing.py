@@ -725,7 +725,11 @@ class TestPeerDialDoesNotBlockInit(unittest.TestCase):
                             "start() blocked on the peer handshake")
             self.assertTrue(dial_started.wait(2.0))
         finally:
-            ShugonetAgentRuntime._dial_peer = original
+            # Restore the *descriptor*: assigning the bare function back turns
+            # _dial_peer into a bound method, so every later async dial would
+            # pass (self, conn) into a one-argument dialer and die in its
+            # thread -- visible only as "Exception in thread shugonet-dial-*".
+            ShugonetAgentRuntime._dial_peer = staticmethod(original)
             runtime.stop()
 
 

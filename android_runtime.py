@@ -93,64 +93,97 @@ class AndroidRuntime:
         self._monitor_thread: Optional[threading.Thread] = None
         self._power_low_reported = False
         self._thermal_streak = 0
+        # Serialises the lifecycle transitions. on_pause/on_resume are a
+        # check-then-act on ``state`` that also drives the governor latch, and
+        # they are reachable from more than one thread (the app shell's main
+        # thread and anything else holding a reference). Without this lock two
+        # threads both observe "paused" and both call the governor's resume;
+        # the second one finds the state already back at IDLE and raises
+        # GovernorError -- from inside an Android lifecycle callback.
+        self._state_lock = threading.RLock()
         self.state = "new"  # new | started | paused | destroyed
 
     # -- lifecycle -------------------------------------------------------------
     def on_create(self) -> None:
         """App-shell onCreate: locks, secrets, accelerator detection, monitor."""
-        if self.state == "destroyed":
-            raise RuntimeError("AndroidRuntime already destroyed")
-        if self.state in ("started", "paused"):
-            return  # onCreate is only legal from the fresh state
-        for lock_call, label in ((self._acquire_wake_lock, "wake lock"),
-                                 (self._acquire_multicast_lock, "multicast lock")):
-            try:
-                lock_call()
-            except Exception as exc:
-                logger.warning("Android %s unavailable: %s", label, exc)
-        if self.secrets is not None:
-            bound = self.secret_provider.bind(self.secrets)
-            missing = [name for name, ok in bound.items() if not ok]
-            if missing:
-                logger.warning("Secrets not resolvable on device: %s", missing)
-        if self.acceleration is not None:
-            try:
-                self.acceleration.detect(bridge=self._bridge)
-            except Exception as exc:
-                logger.warning("Accelerator detection failed: %s", exc)
-        self.state = "started"
-        self._monitor_stop.clear()
-        self._monitor_thread = threading.Thread(
-            target=self._monitor_loop, name="shugocore-device-monitor", daemon=True)
-        self._monitor_thread.start()
+        with self._state_lock:
+            if self.state == "destroyed":
+                raise RuntimeError("AndroidRuntime already destroyed")
+            if self.state in ("started", "paused"):
+                return  # onCreate is only legal from the fresh state
+            for lock_call, label in ((self._acquire_wake_lock, "wake lock"),
+                                     (self._acquire_multicast_lock, "multicast lock")):
+                try:
+                    lock_call()
+                except Exception as exc:
+                    logger.warning("Android %s unavailable: %s", label, exc)
+            if self.secrets is not None:
+                bound = self.secret_provider.bind(self.secrets)
+                missing = [name for name, ok in bound.items() if not ok]
+                if missing:
+                    logger.warning("Secrets not resolvable on device: %s", missing)
+            if self.acceleration is not None:
+                try:
+                    self.acceleration.detect(bridge=self._bridge)
+                except Exception as exc:
+                    logger.warning("Accelerator detection failed: %s", exc)
+            self.state = "started"
+            self._monitor_stop.clear()
+            self._monitor_thread = threading.Thread(
+                target=self._monitor_loop, name="shugocore-device-monitor", daemon=True)
+            self._monitor_thread.start()
         logger.info("AndroidRuntime started")
 
     def on_pause(self) -> None:
         """App-shell onPause: engine pauses and drains in-flight work."""
-        if self.state != "started":
-            return
-        self.state = "paused"
-        if self.fallbacks is not None:
-            self.fallbacks.report_violation(
-                "android_lifecycle_paused", "app shell paused")
+        latch_error: Optional[Exception] = None
+        with self._state_lock:
+            if self.state != "started":
+                return
+            self.state = "paused"
+            if self.fallbacks is not None:
+                try:
+                    self.fallbacks.report_violation(
+                        "android_lifecycle_paused", "app shell paused")
+                except Exception as exc:
+                    latch_error = exc
+        if latch_error is not None:
+            # Lifecycle callbacks cross into the Android app shell, so they
+            # must never raise; report and carry on.
+            logger.warning("Android pause latch failed: %s", latch_error)
         logger.info("AndroidRuntime paused")
 
     def on_resume(self) -> None:
         """App-shell onResume: operator-attributed resume."""
-        if self.state != "paused":
+        refused: Optional[Exception] = None
+        with self._state_lock:
+            if self.state != "paused":
+                return
+            if self.fallbacks is not None:
+                try:
+                    self.fallbacks.resume(resumed_by="android_lifecycle")
+                except Exception as exc:
+                    refused = exc
+            if refused is None:
+                self.state = "started"
+        if refused is not None:
+            # Stay paused rather than claiming a resume the governor refused:
+            # a lifecycle callback must never propagate, or the app dies.
+            logger.warning("Android resume refused by governor: %s", refused)
             return
-        self.state = "started"
-        if self.fallbacks is not None:
-            self.fallbacks.resume(resumed_by="android_lifecycle")
         logger.info("AndroidRuntime resumed")
 
     def on_destroy(self) -> None:
         """App-shell onDestroy: stop monitoring (engine shutdown is the caller's)."""
-        self._monitor_stop.set()
-        if self._monitor_thread is not None:
-            self._monitor_thread.join(timeout=2.0)
+        with self._state_lock:
+            self._monitor_stop.set()
+            monitor_thread = self._monitor_thread
             self._monitor_thread = None
-        self.state = "destroyed"
+            self.state = "destroyed"
+        # Join outside the lock: the monitor is a separate thread of control
+        # and must never be waited on while holding the lifecycle lock.
+        if monitor_thread is not None:
+            monitor_thread.join(timeout=2.0)
         logger.info("AndroidRuntime destroyed")
 
     # -- device monitoring -------------------------------------------------------

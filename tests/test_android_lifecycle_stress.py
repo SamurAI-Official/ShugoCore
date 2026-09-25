@@ -99,6 +99,55 @@ class TestLifecycleChurn(unittest.TestCase):
         self.rt.on_destroy()
         self.assertEqual(self.rt.state, "destroyed")
 
+    def test_resume_during_pause_latch_does_not_escape(self):
+        """A resume landing while the pause is still latching must not raise.
+
+        ``on_pause()`` sets ``state = "paused"`` and only then reports the
+        violation that makes the governor latch PAUSED. An ``on_resume()``
+        running inside that gap used to call the governor's resume against an
+        IDLE governor and raise
+        ``GovernorError('cannot resume from state=idle')`` out of a lifecycle
+        callback -- which crosses into the Android app shell and kills it. The
+        transition and the latch are now one critical section, so the window
+        does not exist. The slow latch makes the old interleaving
+        deterministic rather than opportunistic.
+        """
+        class _SlowLatch(FallbackController):
+            """Hold the pause un-latched so the gap is wide and reliable."""
+
+            def report_violation(self, kind: str, detail: str = "") -> None:
+                time.sleep(0.25)
+                return super().report_violation(kind, detail)
+
+        governor = ExecutionGovernor()
+        runtime = AndroidRuntime(self.bridge,
+                                 fallbacks=_SlowLatch(governor=governor),
+                                 acceleration=AccelerationPolicy(),
+                                 power_poll_interval=5.0)
+        try:
+            runtime.on_create()
+            errors = []
+
+            def pause():
+                try:
+                    runtime.on_pause()
+                except Exception as exc:  # noqa: BLE001 - reported below
+                    errors.append(exc)
+
+            pauser = threading.Thread(target=pause)
+            pauser.start()
+            time.sleep(0.05)  # state is "paused"; the governor latch has not
+            try:
+                runtime.on_resume()
+            except Exception as exc:  # noqa: BLE001 - reported below
+                errors.append(exc)
+            pauser.join(timeout=5)
+            self.assertEqual(errors, [],
+                             "a lifecycle race escaped as an exception")
+            self.assertEqual(runtime.state, "started")
+        finally:
+            runtime.on_destroy()
+
     def test_monitor_thread_recreated_across_restarts(self):
         for _ in range(5):
             rt, _, _ = _make_runtime(_FakeJBridge())

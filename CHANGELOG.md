@@ -6,6 +6,43 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### Android lifecycle: a race that escaped as an exception from on_resume
+
+`AndroidRuntime.on_pause()` set ``state = "paused"`` and **then** called
+``fallbacks.report_violation(...)`` — the call that makes the governor latch
+PAUSED. Between those two steps the runtime already looked paused while the
+governor was still IDLE, so an ``on_resume()`` running in that gap called the
+governor's resume against an IDLE governor and raised
+
+    GovernorError: cannot resume from state=idle
+
+A lifecycle callback crosses from the app shell (Java/Kotlin) into Python, so
+an exception there is not a test annoyance — it is an app crash. This is the
+same failure the Python 3.9 CI job hit
+(`test_android_lifecycle_stress.TestLifecycleChurn.test_concurrent_pause_resume_race`),
+and the interleaving is reachable whenever pause/resume are driven from more
+than one thread (screen off/on, backgrounding) while the agent loop is running.
+
+- **`android_runtime.py`** — the state transition and the governor latch are now
+  one critical section (`self._state_lock`, an RLock). ``on_resume()`` can no
+  longer observe "paused" before the latch landed, and a second concurrent
+  resume finds ``state == "started"`` and returns instead of double-resuming the
+  governor. ``on_create()``/``on_destroy()`` take the same lock so the
+  ``state`` field has a single writer discipline; ``on_destroy()`` joins the
+  monitor thread *outside* the lock so no thread is ever waited on while
+  holding it.
+- **`android_runtime.py` — lifecycle callbacks can no longer raise.** If the
+  governor refuses a resume (e.g. a terminal HALT), ``on_resume()`` now logs
+  and stays **paused** rather than claiming a resume that did not happen; a
+  failing pause latch is logged and the pause still completes. An exception
+  escaping into the app shell is the crash class we are trying to remove.
+- **`tests/test_android_lifecycle_stress.py`** —
+  `TestLifecycleChurn::test_resume_during_pause_latch_does_not_escape` makes the
+  interleaving deterministic (a deliberately slow ``report_violation`` holds the
+  pause un-latched while ``on_resume()`` runs). Verified to fail on the old code
+  with the exact `cannot resume from state=idle` error and to pass on the fixed
+  code.
+
 ### Test determinism: a wall-clock-dependent assertion, and the watermark limit it hid
 
 `test_sync_combines_memory_and_is_usable_by_each_agent` failed on the Python

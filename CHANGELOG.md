@@ -6,6 +6,36 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### Test determinism: a wall-clock-dependent assertion, and the watermark limit it hid
+
+`test_sync_combines_memory_and_is_usable_by_each_agent` failed on the Python
+3.9 CI job asserting `again["received"] == 0` (got `1`). Reproduced to be
+**wall-clock dependent, not a regression**: the same code passes or fails
+depending on which second the run lands in.
+
+- **The assertion was over-specified.** ``sync`` advances its watermark to the
+  newest received ``created_at``; an imported fact is stamped at *import* time
+  (`store_fact` sets ``created_at = now``), so agent-a's newly imported fact is
+  stamped after agent-b's watermark was taken. Whether the incremental filter
+  then re-offers it depends on whether those two moments fell in the same
+  wall-clock second. Proof, same code, clock the only difference: facts stamped
+  ``…:43`` and ``…:43`` → ``received=0`` (test passes); ``…:43`` and ``…:44`` →
+  ``received=1`` (test fails). The test now asserts the real invariants —
+  ``status == "success"``, nothing newly imported, the durable store stays at
+  two facts — and bounds ``received`` instead of fixing it, so it is
+  deterministic in either second.
+- **The underlying limit is now pinned, not lurking.**
+  `TestSemanticMemorySharingPrimitives::test_same_second_watermark_relationship`
+  states it explicitly: `_utc_now_iso()` stamps `created_at` with
+  `isoformat(timespec="seconds")` and `facts_since` filters
+  `created_at > since`, so facts created in the same second as the watermark
+  are filtered out of each other. **Known issue:** an incremental sync can
+  therefore never deliver a sibling fact created in the same second as the
+  watermark — it arrives only once a later-second fact moves the watermark, or
+  on a full re-pull (`since=0`). Fixing that properly means discriminating
+  stamps (sub-second precision) or an `(created_at, id)` cursor; both are
+  protocol/storage changes and are deliberately **not** made here.
+
 ### Mesh: peer refusals surface as failures, and mesh init cannot stall or leak
 
 Three defects made a node look healthy while its mesh was broken, stalled the

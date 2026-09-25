@@ -113,6 +113,31 @@ class TestSemanticMemorySharingPrimitives(unittest.TestCase):
             self.mem.store_fact(f"fact number {i}")
         self.assertEqual(len(self.mem.facts_since(limit=3)), 3)
 
+    def test_same_second_watermark_relationship(self):
+        """Pin the whole-second watermark limit (known issue).
+
+        ``created_at`` is stamped to whole seconds, so facts created in the
+        same second share a stamp and a strict ``created_at > since`` filter
+        hides them from each other: an incremental sync will not re-offer the
+        sibling fact, and it cannot be delivered until a later-second fact moves
+        the watermark or the consumer re-pulls with ``since=0``. This asserts
+        the relationship the stamps imply, so it is deterministic whatever
+        second the run lands in -- and it makes the limit explicit rather than
+        surfacing later as a wall-clock flake.
+        """
+        self.mem.store_fact("first fact in the second")
+        self.mem.store_fact("second fact in the second")
+        first, second = self.mem.facts_since()
+        if first["created_at"] == second["created_at"]:
+            # Same second: the watermark hides the sibling fact.
+            self.assertEqual(
+                self.mem.facts_since(since_iso=first["created_at"]), [])
+        else:
+            # Straddled a second boundary: the newer fact is offered.
+            offered = self.mem.facts_since(since_iso=first["created_at"])
+            self.assertEqual([f["content"] for f in offered],
+                             ["second fact in the second"])
+
 
 class TestMemoryManagerSharing(unittest.TestCase):
     """Export/import preserves provenance and never duplicates content."""
@@ -263,12 +288,25 @@ class TestTwoAgentCombinedMemory(unittest.TestCase):
         hits = self.b.recall("rooftop garden level nine")
         self.assertTrue(any("rooftop garden" in h["content"] for h in hits))
 
-        # The watermark makes the repeat sync incremental: the peer re-sends
-        # nothing it already shared, so combined memory stays at 2 facts.
+        # The watermark makes the repeat sync incremental: nothing NEW is
+        # imported, so combined memory stays at 2 facts.
+        #
+        # ``received`` is deliberately NOT asserted == 0. agent-a gained
+        # FACT_B (imported from agent-b above) after b's watermark for agent-a
+        # was set, so agent-a legitimately re-offers it. Whether the coarse
+        # watermark recognises it as newer is a wall-clock question:
+        # ``created_at`` is stamped to whole seconds and ``facts_since``
+        # filters ``created_at > since``, so facts sharing a second with the
+        # watermark compare equal and are filtered out. Asserting a specific
+        # ``received`` made this test pass or fail depending on which wall-clock
+        # second it happened to run in -- see
+        # TestSemanticMemorySharingPrimitives::test_same_second_facts_are_filtered_out_by_watermark
+        # for the limitation pinned explicitly.
         again = _retry(lambda: self.b.runtime.sync("agent-a"),
                        lambda r: r.get("status") == "success")
+        self.assertEqual(again["status"], "success")
         self.assertEqual(again["imported"], 0)
-        self.assertEqual(again["received"], 0)
+        self.assertLessEqual(again["received"], 1)
         self.assertEqual(len(self.b.memory.tier2.facts_since(limit=100)), 2)
 
         # Forcing a full re-pull is deduped, not duplicated.

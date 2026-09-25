@@ -381,7 +381,10 @@ memory** — not placeholders:
   trip the `memory_sync_conflict_storm` guard.
 - **Joining a mesh.** Host nodes set `SHUGOCORE_MESH_PEERS`
   (`id=host:port,...`); Android nodes drop `mesh_peers.json`
-  (`{"peer-id": "host:port"}`) into the app data dir. On device, the
+  (`{"peer-id": "host:port"}`) into the app data dir. When any node runs
+  with `SHUGOCORE_MESH_TOKEN`, every other node needs the same token:
+  hosts via the env var, Android nodes via `mesh_token.txt` (single line)
+  in the app data dir next to `mesh_peers.json`. On device, the
   deterministic command **"sync your memory with your peer"** merges a peer's
   memory and reports the imported count.
 

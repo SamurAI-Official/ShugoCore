@@ -584,6 +584,34 @@ class AndroidAgent:
             return None
 
     @staticmethod
+    def _load_mesh_token(data_dir: Optional[str] = None) -> Optional[str]:
+        """Resolve the ShugoNet shared-secret mesh token.
+
+        Precedence: ``SHUGOCORE_MESH_TOKEN`` env var first, then
+        ``<data_dir>/mesh_token.txt`` (a single line, max 256 chars).
+        Nodes like Android cannot set process env vars, so the token file
+        is how they join a token-gated mesh. Missing/blank/malformed
+        means "no token" (back-compat: unchanged behavior).
+        """
+        import os as _os
+        token = (_os.environ.get("SHUGOCORE_MESH_TOKEN") or "").strip()
+        if token:
+            return token[:256]
+        if not data_dir:
+            return None
+        try:
+            path = Path(str(data_dir)) / "mesh_token.txt"
+            with open(str(path), "r", encoding="utf-8") as fh:
+                raw = fh.read(512)
+        except Exception:
+            return None
+        parts = raw.strip().split()
+        if not parts:
+            return None
+        cleaned = parts[0].strip()[:256]
+        return cleaned or None
+
+    @staticmethod
     def _parse_mesh_peers(spec: str) -> List[tuple]:
         """Parse ``SHUGOCORE_MESH_PEERS`` ("id=host:port,id2=host:port").
 
@@ -719,7 +747,7 @@ class AndroidAgent:
             shugonet_fallbacks = getattr(getattr(self, "engine", None),
                                          "fallbacks", None)
             mesh_port = int(_os.environ.get("SHUGOCORE_MESH_PORT", "9000"))
-            mesh_token = _os.environ.get("SHUGOCORE_MESH_TOKEN") or None
+            mesh_token = AndroidAgent._load_mesh_token(self.data_dir)
             self.shugonet_runtime = ShugonetAgentRuntime(
                 agent_id=f"shugo-{self.device_caps or 'android'}",
                 host="0.0.0.0", port=mesh_port,

@@ -372,6 +372,33 @@ class TestMeshPeerConfig(unittest.TestCase):
         self.assertEqual(AndroidAgent._parse_mesh_peers("id=host:notaport"), [])
         self.assertEqual(AndroidAgent._parse_mesh_peers("id=host:99999"), [])
         self.assertEqual(AndroidAgent._parse_mesh_peers("=host:9000"), [])
+
+    def test_load_mesh_token_env_file_missing(self):
+        import os
+        from shugocore_agent import AndroidAgent
+
+        tmp = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(tmp, "mesh_token.txt"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("  file-token-abc\nsecond-line\n")
+            os.environ["SHUGOCORE_MESH_TOKEN"] = "env-wins"
+            try:
+                self.assertEqual(AndroidAgent._load_mesh_token(tmp),
+                                 "env-wins")
+            finally:
+                del os.environ["SHUGOCORE_MESH_TOKEN"]
+            self.assertEqual(AndroidAgent._load_mesh_token(tmp),
+                             "file-token-abc")
+            with open(os.path.join(tmp, "mesh_token.txt"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("   \n")
+            self.assertIsNone(AndroidAgent._load_mesh_token(tmp))
+            self.assertIsNone(AndroidAgent._load_mesh_token(
+                os.path.join(tmp, "nonexistent-dir")))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+            os.environ.pop("SHUGOCORE_MESH_TOKEN", None)
 def _bare_agent(data_dir: str):
     """An AndroidAgent with no bootstrap side effects.
 

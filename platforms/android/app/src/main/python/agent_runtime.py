@@ -53,6 +53,7 @@ _RECV_SIZE = 65536
 _SOCKET_TIMEOUT = 5.0
 _CONNECT_TIMEOUT = 2.0  # for initial TCP handshake
 _MAX_FRAME_BYTES = 1_048_576  # hard cap on one NDJSON frame (memory-DoS bound)
+_MAX_CLIENT_THREADS = 16  # hard cap on concurrent inbound client handlers
 
 
 class _PeerConnection:
@@ -116,13 +117,16 @@ class _PeerServer(threading.Thread):
 
     def __init__(self, runtime: "ShugonetAgentRuntime", host: str, port: int,
                  max_frame_bytes: int = _MAX_FRAME_BYTES,
-                 auth_token: Optional[str] = None):
+                 auth_token: Optional[str] = None,
+                 max_client_threads: int = _MAX_CLIENT_THREADS):
         super().__init__(name="shugonet-server", daemon=True)
         self._runtime = runtime
         self._host = host
         self._port = port
         self._max_frame_bytes = max(1024, int(max_frame_bytes))
         self._auth_token = str(auth_token) if auth_token else None
+        self._max_client_threads = max(1, int(max_client_threads))
+        self._client_slots = threading.BoundedSemaphore(self._max_client_threads)
         self._server_sock: Optional[socket.socket] = None
         self._stop_event = threading.Event()
 
@@ -153,15 +157,52 @@ class _PeerServer(threading.Thread):
         while not self._stop_event.is_set():
             try:
                 client_sock, addr = self._server_sock.accept()
-                client_sock.settimeout(_SOCKET_TIMEOUT)
-                t = threading.Thread(
-                    target=self._handle_client, args=(client_sock, addr), daemon=True)
-                t.start()
             except socket.timeout:
                 continue
             except Exception as exc:
                 if not self._stop_event.is_set():
                     logger.warning("shugonet server accept error: %s", exc)
+                continue
+            # Shed load rather than spawning a thread per connection without
+            # bound. A peer that stalls mid-request pins its handler thread
+            # (the handler blocks in the memory backend), and every stalled
+            # peer would otherwise leak a thread plus its fd -- unbounded
+            # growth that ends in an fd/memory-exhaustion kill on a small
+            # device. With bounded slots the worst case is a refused
+            # connection, which the peer retries, never an unbounded leak.
+            if not self._client_slots.acquire(blocking=False):
+                logger.warning(
+                    "shugonet server at %d concurrent clients; dropping %s",
+                    self._max_client_threads, addr)
+                try:
+                    client_sock.close()
+                except Exception:
+                    pass
+                continue
+            try:
+                client_sock.settimeout(_SOCKET_TIMEOUT)
+                threading.Thread(target=self._serve_client,
+                                 args=(client_sock, addr),
+                                 daemon=True).start()
+            except Exception as exc:
+                self._client_slots.release()
+                logger.warning("shugonet server spawn failed: %s", exc)
+                try:
+                    client_sock.close()
+                except Exception:
+                    pass
+
+    def _serve_client(self, client_sock: socket.socket, addr: Any) -> None:
+        """Run ``_handle_client`` while holding one concurrency slot.
+
+        The slot is released on every exit path, so a handler that raises or
+        is killed by its socket timing out can never permanently consume one
+        of the bounded slots.
+        """
+        try:
+            self._handle_client(client_sock, addr)
+        finally:
+            self._client_slots.release()
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -244,6 +285,7 @@ class ShugonetAgentRuntime:
         port: int = 9000,
         peer_map: Optional[Dict[str, tuple]] = None,
         max_frame_bytes: int = _MAX_FRAME_BYTES,
+        max_client_threads: int = _MAX_CLIENT_THREADS,
         auth_token: Optional[str] = None,
         memory: Optional[Any] = None,
         conflict_threshold: int = 20,
@@ -255,6 +297,7 @@ class ShugonetAgentRuntime:
         self._host = host
         self._port = port
         self._max_frame_bytes = max(1024, int(max_frame_bytes))
+        self._max_client_threads = max(1, int(max_client_threads))
         self._auth_token = str(auth_token) if auth_token else None
         self._started = False
         self._lock = threading.Lock()
@@ -289,7 +332,8 @@ class ShugonetAgentRuntime:
         self._started = True
         self._server = _PeerServer(self, self._host, self._port,
                                    max_frame_bytes=self._max_frame_bytes,
-                                   auth_token=self._auth_token)
+                                   auth_token=self._auth_token,
+                                   max_client_threads=self._max_client_threads)
         self._server.start()
         for conn in list(self._outbound.values()):
             self._dial_async(conn)

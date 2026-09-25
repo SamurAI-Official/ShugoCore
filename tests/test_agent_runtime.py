@@ -193,6 +193,63 @@ class TestPeerServerHardening(unittest.TestCase):
         thread.join(timeout=2)
         self.assertEqual([m.get("id") for m in received], ["good"])
 
+    # -- bounded client concurrency ------------------------------------------
+
+    def test_client_slots_bound_concurrency(self):
+        """At most ``max_client_threads`` handlers may run at once.
+
+        An unbounded thread-per-connection server leaks one thread (and one
+        fd) per stalled peer, which ends in a resource-exhaustion kill on a
+        small device; the bound makes the worst case a refused connection.
+        """
+        server = _PeerServer(self.runtime, "127.0.0.1", 0, max_client_threads=2)
+        self.assertEqual(server._max_client_threads, 2)
+        self.assertTrue(server._client_slots.acquire(blocking=False))
+        self.assertTrue(server._client_slots.acquire(blocking=False))
+        # The third concurrent client is refused, not given a new thread.
+        self.assertFalse(server._client_slots.acquire(blocking=False))
+        server._client_slots.release()
+        self.assertTrue(server._client_slots.acquire(blocking=False))
+
+    def test_max_client_threads_clamped_to_at_least_one(self):
+        server = _PeerServer(self.runtime, "127.0.0.1", 0, max_client_threads=0)
+        self.assertEqual(server._max_client_threads, 1)
+
+    def test_serve_client_releases_slot_on_normal_exit(self):
+        server = _PeerServer(self.runtime, "127.0.0.1", 0, max_client_threads=1)
+        server._handle_client = lambda sock, addr: None
+        client, server_sock = socket.socketpair()
+        # The accept loop claims the slot before spawning the handler; take it
+        # here so the release path is exercised exactly as in production.
+        self.assertTrue(server._client_slots.acquire(blocking=False))
+        server._serve_client(server_sock, ("local", 0))
+        client.close()
+        self.assertTrue(server._client_slots.acquire(blocking=False),
+                        "a finished handler must return its slot")
+
+    def test_serve_client_releases_slot_when_handler_raises(self):
+        server = _PeerServer(self.runtime, "127.0.0.1", 0, max_client_threads=1)
+
+        def boom(sock, addr):
+            raise RuntimeError("handler blew up")
+
+        server._handle_client = boom
+        client, server_sock = socket.socketpair()
+        self.assertTrue(server._client_slots.acquire(blocking=False))
+        with self.assertRaises(RuntimeError):
+            server._serve_client(server_sock, ("local", 0))
+        client.close()
+        self.assertTrue(server._client_slots.acquire(blocking=False),
+                        "a raising handler must not leak its slot")
+
+    def test_runtime_stores_and_clamps_max_client_threads(self):
+        runtime = ShugonetAgentRuntime(agent_id="b", host="127.0.0.1", port=0,
+                                       max_client_threads=4)
+        self.assertEqual(runtime._max_client_threads, 4)
+        clamped = ShugonetAgentRuntime(agent_id="b", host="127.0.0.1", port=0,
+                                       max_client_threads=0)
+        self.assertEqual(clamped._max_client_threads, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

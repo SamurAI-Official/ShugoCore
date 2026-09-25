@@ -6,10 +6,10 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
-### Mesh: a peer refusal is a failure, and dialing no longer blocks init
+### Mesh: peer refusals surface as failures, and mesh init cannot stall or leak
 
-Two defects made a node look healthy while its mesh was broken, or made mesh
-startup stall the app that hosts it.
+Three defects made a node look healthy while its mesh was broken, stalled the
+app that hosts mesh startup, or leaked a thread per stalled peer.
 
 - **`agent_runtime.py` — `sync()`/`query()` reported a peer refusal as
   success.** A peer that refuses a request (protocol/version mismatch, rejected
@@ -31,13 +31,30 @@ startup stall the app that hosts it.
   dying. Dialing now happens on a short-lived daemon thread (`_dial_async`).
   `send()`/`sync()` still reconnect inline on demand and the reconnect loop
   still retries, so the link is not lost by being lazy.
-- **`tests/test_memory_sharing.py`** — two new classes pin both contracts:
-  `TestPeerErrorsAreNotFalseSuccess` (an `error` frame is surfaced as
-  `status: error` from `sync()`, skipped by `query()`, a real `sync_result` is
-  *not* misread as an error, and the two helper shapes), and
+- **`agent_runtime.py` — the peer server spawned one thread per connection
+  without bound.** Each stalled peer pinned a handler thread *and* its fd; the
+  handler blocks in the memory backend, so a peer that gives up mid-request
+  leaves its thread wedged and its socket in `CLOSE_WAIT`. Observed live: the
+  A51 held three sockets in state `08` (`CLOSE_WAIT`) and stopped answering
+  mesh requests entirely while its process stayed alive. Unbounded growth
+  ends in an fd/memory-exhaustion kill on a small device — which reads to the
+  user as the app dying. `_PeerServer` now holds a
+  `BoundedSemaphore` (`max_client_threads`, default 16, tunable via
+  `ShugonetAgentRuntime(max_client_threads=...)`) claimed by the accept loop
+  before it spawns, and released by the new `_serve_client` wrapper on every
+  exit path. A saturated server sheds the excess connection (closing it, which
+  the peer retries) instead of growing threads, so the worst case is a refused
+  connection, never an unbounded leak.
+- **`tests/test_memory_sharing.py`**, **`tests/test_agent_runtime.py`** — new
+  classes pin every contract: `TestPeerErrorsAreNotFalseSuccess` (an `error`
+  frame surfaces as `status: error` from `sync()`, is skipped by `query()`, a
+  real `sync_result` is *not* misread as an error, and both helper shapes),
   `TestPeerDialDoesNotBlockInit` (`add_peer()` after `start()` and `start()`
   itself return in well under the connect timeout while still delegating the
-  dial).
+  dial), and `TestServerConcurrencyBound` (a full server drops excess
+  connections, and released slots are reused across sequential requests). The
+  `_PeerServer` unit tests cover the slot bound, the clamp, and slot release on
+  both normal and raising handler exits.
 
 ### CI integrity: the 3.9 regression, missing optional deps, packaging
 

@@ -691,6 +691,65 @@ class TestPeerDialDoesNotBlockInit(unittest.TestCase):
             runtime.stop()
 
 
+class TestServerConcurrencyBound(unittest.TestCase):
+    """A saturated server drops connections instead of leaking threads.
+
+    Unbounded thread-per-connection growth is the failure mode that takes a
+    small device down: each stalled peer pins a handler thread and its fd.
+    """
+
+    def test_full_server_drops_excess_connections(self):
+        runtime = ShugonetAgentRuntime(agent_id="bounded", host="127.0.0.1",
+                                       port=_free_port(), reconnect_interval=0,
+                                       max_client_threads=1)
+        runtime.start()
+        try:
+            port = _wait_bound(runtime)
+            first = socket.create_connection(("127.0.0.1", port), timeout=3)
+            try:
+                time.sleep(0.3)  # let the first handler claim the only slot
+                second = socket.create_connection(("127.0.0.1", port), timeout=3)
+                second.settimeout(3.0)
+                try:
+                    dropped = second.recv(1024)
+                except (ConnectionResetError, socket.timeout):
+                    dropped = b""
+                second.close()
+                self.assertEqual(dropped, b"",
+                                 "excess connection must be shed, not served")
+            finally:
+                first.close()
+        finally:
+            runtime.stop()
+
+    def test_slots_are_reused_across_sequential_requests(self):
+        runtime = ShugonetAgentRuntime(agent_id="bounded", host="127.0.0.1",
+                                       port=_free_port(), reconnect_interval=0,
+                                       max_client_threads=1)
+        runtime.start()
+        try:
+            port = _wait_bound(runtime)
+            for _ in range(3):
+                deadline = time.time() + 3.0
+                reply = b""
+                while time.time() < deadline and b"ack" not in reply:
+                    sock = socket.create_connection(("127.0.0.1", port),
+                                                    timeout=3)
+                    sock.sendall(b'{"type": "send", "id": "x"}\n')
+                    sock.settimeout(2.0)
+                    try:
+                        reply = sock.recv(4096)
+                    except (socket.timeout, ConnectionResetError):
+                        reply = b""
+                    sock.close()
+                    if b"ack" not in reply:
+                        time.sleep(0.1)
+                self.assertIn(b"ack", reply,
+                              "a released slot must serve the next request")
+        finally:
+            runtime.stop()
+
+
 if __name__ == "__main__":
     unittest.main()
 

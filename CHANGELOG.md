@@ -6,6 +6,39 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### Mesh: a peer refusal is a failure, and dialing no longer blocks init
+
+Two defects made a node look healthy while its mesh was broken, or made mesh
+startup stall the app that hosts it.
+
+- **`agent_runtime.py` — `sync()`/`query()` reported a peer refusal as
+  success.** A peer that refuses a request (protocol/version mismatch, rejected
+  token, unknown verb) answers with an `error` frame. `_one_shot_request`
+  returns that frame verbatim, and both callers checked only `if not resp` — an
+  `error` frame is a *truthy dict*, so it read as a successful transfer of zero
+  facts. A node whose peer was actively rejecting it therefore reported
+  `{"status": "success", "received": 0, "imported": 0}` and stayed "connected"
+  forever. The new `ShugonetAgentRuntime._peer_error()` recognises both refusal
+  shapes (`type: error` and `status: error`, with `message`/`reason`) and
+  `sync()` now returns `{"status": "error", "message": <peer reason>}`, while
+  `query()` skips the refusal instead of counting it as a reply. `errors` joins
+  the runtime's stats counters.
+- **`agent_runtime.py` — peer dialing blocked the caller.** `add_peer()` and
+  `start()` connected to each peer inline, each costing a full
+  `_CONNECT_TIMEOUT` (2s) when the peer was down. Both run on the
+  agent/service init path, so a three-peer mesh with two unreachable peers
+  stalled init for seconds — an ANR on Android, which the user sees as the app
+  dying. Dialing now happens on a short-lived daemon thread (`_dial_async`).
+  `send()`/`sync()` still reconnect inline on demand and the reconnect loop
+  still retries, so the link is not lost by being lazy.
+- **`tests/test_memory_sharing.py`** — two new classes pin both contracts:
+  `TestPeerErrorsAreNotFalseSuccess` (an `error` frame is surfaced as
+  `status: error` from `sync()`, skipped by `query()`, a real `sync_result` is
+  *not* misread as an error, and the two helper shapes), and
+  `TestPeerDialDoesNotBlockInit` (`add_peer()` after `start()` and `start()`
+  itself return in well under the connect timeout while still delegating the
+  dial).
+
 ### CI integrity: the 3.9 regression, missing optional deps, packaging
 
 The `CI` workflow had been red on every push since 2026-09-15. Two independent

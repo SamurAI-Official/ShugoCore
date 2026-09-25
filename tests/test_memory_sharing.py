@@ -14,6 +14,7 @@ import os
 import shutil
 import socket
 import tempfile
+import threading
 import time
 import unittest
 
@@ -581,6 +582,114 @@ class TestPeerReconnect(unittest.TestCase):
             self.assertEqual(a.reconnect_peers(), 0)
         finally:
             a.stop()
+
+class TestPeerErrorsAreNotFalseSuccess(unittest.TestCase):
+    """A peer refusal must surface as a failure, never an empty success.
+
+    A peer that refuses a request (protocol/version mismatch, rejected token,
+    unknown verb) answers with an ``error`` frame. That reply is a *truthy
+    dict*, so a naive ``if not resp`` check reads it as a successful transfer
+    of zero facts and reports ``status: success`` -- the node then looks
+    connected while its mesh is silently broken.
+    """
+
+    def _client_with_peer(self, reply):
+        client = ShugonetAgentRuntime(agent_id="client", host="127.0.0.1",
+                                      port=_free_port())
+        client.add_peer("peer", "127.0.0.1", _free_port())
+        client._one_shot_request = lambda conn, msg: reply
+        return client
+
+    def test_sync_surfaces_peer_error_frame_as_failure(self):
+        client = self._client_with_peer(
+            {"type": "error", "status": "error", "message": "invalid_request"})
+        result = client.sync("peer")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("invalid_request", result["message"])
+        self.assertEqual(result["imported"], 0)
+        self.assertEqual(result["peer"], "peer")
+
+    def test_sync_surfaces_status_error_frame_as_failure(self):
+        client = self._client_with_peer(
+            {"status": "error", "reason": "rejected token"})
+        result = client.sync("peer")
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["message"], "rejected token")
+
+    def test_query_skips_peer_error_frames(self):
+        client = self._client_with_peer(
+            {"type": "error", "message": "unsupported_verb"})
+        self.assertEqual(client.query("anything", peers=["peer"]), [])
+
+    def test_sync_result_is_not_mistaken_for_an_error(self):
+        # Guard against over-eager detection: a real (empty) result frame is
+        # still a success.
+        client = self._client_with_peer(
+            {"type": "sync_result", "facts": [], "count": 0})
+        result = client.sync("peer")
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["received"], 0)
+
+    def test_peer_error_helper_shapes(self):
+        peer_error = ShugonetAgentRuntime._peer_error
+        self.assertEqual(peer_error({"type": "error", "message": "x"}), "x")
+        self.assertEqual(peer_error({"status": "error", "reason": "y"}), "y")
+        self.assertEqual(peer_error({"type": "error"}), "peer reported error")
+        self.assertIsNone(peer_error({"type": "sync_result", "facts": []}))
+        self.assertEqual(peer_error("not-a-dict"), "malformed peer reply")
+
+
+class TestPeerDialDoesNotBlockInit(unittest.TestCase):
+    """Dialing an unreachable peer must not stall the caller (ANR on Android).
+
+    ``add_peer`` runs on the agent/service init path. Several unreachable
+    peers, each costing a full connect timeout, block that path for seconds;
+    on Android that is an ANR, which the user sees as the app dying.
+    """
+
+    def test_add_peer_after_start_returns_without_blocking(self):
+        runtime = ShugonetAgentRuntime(agent_id="a", host="127.0.0.1",
+                                       port=_free_port(), reconnect_interval=0)
+        try:
+            runtime.start()
+            dial_started = threading.Event()
+
+            def slow_dial(conn):
+                dial_started.set()
+                time.sleep(1.0)
+
+            runtime._dial_peer = slow_dial  # shadows the static dialer
+            started = time.time()
+            runtime.add_peer("dead-peer", "127.0.0.1", _free_port())
+            elapsed = time.time() - started
+
+            self.assertLess(elapsed, 0.25,
+                            "add_peer blocked on the peer handshake")
+            self.assertTrue(dial_started.wait(2.0),
+                            "the dial was dropped instead of delegated")
+        finally:
+            runtime.stop()
+
+    def test_start_dials_peers_without_blocking(self):
+        runtime = ShugonetAgentRuntime(agent_id="a", host="127.0.0.1",
+                                       port=_free_port(), reconnect_interval=0,
+                                       peer_map={"dead": ("127.0.0.1",
+                                                          _free_port())})
+        dial_started = threading.Event()
+        original = ShugonetAgentRuntime._dial_peer
+        ShugonetAgentRuntime._dial_peer = staticmethod(
+            lambda conn: (dial_started.set(), time.sleep(1.0)))
+        try:
+            started = time.time()
+            runtime.start()
+            elapsed = time.time() - started
+            self.assertLess(elapsed, 0.25,
+                            "start() blocked on the peer handshake")
+            self.assertTrue(dial_started.wait(2.0))
+        finally:
+            ShugonetAgentRuntime._dial_peer = original
+            runtime.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

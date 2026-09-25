@@ -292,7 +292,7 @@ class ShugonetAgentRuntime:
                                    auth_token=self._auth_token)
         self._server.start()
         for conn in list(self._outbound.values()):
-            conn.connect()
+            self._dial_async(conn)
         self._start_reconnect_loop()
 
     def stop(self) -> None:
@@ -347,7 +347,29 @@ class ShugonetAgentRuntime:
         conn = _PeerConnection(peer_id, host, port)
         self._outbound[peer_id] = conn
         if self._started:
+            self._dial_async(conn)
+
+    def _dial_async(self, conn: "_PeerConnection") -> None:
+        """Dial one peer off the caller's thread.
+
+        ``add_peer``/``start`` run on the agent/service init path. A peer that
+        is down costs a full ``_CONNECT_TIMEOUT`` per peer there, so several
+        unreachable peers stall init for seconds -- on Android that is an ANR,
+        which surfaces to the user as the app dying. Dialing in the background
+        keeps init responsive; ``send``/``sync`` still reconnect inline on
+        demand and the reconnect loop retries, so the link is not lost by
+        being lazy.
+        """
+        threading.Thread(
+            name=f"shugonet-dial-{conn.peer_id}", daemon=True,
+            target=self._dial_peer, args=(conn,)).start()
+
+    @staticmethod
+    def _dial_peer(conn: "_PeerConnection") -> None:
+        try:
             conn.connect()
+        except Exception as exc:
+            logger.warning("peer %s connect failed: %s", conn.peer_id, exc)
 
     def remove_peer(self, peer_id: str) -> None:
         conn = self._outbound.pop(peer_id, None)
@@ -472,6 +494,25 @@ class ShugonetAgentRuntime:
             msg["token"] = self._auth_token
         return msg
 
+    @staticmethod
+    def _peer_error(resp: Any) -> Optional[str]:
+        """Return a peer's error reason when ``resp`` is an error frame.
+
+        Peers answer ``query``/``sync`` with a typed result frame. A peer that
+        refuses -- a protocol/version mismatch, a rejected token, an unknown
+        verb -- answers with an ``error`` frame carrying ``message``/``reason``
+        instead. Such a reply is a *truthy dict*, so without this check the
+        caller reads it as a successful transfer of zero facts and reports
+        ``status: success`` while the peer actually refused. Never let a
+        refusal masquerade as an empty success.
+        """
+        if not isinstance(resp, dict):
+            return "malformed peer reply"
+        if resp.get("type") == "error" or resp.get("status") == "error":
+            reason = resp.get("message") or resp.get("reason") or "peer reported error"
+            return str(reason)[:200]
+        return None
+
     def send(self, peer: str, topic: str, payload: Any) -> Dict[str, Any]:
         conn = self._outbound.get(peer)
         if conn is None:
@@ -545,6 +586,11 @@ class ShugonetAgentRuntime:
                 "type": "query", "from": self.agent_id, "query": query,
                 "top_k": top_k, "id": qid})
             if resp:
+                peer_error = self._peer_error(resp)
+                if peer_error is not None:
+                    self._stats["errors"] = self._stats.get("errors", 0) + 1
+                    logger.warning("peer %s refused query: %s", pid, peer_error)
+                    continue
                 self._stats["sent"] += 1
                 results.append(resp)
         return results
@@ -569,6 +615,12 @@ class ShugonetAgentRuntime:
         if not resp:
             return {"status": "error", "message": "sync unreachable",
                     "peer": pid}
+        peer_error = self._peer_error(resp)
+        if peer_error is not None:
+            self._stats["errors"] = self._stats.get("errors", 0) + 1
+            logger.warning("peer %s refused sync: %s", pid, peer_error)
+            return {"status": "error", "peer": pid, "message": peer_error,
+                    "received": 0, "imported": 0, "duplicates": 0}
         self._stats["sent"] += 1
         facts = resp.get("facts") or []
         merge = self._memory_import(facts, pid)

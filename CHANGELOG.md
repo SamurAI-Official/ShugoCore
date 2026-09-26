@@ -6,6 +6,46 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### Phase D: the loopback actuation sandbox (containment, not adjectives)
+
+`actuation_sandbox.py` drives the **real** pipeline -- the engine's own
+`_gate_decision` (Tier 3 invariants, SAFE_STATE, external consent, human
+approval) and then its own `_execute_gated` (hash-bound policy token) and the
+real `ExecutionLayer` -- against a **real** service on 127.0.0.1 that records what
+arrived. Every scenario is checked twice: what the engine reported, and whether
+any byte reached the wire. A refusal that still hit the target, or a "success"
+that never landed, is a FAIL here.
+
+The target serves TLS (self-signed CA trusted through `REQUESTS_CA_BUNDLE`, never
+by disabling verification) because the shipped egress policy is https-only. A
+plain-HTTP twin exists so a scenario can *show* that rule refusing a local
+service even with consent and approval in hand.
+
+All 17 scenarios behave as required on the live host:
+
+| scenario | expect | wire |
+| --- | --- | --- |
+| loopback refused by the default allowlist | refused | 0 |
+| **loopback allowlisted + consent + approval** | **allowed** | **1** (HTTP 200, audited) |
+| loopback plain http refused by the scheme rule | refused | 0 |
+| no consent / expired consent / revoked consent | refused | 0 |
+| approval denied / approval pending | refused | 0 |
+| LAN target / internet target | refused | 0 |
+| method not allowed | refused | 0 |
+| forged verdict / missing verdict | refused | 0 |
+| SAFE_STATE (read-only) | refused | 0 |
+| mobile actuation topic / unpaired device | refused | 0 |
+| mobile sensor topic | allowed | — |
+
+Four operator-relevant properties fell out of writing it, each now pinned by a
+scenario: egress is **https-only** (a local HTTP service is unreachable by
+policy); `api_call`'s shipped method allowlist is **GET only**, so a POST needs
+explicit operator say-so; consent refusals surface as the Tier 3 invariant
+`consent_required` *before* the consent registry is consulted; and device topics
+require **pairing first**, after which a paired device may still only publish on
+the contracted sensor namespace -- actuation topics are unreachable by
+construction.
+
 ### Capability retention, checked instead of asserted (Phase C)
 
 Every capability this system claims lives somewhere concrete on each node, so

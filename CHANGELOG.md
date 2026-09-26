@@ -6,6 +6,42 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### Fleet rollout: `fleet_deploy`, consent- and approval-gated ADB installs
+
+Updating the hive was a manual `adb install` with no governance and one
+land-mine: a build signed by a key the device does not trust fails with
+`INSTALL_FAILED_UPDATE_INCOMPATIBLE`, and the only way forward is an uninstall,
+which wipes the node's memory DB and every cached model (3.25 GB of GGUFs on the
+Tab S9 FE during this session's re-key). Rolling a build is a side-effecting
+action, so it is now modelled as one.
+
+- **`fleet_deploy.py`** (new, host-only) - `FleetDeployHandler` serves
+  `fleet_deploy` (install) and `fleet_status` (list attached devices plus the
+  build each one runs) over the ADB transport the fleet already uses, including
+  the wireless-debugging link. The ADB surface is injected (`AdbRunner` protocol
+  + `SubprocessAdbRunner`), so the capability is unit-testable with no device and
+  no subprocess. Fail-closed on every axis: no operator allowlist, a non-`.apk`
+  artifact, an artifact outside the operator artifact root, a digest that does
+  not match the supplied `sha256`, a target outside the allowlist, or more
+  targets than the rollout bound all refuse before a device is touched. `dry_run`
+  plans a rollout; `expect_version` verifies what the device reports afterwards.
+  Every attempt, and every refusal, is appended to the audit chain.
+- **`policy.FLEET_ACTION_TYPES` / `FLEET_READ_ACTION_TYPES`** (new) plus the
+  `KNOWN_ACTION_TYPES` union; **`decision_engine`** probes the module's presence
+  (`_HAS_FLEET`) and consent-gates `fleet_deploy` like the side-effecting class,
+  so an operator grant and approval are required before a rollout can execute.
+  On Android the import fails by design, so a phone can never propose a deploy it
+  has no means to perform. Both mirrored modules stay byte-identical to the
+  bundle (`tests/test_android_tree_sync.py`).
+- **`scripts/desktop_agent.py`** - `--deploy-target SERIAL` (repeatable, off by
+  default), `--deploy-artifact-root`, `--adb`; the launcher logs whether the
+  capability is enabled and where APKs may come from.
+- **`tests/test_fleet_deploy.py`** (new) - 19 tests: the allowlist, artifact
+  root, digest and bound refusals (each asserting adb was never called),
+  per-target success/failure/partial, dry-run, `expect_version` mismatch, status
+  parsing (including `offline`/`unauthorized` transports), audit wiring, and the
+  engine's know-and-gate assertion.
+
 ### Fleet re-key hardening: peer-dial fd leak and a race-free liveness gate
 
 Bringing the four-node hive onto a single signing key surfaced two defects that

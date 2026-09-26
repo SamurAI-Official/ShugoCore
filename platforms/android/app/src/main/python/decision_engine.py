@@ -146,6 +146,19 @@ except ImportError:
     NETWORK_ACTION_TYPES = frozenset()
     NETWORK_READ_ACTION_TYPES = frozenset()
 
+try:
+    # Fleet deployment is a HOST capability: the module drives the `adb`
+    # binary, so it is deliberately absent from the Android bundle (where
+    # the import fails and the action types stay unknown, meaning a device
+    # can never propose a deploy it has no means to perform).
+    import fleet_deploy  # noqa: F401
+    from policy import FLEET_ACTION_TYPES, FLEET_READ_ACTION_TYPES
+    _HAS_FLEET = True
+except ImportError:
+    _HAS_FLEET = False
+    FLEET_ACTION_TYPES = frozenset()
+    FLEET_READ_ACTION_TYPES = frozenset()
+
 logger = logging.getLogger(__name__)
 
 _PROPOSAL_JSON_PATTERN = re.compile(r"\{.*\}", re.DOTALL)
@@ -215,13 +228,20 @@ if _HAS_MOBILE:
     _KNOWN_ACTION_TYPES |= MOBILE_ACTION_TYPES | MOBILE_READ_ACTION_TYPES
 if _HAS_SHUGONET:
     _KNOWN_ACTION_TYPES |= NETWORK_ACTION_TYPES | NETWORK_READ_ACTION_TYPES
+if _HAS_FLEET:
+    _KNOWN_ACTION_TYPES |= FLEET_ACTION_TYPES | FLEET_READ_ACTION_TYPES
 # Compute offload leaves the host and runs on a personal device: consent-
 # gated exactly like the other side-effecting actions.
 _NETWORK_CONSENT_GATED = NETWORK_ACTION_TYPES if _HAS_SHUGONET else frozenset()
+# Rolling a build changes what software another machine runs, and a wrong
+# signing key forces an uninstall that wipes that node's memory: consent-gated
+# like the side-effecting class even though it is not a member of it.
+_FLEET_CONSENT_GATED = FLEET_ACTION_TYPES if _HAS_FLEET else frozenset()
 _CONSENT_GATED_ACTION_TYPES = (SIDE_EFFECTING_ACTION_TYPES
                                | (MOBILE_ACTION_TYPES if _HAS_MOBILE
                                   else frozenset())
-                               | _NETWORK_CONSENT_GATED)
+                               | _NETWORK_CONSENT_GATED
+                               | _FLEET_CONSENT_GATED)
 
 
 def _governor_trigger_kind(exc: GovernorError) -> str:

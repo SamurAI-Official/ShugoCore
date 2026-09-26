@@ -9,6 +9,12 @@ stood up without the Android build:
         --data-dir runtime/desktop \
         --peer shugo-mac=192.168.1.60:9000 --peer shugo-a51=192.168.1.61:9000
 
+Passing ``--deploy-target <adb-serial>`` (repeatable) additionally gives this
+node the fleet-rollout capability (``fleet_deploy`` / ``fleet_status``) over the
+ADB link the devices already use -- USB or the wireless-debugging transport.
+It stays disabled otherwise, and the handler refuses every rollout while its
+allowlist is empty, so a node cannot deploy anything by accident.
+
 The advertised mesh id is ``shugo-<device-caps>`` (the README's ``shugo-mac`` /
 ``shugo-a51`` convention), and that is the id the *other* nodes list as their
 peer.
@@ -47,6 +53,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from shugocore_agent import create_agent  # noqa: E402
+from fleet_deploy import (  # noqa: E402
+    FleetDeployHandler,
+    SubprocessAdbRunner,
+    register_fleet_handlers,
+)
 
 log = logging.getLogger("desktop_agent")
 
@@ -98,6 +109,16 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--mesh-node-id", default=None,
                     help="election identity (default: 'shugo-<device-caps>'; "
                          "the agent's fallback would be 'android-<caps>')")
+    ap.add_argument("--deploy-target", action="append", default=[],
+                    metavar="SERIAL",
+                    help="allow ADB deployment to this device serial "
+                         "(repeatable; passing at least one enables the "
+                         "fleet_deploy capability on this node)")
+    ap.add_argument("--deploy-artifact-root", default=None,
+                    help="only APKs inside this directory may be deployed "
+                         "(default: platforms/android/app/build/outputs/apk)")
+    ap.add_argument("--adb", default=None,
+                    help="path to the adb binary (default: PATH lookup)")
     return ap.parse_args(argv)
 
 
@@ -139,6 +160,39 @@ def _status_line(agent, runtime, ticks) -> str:
             f"prio={lease.get('priority', '?')} role={status.get('mesh_role', '?')} "
             f"primary={status.get('mesh_primary')} connected={len(connected)} "
             f"imported={stats.get('imported')}")
+
+
+def _enable_fleet_deploy(agent, args) -> None:
+    """Wire the ADB rollout capability when the operator allows targets.
+
+    Off by default and fail-closed in both directions: without a
+    ``--deploy-target`` nothing is registered on this node, and the handler
+    itself refuses every rollout while its allowlist is empty.
+    """
+    targets = [t.strip() for t in (args.deploy_target or []) if t.strip()]
+    if not targets:
+        log.info("fleet deploy disabled (pass --deploy-target SERIAL to allow)")
+        return
+    engine = getattr(agent, "engine", None)
+    layer = getattr(engine, "execution_layer", None)
+    if layer is None:
+        log.warning("fleet deploy requested but the agent has no execution "
+                    "layer; skipping")
+        return
+    adb = SubprocessAdbRunner(args.adb)
+    if not adb.available():
+        log.warning("fleet deploy requested but adb is not runnable ('%s'); "
+                    "skipping", adb.adb_path)
+        return
+    root = args.deploy_artifact_root or str(
+        REPO_ROOT / "platforms" / "android" / "app" / "build"
+        / "outputs" / "apk")
+    handler = FleetDeployHandler(adb=adb, allowed_targets=targets,
+                                 artifact_root=root,
+                                 audit=getattr(engine, "audit", None))
+    register_fleet_handlers(layer, handler)
+    log.info("fleet deploy enabled: %d target(s) %s, artifact root %s",
+             len(targets), ", ".join(targets), root)
 
 
 def main(argv=None) -> int:
@@ -217,6 +271,8 @@ def main(argv=None) -> int:
                 log.info("sync %s -> %s", peer_id, result)
             except Exception as exc:
                 log.warning("sync %s failed: %s", peer_id, exc)
+
+    _enable_fleet_deploy(agent, args)
 
     ticks = 0
     next_status = (time.monotonic() + args.status_every

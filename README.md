@@ -103,6 +103,7 @@ decoupled maintenance worker that never blocks the primary loop.
 | `android_node.py` | On-device node roles (sensor / compute / operator / full_agent) and local llama.cpp launcher detection |
 | `mobile_nodes.py` | Host-side mobile fleet: pairing with TTL, topic ACL, compute offload broker, clamped teleop relay |
 | `shugonet_bridge.py` | Multi-agent networking via Shogunet: send/query/sync actions, fleet memory mesh |
+| `fleet_deploy.py` | Host-only fleet rollout: consent- and approval-gated ADB installs onto operator-allowlisted devices, with artifact-root, digest and audit enforcement |
 | `acceleration.py` | Hardware acceleration ladder (NPU → DSP → GPU → CPU) with thermal demotion and failure degradation |
 | `robotics_handler.py` | Robotics execution handler: verified Twist/trajectory dispatch, emergency stop, watchdog |
 | `state_machine.py` | Strict interlocks for the observation-action loop |
@@ -363,6 +364,36 @@ codependent memory mesh.
 
 Side-effecting network actions require operator consent and approval, following
 the same pattern as other side-effecting actions.
+
+### Fleet deployment action types
+
+| Action | Type | Description |
+|---|---|---|
+| `fleet_deploy` | Side-effecting | Install a signed APK onto operator-allowlisted devices over ADB |
+| `fleet_status` | Read-only | List attached devices and the build each one runs |
+
+`fleet_deploy` is **host-only** - `fleet_deploy.py` is deliberately not part of
+the Android bundle, so a phone never learns the action exists - and **off by
+default**: the host launcher registers it only when it is given
+`--deploy-target SERIAL` (repeatable). The decision engine consent-gates it, the
+approval broker adds its human gate, and the handler refuses, before touching any
+device: a non-`.apk` artifact, an artifact outside the operator's artifact root,
+a digest that does not match the supplied `sha256`, a target outside the
+operator's serial allowlist, or more targets than the rollout bound. Every
+attempt, including every refusal, is appended to the audit chain.
+
+Use `dry_run` to plan a rollout without installing, and `expect_version` to make
+the handler verify the version the device reports afterwards:
+
+```json
+{"action_type": "fleet_deploy",
+ "params": {"artifact": "…/app-debug.apk", "sha256": "…",
+            "targets": ["<adb-serial>"], "expect_version": "1.30.5"}}
+```
+
+A rollout only upgrades in place if every device trusts the signing key; a
+mismatch (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`) is reported per target and the
+device keeps its data - see the fleet-key notes in `CHANGELOG.md`.
 
 ### Memory mesh semantics (v1.30.0)
 

@@ -56,12 +56,23 @@ MOBILE_READ_ACTION_TYPES = {"mobile_list_nodes", "mobile_node_status"}
 NETWORK_ACTION_TYPES = {"network_send", "network_query", "network_sync"}
 # Network read-only actions: no consent required.
 NETWORK_READ_ACTION_TYPES = {"network_list_agents", "network_status"}
+# Fleet deployment actions: rolling a signed build onto operator-allowlisted,
+# ADB-reachable devices. Side-effecting (it changes what software runs on
+# another machine) so the engine consent-gates it exactly like the
+# SIDE_EFFECTING class, and the handler adds its own target allowlist,
+# artifact-root containment and hash check on top. Host-only: the module is
+# deliberately not in the Android bundle, so a device can never propose it.
+FLEET_ACTION_TYPES = {"fleet_deploy"}
+# Fleet deployment read-only actions: which devices are attached, and which
+# build each one is running. No consent required.
+FLEET_READ_ACTION_TYPES = {"fleet_status"}
 KNOWN_ACTION_TYPES = (SIDE_EFFECTING_ACTION_TYPES | EXTERNAL_READ_ACTION_TYPES
                       | ROBOTICS_ACTION_TYPES | ROBOTICS_SAFETY_ACTION_TYPES
                       | ROBOTICS_READ_ACTION_TYPES | MOBILE_ACTION_TYPES
                       | MOBILE_READ_ACTION_TYPES | NETWORK_ACTION_TYPES
                       | NETWORK_READ_ACTION_TYPES | OBSERVATION_ACTION_TYPES
                       | SPEECH_OUTPUT_ACTION_TYPES | ASK_USER_ACTION_TYPES
+                      | FLEET_ACTION_TYPES | FLEET_READ_ACTION_TYPES
                       | {"multi_step_process"})
 
 

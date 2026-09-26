@@ -6,6 +6,54 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### Track 1 election: heartbeats over the mesh, and why every node said 'standalone'
+
+Every node in the hive honestly reported `role=standalone`. Getting to the bottom
+of it took four faults, each invisible on its own.
+
+1. **No producer.** `MeshElection` was fed only by the Android DDS path
+   (`ShugoCoreService` -> `update_mesh_peers` -> `telemetry['mesh_peers']`), and
+   the ShugoNet TCP mesh carried no heartbeat at all, so a Python-only fleet had
+   nothing to compare against. The transport now carries the advertisement:
+   `{"type": "heartbeat", "from": ..., "payload": {...}}`, fire-and-forget
+   (never acked -- an ack every 10 s per peer is pure noise) and stamped with the
+   mesh shared secret when one is configured, because a token-gated peer rejects
+   any unstamped frame (i.e. the whole real fleet). New surface:
+   `set_heartbeat_provider()`, `set_heartbeat_handler()`, `broadcast_heartbeat()`,
+   `heartbeat_snapshot()`, `status()["heartbeat"]`, and a 10 s advertisement loop
+   whose first cycle logs whether the beat actually went out.
+2. **A zero-headroom trap.** `MeshElection._eligible()` refuses a candidate whose
+   `mem_available_bytes` is 0, and a host has no memory telemetry, so *every*
+   desktop was "no-headroom" and no primary could ever be elected: the election
+   looked inert while it was really disqualifying everyone. New
+   `mesh_election.available_memory_bytes()` measures free physical memory
+   (POSIX/Android/macOS via `sysconf`, Windows via `GlobalMemoryStatusEx`) and
+   `_mesh_mem_headroom()` prefers telemetry but falls back to the measurement.
+3. **Silence.** Every diagnostic on this path went through `self.log()`, which
+   only fills the in-memory ring buffer the Android LOG tab polls -- on a host
+   nothing reached the process log, so a node whose peers never became candidates
+   reported `standalone` with no explanation. The transport and the election now
+   log through the module logger (first advertisement, first peer merged, verdict
+   changes, ineligibility reasons), and the host launcher's status line reports
+   `mesh_peers=` (peers declared to the election) and `beats=` (received by the
+   transport), so the two ends can be told apart at a glance.
+4. **Verdict latency.** Verdicts were evaluated only at the top of a tick, and a
+   model-bound tick measured 80-120 s in the lab, so roles lagged the fleet by
+   minutes -- long enough for a follower to keep acting. Ingest now re-evaluates
+   immediately, and `shugocore_agent` merges every received advertisement into
+   `telemetry['mesh_peers']` (bounded, de-duplicated by node id, `source:
+   "mesh"`) so `_mesh_heartbeat_tick` stays the single evaluator and the DDS and
+   mesh views cannot drift apart.
+
+Verified live: two host nodes in separate processes converged on the same
+primary -- the lower-priority node -- with candidates
+`['shugo-testlab-b', 'shugo-testlab-a']`, one reporting `primary` and the other
+`follower`, and `_mesh_may_act` refusing on the follower.
+`tests/test_mesh_heartbeat.py` (20 tests) covers the wire contract, the
+provider/handler lifecycle, token stamping, the election outcome on both sides,
+thermal and headroom ineligibility, the standalone fallback, immediate
+evaluation and the agent wiring without booting an agent.
+
 ### Operator consent surface: the missing half of the governance model
 
 The decision engine gates side-effecting, robotics, mobile, network and fleet

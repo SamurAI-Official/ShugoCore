@@ -155,10 +155,15 @@ def _status_line(agent, runtime, ticks) -> str:
     except Exception as exc:
         log.warning("election status failed: %s", exc)
         lease = {}
+    telemetry = getattr(agent, "telemetry", None)
+    declared = (telemetry.get("mesh_peers")
+                if isinstance(telemetry, dict) else None)
+    heard = (mesh.get("heartbeat") or {}).get("heard")
     return (f"tick {ticks} | cycles={loop.get('cycles')} "
             f"rate={loop.get('success_rate')} | node={lease.get('node_id', '?')} "
             f"prio={lease.get('priority', '?')} role={status.get('mesh_role', '?')} "
             f"primary={status.get('mesh_primary')} connected={len(connected)} "
+            f"mesh_peers={len(declared or [])} beats={heard} "
             f"imported={stats.get('imported')}")
 
 

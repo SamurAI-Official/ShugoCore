@@ -44,7 +44,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,9 @@ _RECV_SIZE = 65536
 _SOCKET_TIMEOUT = 5.0
 _CONNECT_TIMEOUT = 2.0  # for initial TCP handshake
 _MAX_FRAME_BYTES = 1_048_576  # hard cap on one NDJSON frame (memory-DoS bound)
+# Heartbeat cadence: the election's lease expires after ~30 s of silence, so a
+# 10 s advertisement survives two dropped frames before a node looks dead.
+_HEARTBEAT_INTERVAL = 10.0
 _MAX_CLIENT_THREADS = 16  # hard cap on concurrent inbound client handlers
 
 
@@ -302,6 +305,7 @@ class ShugonetAgentRuntime:
         conflict_window_s: float = 60.0,
         fallback_controller: Optional[Any] = None,
         reconnect_interval: float = 5.0,
+        heartbeat_interval: float = _HEARTBEAT_INTERVAL,
     ):
         self.agent_id = agent_id
         self._host = host
@@ -332,6 +336,15 @@ class ShugonetAgentRuntime:
         self._reconnect_interval = max(0.0, float(reconnect_interval))
         self._stop_event = threading.Event()
         self._reconnect_thread: Optional[threading.Thread] = None
+        # Track 1 over the mesh: the election's heartbeat advertisements ride
+        # this transport too. Until now only the Android DDS layer produced
+        # them, so a Python-only fleet honestly reported 'standalone' on every
+        # node -- the election had no peers to compare against.
+        self._heartbeat_interval = max(0.0, float(heartbeat_interval))
+        self._heartbeat_provider: Optional[Callable[[], Dict[str, Any]]] = None
+        self._heartbeat_handler: Optional[Callable[[Dict[str, Any]], None]] = None
+        self._heartbeats: Dict[str, Dict[str, Any]] = {}
+        self._heartbeat_thread: Optional[threading.Thread] = None
         if peer_map:
             for pid, (phost, pport) in peer_map.items():
                 self.add_peer(pid, phost, pport)
@@ -348,11 +361,13 @@ class ShugonetAgentRuntime:
         for conn in list(self._outbound.values()):
             self._dial_async(conn)
         self._start_reconnect_loop()
+        self._start_heartbeat_loop()
 
     def stop(self) -> None:
         self._started = False
         self._stop_event.set()
         self._reconnect_thread = None
+        self._heartbeat_thread = None
         if self._server is not None:
             self._server.stop()
             self._server = None
@@ -444,7 +459,151 @@ class ShugonetAgentRuntime:
                 "memory_enabled": self._memory is not None,
                 "sync_watermarks": dict(self._sync_watermarks),
                 "stats": dict(self._stats),
+                "heartbeat": {
+                    "interval_s": self._heartbeat_interval,
+                    "advertising": self._heartbeat_provider is not None,
+                    "handler": self._heartbeat_handler is not None,
+                    "heard": len(self._heartbeats),
+                },
             }
+
+    # -- heartbeat / election transport --------------------------------------
+
+    def set_heartbeat_provider(
+            self, provider: Optional[Callable[[], Dict[str, Any]]]) -> None:
+        """Set the callable that returns THIS node's advertisement.
+
+        The agent wires the election's ``local_heartbeat()`` here, so the
+        advertisement carries the node id, election priority and thermal state
+        the rest of the fleet already reasons about.
+        """
+        self._heartbeat_provider = provider if callable(provider) else None
+
+    def set_heartbeat_handler(
+            self, handler: Optional[Callable[[Dict[str, Any]], None]]) -> None:
+        """Set the callable invoked for every peer advertisement received."""
+        self._heartbeat_handler = handler if callable(handler) else None
+
+    def heartbeat_snapshot(self, limit: int = 16) -> Dict[str, Dict[str, Any]]:
+        """Last advertisement heard per peer, bounded, for status surfaces."""
+        with self._lock:
+            items = sorted(self._heartbeats.items())[:max(1, int(limit))]
+            return {node_id: dict(record) for node_id, record in items}
+
+    def broadcast_heartbeat(
+            self, payload: Optional[Dict[str, Any]] = None) -> int:
+        """Send one advertisement to every connected peer; returns the count.
+
+        Passing ``payload`` sends it verbatim (tests, replay); otherwise the
+        provider supplies it. A missing or empty payload is skipped rather than
+        broadcast, so a node without an election never advertises an identity it
+        cannot back up.
+        """
+        if payload is None:
+            provider = self._heartbeat_provider
+            if provider is None:
+                return 0
+            try:
+                payload = provider()
+            except Exception as exc:
+                logger.warning("heartbeat provider failed: %s", exc)
+                return 0
+        if not isinstance(payload, dict) or not payload:
+            return 0
+        # Stamp before sending: a token-gated mesh rejects any frame without the
+        # shared secret, so an unstamped advertisement would be dropped by every
+        # peer that runs with SHUGOCORE_MESH_TOKEN (i.e. the real fleet).
+        message = self._stamp({"type": "heartbeat", "from": self.agent_id,
+                               "payload": payload})
+        sent = 0
+        for conn in list(self._outbound.values()):
+            try:
+                if conn.send(message):
+                    sent += 1
+            except Exception as exc:
+                logger.warning("heartbeat to %s failed: %s", conn.peer_id, exc)
+        if sent:
+            with self._lock:
+                self._stats["heartbeats_sent"] = (
+                    self._stats.get("heartbeats_sent", 0) + 1)
+        return sent
+
+    def _on_heartbeat_message(self, msg: Dict[str, Any]) -> None:
+        """Record one inbound advertisement and hand it to the handler.
+
+        Fire-and-forget by design: never acked (an ack every 10 s per peer is
+        pure noise) and never trusted beyond its schema -- the handler (the
+        election) re-validates every field it consumes.
+        """
+        payload = msg.get("payload")
+        if not isinstance(payload, dict):
+            return
+        node_id = str(payload.get("node_id") or msg.get("from") or "").strip()
+        if not node_id:
+            return
+        record = dict(payload)
+        record["node_id"] = node_id
+        record["received_at"] = time.monotonic()
+        with self._lock:
+            self._heartbeats[node_id] = record
+            self._stats["heartbeats_received"] = (
+                self._stats.get("heartbeats_received", 0) + 1)
+        handler = self._heartbeat_handler
+        seen = getattr(self, "_heartbeat_seen_nodes", None)
+        if seen is None:
+            seen = set()
+            self._heartbeat_seen_nodes = seen
+        if node_id not in seen:
+            seen.add(node_id)
+            logger.info("mesh heartbeat received from %s (seq=%s, handler=%s)",
+                        node_id, record.get("seq"), handler is not None)
+        if handler is None:
+            return
+        try:
+            handler(record)
+        except Exception as exc:
+            logger.warning("heartbeat handler failed: %s", exc)
+
+    def _start_heartbeat_loop(self) -> None:
+        """Start the advertisement loop (no-op when disabled or already up)."""
+        if self._heartbeat_interval <= 0:
+            return
+        if (self._heartbeat_thread is not None
+                and self._heartbeat_thread.is_alive()):
+            return
+        self._stop_event.clear()
+        self._heartbeat_thread = threading.Thread(
+            name="shugonet-heartbeat", target=self._heartbeat_loop, daemon=True)
+        self._heartbeat_thread.start()
+
+    def _heartbeat_loop(self) -> None:
+        """Advertise on a fixed cadence until ``stop()``.
+
+        The provider is consulted every interval instead of captured once, so
+        the agent may wire the election after ``start()`` and a thermal change is
+        reflected on the next beat. The first cycle logs once -- either the
+        advertisement went out (with the peer count) or the provider had nothing
+        to say -- because a silently inert producer is exactly the failure this
+        transport was added to fix.
+        """
+        announced = False
+        while not self._stop_event.wait(self._heartbeat_interval):
+            try:
+                sent = self.broadcast_heartbeat()
+            except Exception as exc:
+                logger.warning("heartbeat broadcast failed: %s", exc)
+                continue
+            if announced:
+                continue
+            announced = True
+            if sent:
+                logger.info("mesh heartbeat: advertising to %d peer(s) "
+                            "every %.0fs", sent, self._heartbeat_interval)
+            else:
+                logger.info("mesh heartbeat: nothing to advertise "
+                            "(provider=%s, peers=%d)",
+                            self._heartbeat_provider is not None,
+                            len(self._outbound))
 
     # -- memory sharing ------------------------------------------------------
 
@@ -709,6 +868,9 @@ class ShugonetAgentRuntime:
                     "from": self.agent_id, "since": msg.get("since"),
                     "facts": facts, "count": len(facts)}
             self._send_json(sock, resp)
+        elif msg_type == "heartbeat":
+            # Track 1 advertisement: consumed, never acked.
+            self._on_heartbeat_message(msg)
         elif msg_type in ("ack", "query_result", "sync_result"):
             with self._lock:
                 rid = msg.get("in_response_to", "")

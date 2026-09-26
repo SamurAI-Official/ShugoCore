@@ -32,10 +32,14 @@ except Exception:
 # falls back to peripheral mode (sensors + journal + RPC offload, never
 # speaks). Import failure degrades to standalone — never blocks boot.
 try:
-    from mesh_election import MeshElection
+    from mesh_election import MeshElection, available_memory_bytes
     _HAS_MESH_ELECTION = True
 except Exception:
     _HAS_MESH_ELECTION = False
+
+    def available_memory_bytes() -> int:
+        """Fallback when mesh_election is unavailable (standalone mode)."""
+        return 0
 
 # Track 2: security inventory & baseline. Observational only; import
 # failure degrades to an absent (never fabricated) inventory surface.
@@ -755,6 +759,16 @@ class AndroidAgent:
                 fallback_controller=shugonet_fallbacks,
                 auth_token=mesh_token)
             self.shugonet_runtime.start()
+            # Track 1 over the mesh: advertise our own election heartbeat and
+            # feed peer advertisements back into telemetry['mesh_peers'] -- the
+            # same list the Kotlin DDS layer fills -- so one evaluation path
+            # (_mesh_heartbeat_tick) owns the election and both transports agree
+            # on the fleet view. Without this producer a Python node could never
+            # report anything but 'standalone'.
+            self.shugonet_runtime.set_heartbeat_provider(
+                self._mesh_heartbeat_payload)
+            self.shugonet_runtime.set_heartbeat_handler(
+                self._mesh_heartbeat_received)
             peers = (self._parse_mesh_peers(
                         _os.environ.get("SHUGOCORE_MESH_PEERS", ""))
                      + self._load_mesh_peers_file())
@@ -1549,6 +1563,106 @@ class AndroidAgent:
         self.log("MESH", "mesh rpc %s" % _json.dumps(result))
         return _json.dumps(result)
 
+    def _mesh_mem_headroom(self) -> int:
+        """Free memory to advertise: telemetry first, host measurement second.
+
+        ``MeshElection`` marks any node reporting no headroom ineligible, so a
+        host with no telemetry must not advertise zero -- that would exclude
+        every desktop from the election and hand the lease to a phone instead.
+        """
+        telemetry = self.telemetry if isinstance(self.telemetry, dict) else {}
+        try:
+            mem = int(telemetry.get(
+                "mem_available_bytes", telemetry.get("mem_available", 0)) or 0)
+        except (TypeError, ValueError):
+            mem = 0
+        if mem > 0:
+            return mem
+        try:
+            return int(available_memory_bytes() or 0)
+        except Exception:
+            return 0
+
+    def _mesh_heartbeat_payload(self) -> Dict[str, Any]:
+        """The advertisement THIS node publishes over the ShugoNet mesh.
+
+        Built from the same election the DDS path feeds, so identity, priority
+        and thermal state agree across transports. Returns {} when there is no
+        election: the transport then skips the broadcast instead of advertising
+        an identity the node cannot defend.
+        """
+        election = self.mesh_election
+        if election is None:
+            return {}
+        telemetry = self.telemetry if isinstance(self.telemetry, dict) else {}
+        try:
+            thermal = int(telemetry.get(
+                "thermal_state", telemetry.get("thermal_status", 0)) or 0)
+        except (TypeError, ValueError):
+            thermal = 0
+        try:
+            return election.local_heartbeat(
+                thermal_status=thermal,
+                mem_available_bytes=self._mesh_mem_headroom())
+        except Exception as exc:
+            self.log("MESH", f"heartbeat payload failed: {exc}", level="WARN")
+            return {}
+
+    def _mesh_heartbeat_received(self, payload: Dict[str, Any]) -> None:
+        """Record one peer advertisement received over the mesh.
+
+        Merged into ``telemetry['mesh_peers']`` (bounded, de-duplicated by node
+        id) rather than observed into the election directly, so
+        ``_mesh_heartbeat_tick`` stays the single place that evaluates the
+        election and the DDS + mesh views cannot drift apart.
+        """
+        if not isinstance(payload, dict) or not isinstance(self.telemetry, dict):
+            return
+        node_id = str(payload.get("node_id") or "").strip()
+        if not node_id:
+            return
+        if node_id == getattr(self.mesh_election, "node_id", None):
+            return
+        peers = self.telemetry.get("mesh_peers")
+        if not isinstance(peers, list):
+            peers = []
+        entry = {
+            "device_id": node_id,
+            "node_id": node_id,
+            "priority": payload.get("priority", 500),
+            "thermal_status": payload.get("thermal_status", 0),
+            "mem_available_bytes": payload.get("mem_available_bytes", 0),
+            "paired": payload.get("paired", True),
+            "seq": payload.get("seq", 0),
+            "source": "mesh",
+        }
+        merged = [p for p in peers
+                  if str(p.get("device_id") or p.get("node_id") or "") != node_id]
+        merged.append(entry)
+        self.telemetry["mesh_peers"] = merged[-16:]
+        # Evaluate immediately. A verdict that only refreshes at the top of the
+        # next tick leaves the role stale for as long as a tick takes (minutes
+        # on a model-bound node, measured 80-120 s in the lab), so a follower
+        # would keep acting and the status surface would still say 'standalone'
+        # while its peers were already visible.
+        try:
+            self._mesh_heartbeat_tick()
+        except Exception as exc:
+            logger.warning("mesh heartbeat ingest evaluation failed: %s", exc)
+        logged = getattr(self, "_mesh_logged_peers", None)
+        if logged is None:
+            logged = set()
+            self._mesh_logged_peers = logged
+        if node_id not in logged:
+            logged.add(node_id)
+            logger.info("mesh heartbeat: peer %s merged (prio=%s thermal=%s "
+                        "mem=%s)", node_id, entry["priority"],
+                        entry["thermal_status"], entry["mem_available_bytes"])
+            self.log("MESH", f"peer heartbeat over the mesh: {node_id} "
+                             f"prio={entry['priority']} "
+                             f"thermal={entry['thermal_status']} "
+                             f"mem={entry['mem_available_bytes']}")
+
     def _mesh_heartbeat_tick(self) -> None:
         """Track 1: feed local + peer heartbeats into the election and
         re-evaluate the primary lease. Local thermal state comes from the
@@ -1570,13 +1684,9 @@ class AndroidAgent:
                     "thermal_state", telemetry.get("thermal_status", 0)) or 0)
             except (TypeError, ValueError):
                 thermal = 0
-            try:
-                mem = int(telemetry.get(
-                    "mem_available_bytes", telemetry.get("mem_available", 0)) or 0)
-            except (TypeError, ValueError):
-                mem = 0
-            election.local_heartbeat(thermal_status=thermal,
-                                     mem_available_bytes=mem)
+            election.local_heartbeat(
+                thermal_status=thermal,
+                mem_available_bytes=self._mesh_mem_headroom())
             for peer in (telemetry.get("mesh_peers") or [])[:16]:
                 if not isinstance(peer, dict):
                     continue
@@ -1594,6 +1704,28 @@ class AndroidAgent:
                     "seq": peer.get("seq", 0),
                 })
             election.tick()
+            # The election had no visible voice: a node whose peers never became
+            # candidates just reported 'standalone' forever. Log the verdict when
+            # it changes (hosts have no Android LOG tab to poll).
+            declared = telemetry.get("mesh_peers") or []
+            result = election.tick()
+            candidates = result.get("candidates") or []
+            verdict = (result.get("primary"), tuple(candidates))
+            if verdict != getattr(self, "_mesh_last_verdict", None):
+                self._mesh_last_verdict = verdict
+                logger.info("mesh election: role=%s primary=%s candidates=%s "
+                            "declared_peers=%d", result.get("is_primary") and
+                            "primary" or ("follower" if result.get("primary")
+                                          else "standalone"),
+                            result.get("primary"), list(candidates),
+                            len(declared))
+            if declared and len(candidates) <= 1:
+                reasons = election._eligible_reasons()
+                if reasons and reasons != getattr(self, "_mesh_last_reasons", None):
+                    self._mesh_last_reasons = dict(reasons)
+                    logger.warning("mesh election: no eligible peer yet: %s",
+                                   ", ".join(f"{node}={why}" for node, why in
+                                             sorted(reasons.items())))
         except Exception as exc:
             self.log("MESH", f"election tick failed: {exc}", level="WARN")
 

@@ -15,6 +15,7 @@ Also owns the split-layer command-line builder used by
 """
 
 import logging
+import os
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -30,6 +31,47 @@ except Exception:
     except Exception:
         def default_chunk(machine, exe):
             return 24
+
+def available_memory_bytes() -> int:
+    """Best-effort free physical memory in bytes (0 when unmeasurable).
+
+    The election refuses a candidate that reports no headroom, so a node which
+    cannot measure memory must not advertise zero: on a desktop host that marks
+    every host ineligible and would hand the primary lease to a phone by
+    accident. POSIX, macOS and Android answer via ``sysconf``; Windows via
+    ``GlobalMemoryStatusEx``.
+    """
+    try:
+        pages = int(os.sysconf("SC_AVPHYS_PAGES"))
+        size = int(os.sysconf("SC_PAGE_SIZE"))
+        if pages > 0 and size > 0:
+            return pages * size
+    except (AttributeError, ValueError, OSError, TypeError):
+        pass
+    try:
+        import ctypes
+
+        class _MemoryStatusEx(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = _MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(_MemoryStatusEx)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return int(status.ullAvailPhys)
+    except Exception:
+        pass
+    return 0
+
 
 LEASE_S = 10.0
 HEARTBEAT_TIMEOUT_S = 30.0

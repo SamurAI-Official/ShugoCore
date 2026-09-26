@@ -365,6 +365,24 @@ codependent memory mesh.
 Side-effecting network actions require operator consent and approval, following
 the same pattern as other side-effecting actions.
 
+### Mesh primary election (Track 1)
+
+Exactly one live node holds the primary lease and runs the loop's side effects;
+every other live node falls back to peripheral mode (sensors, journal, RPC
+offload, never speaks). Candidates are ranked by heartbeat advertisement --
+lower `--mesh-priority` wins, ties broken by node id -- and a node is excluded
+when it is unpaired, thermally critical (status >= 3) or reports no memory
+headroom.
+
+Advertisements travel over the ShugoNet mesh itself
+(`{"type": "heartbeat", "from": ..., "payload": {...}}`; fire-and-forget, never
+acked, stamped with the mesh token when one is configured) as well as the Android
+DDS path, so a Python-only fleet elects a primary too. Every received
+advertisement is merged into `telemetry['mesh_peers']` and evaluated immediately,
+so the role tracks the fleet within one heartbeat interval. Hosts with no
+telemetry measure their own free memory (`mesh_election.available_memory_bytes()`),
+because the election refuses a candidate advertising zero headroom.
+
 ### Fleet deployment action types
 
 | Action | Type | Description |

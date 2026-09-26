@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mesh_election import MeshElection  # noqa: E402
 from shugocore_agent import create_agent  # noqa: E402
+import node_identity  # noqa: E402
 
 DESKTOP_MEM = 8_000_000_000  # healthy desktop headroom
 
@@ -139,14 +140,30 @@ class TestAgentGuardrail(unittest.TestCase):
         self.agent.telemetry = {}
 
     def test_create_agent_builds_election(self):
+        data_dir = tempfile.mkdtemp(prefix="mesh_election_probe_")
         probe = create_agent(device_caps="A51",
                              api_url="http://127.0.0.1:11434",
-                             data_dir=tempfile.mkdtemp(
-                                 prefix="mesh_election_probe_"))
+                             data_dir=data_dir)
         try:
             self.assertIsNotNone(probe.mesh_election)
-            self.assertEqual(probe.mesh_election.node_id, "android-A51")
+            # The election id is this node's identity: a valid, unique name that
+            # is persisted, not a capability string it shares with other devices.
+            self.assertTrue(node_identity.is_valid(probe.mesh_election.node_id),
+                            probe.mesh_election.node_id)
+            self.assertEqual(probe.mesh_election.node_id, probe.node_id)
             self.assertEqual(probe.mesh_election.priority, 500)
+            # Same data dir, same name: an upgrade or restart keeps its identity.
+            second = create_agent(device_caps="A51",
+                                  api_url="http://127.0.0.1:11434",
+                                  data_dir=data_dir)
+            try:
+                self.assertEqual(second.node_id, probe.node_id,
+                                 "the node changed identity across a restart")
+            finally:
+                try:
+                    second.cleanup()
+                except Exception:
+                    pass
         finally:
             try:
                 probe.cleanup()

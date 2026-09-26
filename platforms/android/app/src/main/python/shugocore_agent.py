@@ -1770,7 +1770,11 @@ class AndroidAgent:
         node_id = str(payload.get("node_id") or "").strip()
         if not node_id:
             return
-        if node_id == getattr(self, "node_id", None):
+        own_ids = {str(value) for value in
+                   (getattr(self, "node_id", None),
+                    getattr(getattr(self, "mesh_election", None), "node_id", None))
+                   if value}
+        if node_id in own_ids:
             # Another node is advertising THIS node's identity. It would shadow
             # us in every peer's election (and in ours), so say so loudly rather
             # than silently ignoring the frame.

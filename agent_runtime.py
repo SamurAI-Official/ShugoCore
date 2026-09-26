@@ -410,6 +410,10 @@ class ShugonetAgentRuntime:
         self._heartbeat_interval = max(0.0, float(heartbeat_interval))
         self._heartbeat_provider: Optional[Callable[[], Dict[str, Any]]] = None
         self._heartbeat_handler: Optional[Callable[[Dict[str, Any]], None]] = None
+        # Inbound `send` frames carry application topics (delegated work, build
+        # notes). The transport only acked them before, so a peer could address a
+        # node and be heard by nobody -- the delegate channel needs the payload.
+        self._send_handler: Optional[Callable[[str, str, Any], None]] = None
         self._heartbeats: Dict[str, Dict[str, Any]] = {}
         self._heartbeat_thread: Optional[threading.Thread] = None
         # Build updates ride the same mesh: a node shares files from one
@@ -572,6 +576,13 @@ class ShugonetAgentRuntime:
             self, handler: Optional[Callable[[Dict[str, Any]], None]]) -> None:
         """Set the callable invoked for every peer advertisement received."""
         self._heartbeat_handler = handler if callable(handler) else None
+
+    def set_send_handler(
+            self, handler: Optional[Callable[[str, str, Any], None]]) -> None:
+        """Set the callable invoked for inbound ``send`` frames (peer, topic,
+        payload). The frame is still acked by the transport; this is what lets a
+        node actually *receive* delegated work instead of silently acking it."""
+        self._send_handler = handler if callable(handler) else None
 
     def heartbeat_snapshot(self, limit: int = 16) -> Dict[str, Dict[str, Any]]:
         """Last advertisement heard per peer, bounded, for status surfaces."""
@@ -1263,6 +1274,13 @@ class ShugonetAgentRuntime:
         if msg_type == "send":
             ack = {"type": "ack", "in_response_to": msg_id, "status": "received"}
             self._send_json(sock, ack)
+            handler = self._send_handler
+            if handler is not None:
+                try:
+                    handler(str(msg.get("from") or ""), str(msg.get("topic") or ""),
+                            msg.get("payload"))
+                except Exception as exc:
+                    logger.warning("send handler failed: %s", exc)
         elif msg_type == "query":
             resp = {"type": "query_result", "in_response_to": msg_id,
                     "from": self.agent_id,

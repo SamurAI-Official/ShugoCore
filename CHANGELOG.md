@@ -6,6 +6,60 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### Answers come from the device nearest the operator (response routing)
+
+A hive has several mouths but one operator. `speak` and `ask_user` now choose
+which device says it: `response_routing.py` scores each device from the
+perception facts the fleet already publishes -- camera face, gaze toward the
+camera, VAD, speech attribution, how recently the human spoke, and the attention
+verdict -- with local and `remote_*` spellings normalised so a peer's facts and
+our own score identically. Evidence decays (halved after 15 s, ignored after 45 s),
+so a face seen two minutes ago does not mean the operator is standing there now.
+
+- The nearest **speaker** wins: a device that cannot speak is never chosen,
+  however close it is, and devices advertise `can_speak` in their heartbeats.
+- Ties break deterministically (score, can_speak, election priority, device id),
+  so two runs on the same evidence pick the same mouth.
+- **Silence is allowed**: with nobody reporting the operator present the agent
+  does not guess a device -- it records `nobody reports the operator present` (or
+  `no device reports speech output` on a host with no speaker) and stays quiet.
+  An operator can still force a device with policy `response_target = <device>`.
+
+The chosen device receives the utterance over the mesh as a **delegated action**
+(`orchestrate/delegate`), runs it through its own gate, speaks through its own
+speaker and reports the outcome back on `orchestrate/result` (visible in
+`get_status()["delegated"]` and `response_routing`). Two authority rules keep this
+from becoming a remote-control channel: only the current lease holder may direct
+another node, and only `speak`/`ask_user` are delegatable -- everything else is
+refused. A follower still cannot speak on its own initiative; it can only be the
+primary's voice.
+
+The transport needed one fix to make this real: inbound `send` frames were acked
+and then dropped, so a peer could address a node and be heard by nobody.
+`set_send_handler()` now delivers them (peer, topic, payload) to the agent.
+
+### Phase E: claim, check, artifact
+
+`claim_matrix.py` turns each claim the docs make into a row -- the check that
+decides it, the captured evidence, and a verdict -- and refuses to call anything
+proven because it is written down:
+
+| verdict | meaning |
+| --- | --- |
+| `proven` | every check passed |
+| `failed` | a check did not pass |
+| `unproven` | a live check could not be evaluated (not the same as failing) |
+
+Checks are either commands (test modules, `actuation_sandbox.py`,
+`capability_matrix.py`) or *live* facts parsed from real output by pure functions
+(`role=primary`, `imported=N`, a hash-linked chain, "no local model calls on a
+subordinate"). Artifacts land in `runtime/evidence/<id>.txt`, so a claim can be
+inspected later instead of trusted:
+
+```bash
+python3 claim_matrix.py --status-file runtime/device_backups/<host>.err
+```
+
 ### Top-down orchestration by measured capacity (v1.30.8)
 
 Android nodes kept running the **full** agent loop -- local model proposals,

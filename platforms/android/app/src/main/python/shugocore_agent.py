@@ -2104,6 +2104,11 @@ class AndroidAgent:
         result["delegated_to"] = peer
         result["route"] = why
         self.log("MESH", f"response routed to {peer}: {why}")
+        # The LogBus is in-memory (the UI polls it) -- a host's stdout and a
+        # device's stderr need the same fact through the module logger.
+        import logging as _logging
+        _logging.getLogger(__name__).info(
+            "response routed to %s (%s): %s", peer, action_type, why)
         return result
 
     def _mesh_delegate(self, peer: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -2192,6 +2197,11 @@ class AndroidAgent:
             del self._delegated_results[:-16]
         self.log("MESH", f"delegate result from {peer}: "
                          f"{record.get('status')} {record.get('action_type')}")
+        import logging as _logging
+        _logging.getLogger(__name__).info(
+            "delegate result from %s: %s %s delivered=%s %s", peer,
+            record.get("status"), record.get("action_type"),
+            record.get("delivered"), record.get("reason") or "")
 
     def _mesh_reply(self, peer: str, payload: Dict[str, Any]) -> None:
         """Send a delegation outcome back to the primary (best effort)."""

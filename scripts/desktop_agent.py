@@ -200,11 +200,14 @@ def _status_line(agent, runtime, ticks) -> str:
     shared = len(runtime.list_artifacts() or [])
     art_in = artifacts.get("received")
     art_out = artifacts.get("sent")
+    routing = (status.get("response_routing") or {}) if isinstance(status, dict) else {}
+    delegated = (status.get("delegated") or {}) if isinstance(status, dict) else {}
     return (f"tick {ticks} | cycles={loop.get('cycles')} "
             f"rate={loop.get('success_rate')} | node={lease.get('node_id', '?')} "
             f"prio={lease.get('priority', '?')} role={status.get('mesh_role', '?')} "
             f"primary={status.get('mesh_primary')} connected={len(connected)} "
             f"mesh_peers={len(declared or [])} beats={heard} rx={rx} tx={tx} "
+            f"say_to={routing.get('device')} deleg_sent={delegated.get('sent')} "
             f"artifacts={shared} art_in={art_in} art_out={art_out} "
             f"imported={stats.get('imported')}")
 

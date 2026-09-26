@@ -6,6 +6,24 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### A mesh advertisement is authoritative for the receiver's own verdict (v1.30.11)
+
+Delegated work was dispatched correctly and then refused: the receiver answered
+`sender is not the primary`. The cause was structural, not a race. A peer's
+advertisement is merged into `telemetry['mesh_peers']` and the election is fed
+from that key by `_mesh_heartbeat_tick` -- but on Android the **shell owns that
+key** and pushes its own DDS view every tick, replacing what the mesh just merged.
+A phone's election could therefore know only its DDS peers (other phones) and
+never the host that leads the hive, so it judged that host's delegation against a
+primary that was one of its neighbours.
+
+A mesh advertisement now feeds the election **immediately**, in
+`_mesh_heartbeat_received`, while the tick's pass still covers the DDS path. The
+same message also stopped being silent about the mismatch: a refusal names the
+receiver's own view (`mine is <primary>, sender <peer>`), and a refusal that is
+merely a lagging lease gets a **bounded retry** (two attempts, six seconds apart)
+rather than being reported as a policy failure -- any other refusal stays final.
+
 ### One identity per node (v1.30.10)
 
 **The defect.** A node had two names: the mesh id it *self-declared* -- derived

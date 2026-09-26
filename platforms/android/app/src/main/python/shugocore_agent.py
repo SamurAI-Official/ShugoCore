@@ -1782,6 +1782,19 @@ class AndroidAgent:
                              f"({node_id}); one node must be renamed",
                      level="ERROR")
             return
+        # Feed the election *here*, not only through _mesh_heartbeat_tick: the
+        # Android shell pushes its own DDS view into telemetry['mesh_peers'] every
+        # second, replacing the advertisement we just merged. A phone's election
+        # could therefore know only its DDS peers (other phones) and never the host
+        # that leads the hive -- which is why a delegated action from that host was
+        # refused as "not the primary". A mesh advertisement is authoritative for
+        # this node's own verdict; the tick's pass still covers the DDS path.
+        election = getattr(self, "mesh_election", None)
+        if election is not None:
+            try:
+                election.observe_heartbeat(dict(payload))
+            except Exception:
+                pass
         peers = self.telemetry.get("mesh_peers")
         if not isinstance(peers, list):
             peers = []
@@ -2124,6 +2137,15 @@ class AndroidAgent:
             return {"status": "error",
                     "message": (sent or {}).get("reason") or "delegate send failed"}
         self._delegated_out = int(getattr(self, "_delegated_out", 0)) + 1
+        # Keep the payload: a receiver whose lease view still lags can refuse with
+        # "not the primary", and that refusal is worth one bounded retry.
+        pending = getattr(self, "_delegated_pending", None)
+        if pending is None:
+            pending = {}
+            self._delegated_pending = pending
+        with _DELEGATE_LOCK:
+            pending[peer] = {"payload": dict(payload),
+                             "attempt": int(getattr(self, "_delegated_attempt", 0))}
         return {"status": "delegated", "peer": peer}
 
     def _on_mesh_send(self, peer: str, topic: str, payload: Any) -> None:
@@ -2206,6 +2228,44 @@ class AndroidAgent:
             "delegate result from %s: %s %s delivered=%s %s", peer,
             record.get("status"), record.get("action_type"),
             record.get("delivered"), record.get("reason") or "")
+        self._retry_delegation_if_stale(peer, record)
+
+    def _retry_delegation_if_stale(self, peer: str, record: Dict[str, Any]) -> None:
+        """Re-send a delegation the receiver refused because its lease lagged.
+
+        A receiver judges authority against its *own* election, which can still
+        name the previous holder for a few seconds after a handover (or a
+        restart). That refusal is transient and repeats nothing dangerous, so it
+        gets a bounded retry rather than being reported as a policy failure. Any
+        other refusal is final and left alone.
+        """
+        reason = str(record.get("reason") or "").lower()
+        if "not the primary" not in reason:
+            return
+        with _DELEGATE_LOCK:
+            pending = dict(getattr(self, "_delegated_pending", {}) or {})
+            entry = pending.get(peer)
+            attempt = int((entry or {}).get("attempt", 0))
+            if not entry or attempt >= 2:
+                if entry and attempt >= 2:
+                    self.log("MESH", f"delegation to {peer} still refused after "
+                                     f"{attempt + 1} attempts; giving up",
+                             level="WARN")
+                    pending.pop(peer, None)
+                    self._delegated_pending = pending
+                return
+            attempt += 1
+            pending[peer] = {"payload": entry["payload"], "attempt": attempt}
+            self._delegated_pending = pending
+        payload = entry["payload"]
+
+        def _retry():
+            time.sleep(6.0)
+            self.log("MESH", f"retrying delegation to {peer} "
+                             f"(attempt {attempt + 1}): its lease view lagged")
+            self._mesh_delegate(peer, payload)
+
+        threading.Thread(target=_retry, daemon=True).start()
 
     def _mesh_reply(self, peer: str, payload: Dict[str, Any]) -> None:
         """Send a delegation outcome back to the primary (best effort)."""

@@ -20,6 +20,7 @@ safe to run alongside a live fleet.
 import socket
 import time
 import unittest
+from unittest import mock
 from unittest.mock import MagicMock
 
 from agent_runtime import ShugonetAgentRuntime
@@ -512,6 +513,84 @@ class ElectionEligibilityTestCase(unittest.TestCase):
         if value == 0:
             self.skipTest("this platform cannot report free physical memory")
         self.assertGreater(value, 0)
+
+
+class MeshAdvertisementFeedsElectionTestCase(unittest.TestCase):
+    """A mesh advertisement must reach the election even if telemetry is empty.
+
+    The Android shell owns telemetry['mesh_peers'] and rewrites it every second
+    with its DDS view, so a phone's election used to learn only about other
+    phones -- never the host leading the hive -- and then refused that host's
+    delegated actions as "not the primary".
+    """
+
+    def test_advertisement_is_observed_without_telemetry(self):
+        from shugocore_agent import AndroidAgent
+        agent = AndroidAgent.__new__(AndroidAgent)
+        agent.device_caps = "s5e8835"
+        agent.node_id = "shugo-tab"
+        agent.telemetry = {}                      # exactly what the shell leaves
+        agent.mesh_election = MeshElection("shugo-tab", priority=500)
+        agent.log = lambda *a, **k: None
+        agent._mesh_heartbeat_received({
+            "node_id": "shugo-desktop", "priority": 10, "thermal_status": 0,
+            "mem_available_bytes": _COMFORTABLE_MEM, "seq": 1})
+        live = [peer["node_id"] for peer in agent.mesh_election.live_peers()]
+        self.assertIn("shugo-desktop", live,
+                      "the mesh advertisement never reached the election")
+        self.assertEqual(agent.mesh_election.tick()["primary"], "shugo-desktop")
+
+
+class DelegationRetryTestCase(unittest.TestCase):
+    """A receiver whose lease lags gets a bounded retry, not a final refusal."""
+
+    def _probe(self):
+        from shugocore_agent import AndroidAgent
+        agent = AndroidAgent.__new__(AndroidAgent)
+        agent.device_caps = "desktop"
+        agent.node_id = "shugo-desktop"
+        agent._delegated_results = []
+        agent._delegated_pending = {}
+        agent.log = lambda *a, **k: None
+        agent.policy = {}
+        return agent
+
+    def test_a_stale_refusal_is_retried_twice_then_given_up(self):
+        agent = self._probe()
+        calls = []
+
+        class _Runtime:
+            def send(self, peer, topic, payload):
+                calls.append((peer, topic))
+                return {"status": "success"}
+
+        agent.shugonet_runtime = _Runtime()
+        self.assertEqual(agent._mesh_delegate("shugo-tab", {"a": 1})["status"],
+                         "delegated")
+        stale = {"status": "refused", "action_type": "speak",
+                 "reason": "sender is not the primary (mine is unknown, sender "
+                           "shugo-desktop)"}
+        with mock.patch("shugocore_agent.threading.Thread") as thread:
+            thread.return_value.start.return_value = None
+            # First stale refusal: one retry scheduled.
+            agent._record_delegated_result("shugo-tab", dict(stale))
+            self.assertEqual(agent._delegated_pending["shugo-tab"]["attempt"], 1)
+            self.assertTrue(thread.called, "no retry was scheduled")
+            # Second: the last retry, still pending.
+            agent._record_delegated_result("shugo-tab", dict(stale))
+            self.assertEqual(agent._delegated_pending["shugo-tab"]["attempt"], 2)
+            # Third: the budget is spent and the entry is cleared.
+            agent._record_delegated_result("shugo-tab", dict(stale))
+            self.assertNotIn("shugo-tab", agent._delegated_pending)
+
+    def test_a_policy_refusal_is_final(self):
+        agent = self._probe()
+        agent._delegated_pending["shugo-tab"] = {"payload": {"a": 1}, "attempt": 0}
+        with mock.patch("shugocore_agent.threading.Thread") as thread:
+            agent._record_delegated_result("shugo-tab", {
+                "status": "refused", "action_type": "api_call",
+                "reason": "action 'api_call' is not delegatable"})
+            self.assertFalse(thread.called, "a policy refusal was retried")
 
 
 if __name__ == "__main__":

@@ -202,11 +202,19 @@ def _status_line(agent, runtime, ticks) -> str:
     art_out = artifacts.get("sent")
     routing = (status.get("response_routing") or {}) if isinstance(status, dict) else {}
     delegated = (status.get("delegated") or {}) if isinstance(status, dict) else {}
+    # The election's own view: how many peers it considers live, and who it thinks
+    # holds the lease. Without this, "the hive has a primary" and "this node sees
+    # one" are indistinguishable from the status line.
+    try:
+        live = len(election.live_peers()) if election is not None else 0
+    except Exception:
+        live = -1
     return (f"tick {ticks} | cycles={loop.get('cycles')} "
             f"rate={loop.get('success_rate')} | node={lease.get('node_id', '?')} "
             f"prio={lease.get('priority', '?')} role={status.get('mesh_role', '?')} "
             f"primary={status.get('mesh_primary')} connected={len(connected)} "
-            f"mesh_peers={len(declared or [])} beats={heard} rx={rx} tx={tx} "
+            f"mesh_peers={len(declared or [])} beats={heard} live={live} "
+            f"rx={rx} tx={tx} "
             f"say_to={routing.get('device')} deleg_sent={delegated.get('sent')} "
             f"artifacts={shared} art_in={art_in} art_out={art_out} "
             f"imported={stats.get('imported')}")

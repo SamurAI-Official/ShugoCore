@@ -6,6 +6,45 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### Top-down orchestration by measured capacity (v1.30.8)
+
+Android nodes kept running the **full** agent loop -- local model proposals,
+`ask_user` decisions, decision-journal writes -- while a desktop held the primary
+lease. That is both wasteful and wrong: the hive has one orchestrator, and a
+phone's job is the work the primary delegates to it.
+
+`_orchestration_mode()` now decides agency every tick from *measured capacity* --
+the same thermal/free-memory signals the election ranks on, plus battery level
+and whether the device is charging -- together with the election's own verdict:
+
+- `primary` -- holds the lease (or stands alone): full local agency.
+- `subordinate` -- a live peer outranks this node (better priority/headroom): it
+  keeps observing, heartbeating and serving memory, but does **not** run its own
+  model-backed decision loop; its work is what the primary delegates.
+- `degraded` -- no headroom of its own (thermal at the refuse threshold, free
+  memory under 64 MiB, or battery <= 15% and not charging): steps down even with
+  nobody to hand to.
+- Operator override through policy: `orchestration`: `auto` | `full` |
+  `sensor_only`.
+
+Status carries it (`get_status()["orchestration"]` = mode, reason, capacity
+profile), and the mode is logged on change rather than every tick.
+
+Verified live on the real fleet (both phones upgraded in place to 1.30.8): the Tab
+and A51 now log **zero** `ANDROID_INFERENCE generate called` and **zero**
+`Decision made for task` lines, and their decision journals stop being written --
+the Tab's last entry is the old local `ask_user` proposal that came back
+`mesh_follower`, which is exactly the behaviour that prompted this. Both keep
+heartbeating: the hub still reports `connected=3 mesh_peers=2` with the desktop
+holding the lease, so a subordinate stays a first-class hive member.
+
+Also in this change: a refused frame now says *why* -- `mesh token missing (this
+node gates every frame; give the sender SHUGOCORE_MESH_TOKEN)` instead of
+"malformed" -- and a node that has peers but no token warns at startup that it is
+advertising into a wall. That is precisely what the Mac was doing: it is dialled
+and advertising every 10 s, and both the hub and the phones were refusing every
+frame it sent.
+
 ### Phase D: the loopback actuation sandbox (containment, not adjectives)
 
 `actuation_sandbox.py` drives the **real** pipeline -- the engine's own

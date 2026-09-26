@@ -58,6 +58,11 @@ logger = logging.getLogger("shugocore_android")
 # The orchestration loop stages surfaced on the AGENT tab. Stage tracking is
 # honest: a stage is only reported as run when the code path for it actually
 # executed during the tick.
+# Top-down orchestration floors: below either of these a node stops deciding for
+# itself (a phone with 30 MiB free or a flat battery is a sensor, not an
+# orchestrator) and hands the work to the primary instead.
+_ORCH_MIN_HEADROOM_BYTES = 64 * 1024 * 1024
+_ORCH_MIN_BATTERY_PCT = 15
 PIPELINE_STAGES = ("OBSERVE", "VERIFY_ATTENTION", "GATE", "DECIDE",
                    "EXECUTE", "EVALUATE", "RECORD", "CONSOLIDATE")
 
@@ -857,6 +862,14 @@ class AndroidAgent:
             peers = (self._parse_mesh_peers(
                         _os.environ.get("SHUGOCORE_MESH_PEERS", ""))
                      + self._load_mesh_peers_file())
+            if peers and not mesh_token:
+                # A node with peers but no secret advertises into a wall: every
+                # token-gated peer refuses its frames, and the sender has no way
+                # to tell that from "nobody is listening".
+                self.log("MESH",
+                         "no mesh token configured: token-gated peers will "
+                         "refuse this node's frames (set SHUGOCORE_MESH_TOKEN "
+                         "or <data-dir>/mesh_token.txt)", level="WARN")
             unique_peers: Dict[str, tuple] = {}
             for peer_id, peer_host, peer_port in peers:
                 unique_peers[peer_id] = (peer_host, peer_port)
@@ -1834,6 +1847,97 @@ class AndroidAgent:
                          f"(primary={primary})", level="WARN")
         return False
 
+    def _capacity_profile(self) -> Dict[str, Any]:
+        """What this runtime actually has to work with, right now.
+
+        The same signals the election ranks on (thermal state, free memory) plus
+        the two a phone adds (battery level and whether it is charging), so
+        "fall back to top-down" is decided on measured capacity rather than on
+        device class.
+        """
+        telemetry = self.telemetry if isinstance(self.telemetry, dict) else {}
+
+        def _int(value, default=0):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+
+        try:
+            memory_free = int(self._mesh_mem_headroom())
+        except Exception:
+            memory_free = 0
+        election = self.mesh_election
+        return {
+            "thermal_status": _int(telemetry.get(
+                "thermal_state", telemetry.get("thermal_status", 0))),
+            "mem_available_bytes": memory_free,
+            "battery_level": _int(self._get_battery(), 100),
+            "charging": bool(telemetry.get("is_charging", False)),
+            "priority": _int(getattr(election, "priority", 500), 500),
+            "device_caps": self.device_caps,
+        }
+
+    def _orchestration_mode(self) -> Tuple[str, str]:
+        """(mode, reason): how much agency this node keeps right now.
+
+        Top-down orchestration by capacity, which is what the fleet is for: the
+        node holding the lease (or standing alone) orchestrates itself; a node a
+        live peer outranks hands orchestration up and only executes what the
+        primary delegates; and a node whose own headroom is critical steps down
+        even with nobody to hand to. An operator can override either way through
+        policy (``orchestration``: ``auto`` | ``full`` | ``sensor_only``).
+        """
+        policy = getattr(self, "policy", None)
+        override = "auto"
+        if isinstance(policy, dict):
+            override = str(policy.get("orchestration") or "auto").strip().lower()
+        profile = self._capacity_profile()
+        if override in ("full", "primary"):
+            return "primary", "operator override: full local agency"
+        if override in ("sensor_only", "subordinate", "delegated"):
+            return "subordinate", "operator override: delegated work only"
+        try:
+            from mesh_election import THERMAL_REFUSE_STATUS as _refuse
+        except Exception:
+            _refuse = 3
+        if profile["thermal_status"] >= _refuse:
+            return "degraded", (f"thermal {profile['thermal_status']} is at or "
+                                f"past the refuse threshold ({_refuse})")
+        if (profile["mem_available_bytes"]
+                and profile["mem_available_bytes"] < _ORCH_MIN_HEADROOM_BYTES):
+            return "degraded", (f"only {profile['mem_available_bytes']} B of "
+                                f"headroom (floor {_ORCH_MIN_HEADROOM_BYTES})")
+        if (profile["battery_level"] <= _ORCH_MIN_BATTERY_PCT
+                and not profile["charging"]):
+            return "degraded", (f"battery {profile['battery_level']}% and not "
+                                f"charging")
+        election = self.mesh_election
+        if election is None:
+            return "standalone", "no election module: self-sufficient"
+        try:
+            result = election.tick()
+        except Exception as exc:
+            return "standalone", f"election unavailable ({type(exc).__name__})"
+        primary = result.get("primary")
+        if primary is None or primary == election.node_id:
+            return "primary", ("holding the lease" if primary
+                               else "no live candidates to hand to")
+        best = None
+        try:
+            peers = [p for p in election.live_peers()
+                     if p.get("node_id") == primary]
+            best = peers[0] if peers else None
+        except Exception:
+            best = None
+        if best is not None:
+            return "subordinate", (
+                f"peer {primary} outranks this node "
+                f"(prio {best.get('priority')} vs {profile['priority']}, "
+                f"mem {best.get('mem_available_bytes')} vs "
+                f"{profile['mem_available_bytes']} B free)")
+        return "subordinate", f"peer {primary} holds the lease"
+
     def _mesh_role_label(self) -> str:
         """Compact role for the status surface: 'none' (module missing),
         'primary' (lease held with live peers), 'follower', 'standalone'
@@ -2278,12 +2382,30 @@ class AndroidAgent:
         try:
             observation = self._get_observation()
             self.last_observation = observation
+            # Top-down orchestration by capacity: a node that a live peer
+            # outranks (or one with no headroom left) keeps observing,
+            # heartbeating and serving memory, but does NOT run its own
+            # model-backed decision loop -- orchestration belongs to the
+            # primary, and the work this node does is what the primary delegates
+            # to it. The mode is logged on change, not every tick.
+            mode, why = self._orchestration_mode()
+            self._orchestration = {"mode": mode, "reason": why,
+                                   "profile": self._capacity_profile()}
+            if mode != getattr(self, "_last_orchestration_mode", None):
+                self._last_orchestration_mode = mode
+                self.log("AGENT", f"orchestration mode: {mode} ({why})")
+            subordinate = mode in ("subordinate", "degraded")
+            if subordinate:
+                outcome = "NO_ACTION"
+                trail = ("OBSERVE", "DELEGATED")
+                detail = f"{mode}: {why}"[:120]
+                decision = f"{mode} of {why}"[:90]
             # v1.28.1: conversational fast path — new speech triggers a
             # personality-driven response immediately, bypassing the full
             # tool-use decision pipeline. No engine gate: deterministic
             # commands (timer/memory) work without a model; the engine call
             # inside _handle_conversational_input already guards itself.
-            if observation.get("new_speech"):
+            if observation.get("new_speech") and not subordinate:
                 self._handle_conversational_input(observation)
                 # Still drain conversation events (closed-loop record) before
                 # returning — the ask/answer round-trip must be journaled.
@@ -2307,7 +2429,7 @@ class AndroidAgent:
             # stay in the bounded bus, per the transcripts-never-enter-memory
             # rule established with the 1.12 journal contract).
             self._drain_conversation_events()
-            if self.engine is not None:
+            if self.engine is not None and not subordinate:
                 allowed, scope = self._backend_target_allowed()
                 if not allowed:
                     self.log("POLICY", f"backend {scope} '{self.api_url}' "
@@ -3020,6 +3142,10 @@ class AndroidAgent:
             # Track 1: election role — "primary", "follower", "standalone",
             # "none" (no election module) or "unknown" (election error).
             "mesh_role": self._mesh_role_label(),
+            # Top-down orchestration: how much agency this node currently keeps,
+            # why (measured capacity / election), and the profile it used.
+            "orchestration": dict(getattr(self, "_orchestration", None) or {
+                "mode": "unknown", "reason": "not evaluated yet"}),
             "mesh_primary": (self.mesh_election.primary()
                              if self.mesh_election is not None else None),
             # Track 2: security inventory + baseline drift (observational,

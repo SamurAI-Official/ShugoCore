@@ -279,16 +279,29 @@ class _PeerServer(threading.Thread):
         When the runtime was created with an ``auth_token``, an inbound message
         must also carry a matching ``token`` (shared-secret gate).
         """
+        return self._accepts_reason(msg) is None
+
+    def _accepts_reason(self, msg: Any) -> Optional[str]:
+        """Why a frame is refused, or None when it is accepted.
+
+        The reason matters operationally: "token missing" on a live fleet means
+        an un-onboarded node (or a stale secret), while "no message type" means a
+        real protocol problem. Logging only "malformed" sent a debugging round
+        after a Mac that was advertising perfectly well without a token.
+        """
         if not isinstance(msg, dict):
-            return False
+            return "not a JSON object"
         msg_type = msg.get("type")
         if not isinstance(msg_type, str) or not msg_type:
-            return False
+            return "no message type"
         if self._auth_token:
             presented = msg.get("token")
-            return bool(presented) and hmac.compare_digest(
-                str(presented), self._auth_token)
-        return True
+            if not presented:
+                return ("mesh token missing (this node gates every frame; "
+                        "give the sender SHUGOCORE_MESH_TOKEN)")
+            if not hmac.compare_digest(str(presented), self._auth_token):
+                return "mesh token does not match this node's"
+        return None
 
     def _handle_client(self, client_sock: socket.socket, addr: Any) -> None:
         buf = b""
@@ -321,8 +334,10 @@ class _PeerServer(threading.Thread):
                     except Exception as exc:
                         logger.warning("shugonet parse error: %s", exc)
                         continue
-                    if not self._accepts(msg):
-                        logger.warning("shugonet refused malformed message from %s", addr)
+                    reason = self._accepts_reason(msg)
+                    if reason is not None:
+                        logger.warning("shugonet refused frame from %s: %s",
+                                       addr, reason)
                         continue
                     try:
                         self._runtime._dispatch_message(msg, client_sock)

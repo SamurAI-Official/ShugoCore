@@ -75,7 +75,7 @@ DELEGATABLE_ACTIONS = ("speak", "ask_user")
 # that saw nothing reports nothing rather than a guess.
 MESH_PERCEPTION_KEYS = ("face_count", "face_present", "gaze_toward_camera",
                         "voice_active", "speech_source", "speech_recent",
-                        "utterance_age_s")
+                        "utterance_age_s", "presence_present")
 _DELEGATE_LOCK = threading.Lock()
 PIPELINE_STAGES = ("OBSERVE", "VERIFY_ATTENTION", "GATE", "DECIDE",
                    "EXECUTE", "EVALUATE", "RECORD", "CONSOLIDATE")
@@ -1144,6 +1144,17 @@ class AndroidAgent:
                                      frame_source=frame_source,
                                      audit=getattr(self, "audit", None))
 
+    def _log_speak_failure(self, detail: str) -> None:
+        """Record a speech-output failure where an operator can read it.
+
+        The LogBus is in-memory (the UI polls it); a phone's stderr and a host's
+        stdout need the module logger, and that is what survives the run.
+        """
+        self.log("ERROR", f"speak failed: {detail}", level="ERROR")
+        import logging as _logging
+        _logging.getLogger(__name__).error(
+            "speak failed on %s: %s", getattr(self, "node_id", "?"), detail)
+
     def _execute_speak(self, decision: Dict[str, Any]) -> Dict[str, Any]:
         """Executor for the internal speak action. Text is sanitized and
         bounded here; the listener (Kotlin TTS) performs the actual output.
@@ -1176,9 +1187,20 @@ class AndroidAgent:
         try:
             delivered = bool(listener.speak(text))
         except Exception as exc:
-            self.log("ERROR", f"speak listener failed: {type(exc).__name__}",
-                     level="ERROR")
-            return {"status": "error", "message": type(exc).__name__}
+            # The cause must survive the trip. A delegated speak that fails is
+            # undiagnosable if the sender only learns "error", so the reason is
+            # machine-readable and carries what the platform actually said, and it
+            # is logged where an operator can read it afterwards.
+            detail = (f"speak_listener_failed: {type(exc).__name__}: {exc}")
+            self._log_speak_failure(detail)
+            return {"status": "error", "message": type(exc).__name__,
+                    "reason": detail[:200]}
+        if not delivered:
+            # The platform held the text and refused it. Reporting success here
+            # would be the same silence this whole path exists to prevent.
+            self._log_speak_failure("speak_listener_returned_false")
+            return {"status": "error", "spoken": text, "delivered": False,
+                    "reason": "speak_listener_returned_false"}
         if self.interaction is not None:
             self.interaction.record_agent_response(AgentResponse(
                 type="speech", content=text, target="user"))
@@ -1741,9 +1763,47 @@ class AndroidAgent:
         telemetry = getattr(self, "telemetry", None)
         if not isinstance(telemetry, dict):
             telemetry = {}
+        # A node's own perception arrives through two doors. Telemetry carries what
+        # the platform measures directly (voice energy, and the fused scene verdict
+        # under its own spelling); the interaction bus carries the camera's own
+        # observations and the attribution verdict. Read both -- neither alone is
+        # the whole picture, and a device that reports nothing stays silent.
+        sources: Dict[str, Any] = {
+            "face_count": human.get("face_count", telemetry.get("face_count")),
+            "face_present": human.get("face_present",
+                                      telemetry.get("face_present")),
+            "gaze_toward_camera": human.get(
+                "gaze_toward_camera",
+                telemetry.get("gaze_toward_camera")),
+            "voice_active": human.get("voice_active",
+                                      telemetry.get("voice_active")),
+            "speech_source": human.get(
+                "speech_source",
+                telemetry.get("speech_source",
+                              telemetry.get("scene_speech_source"))),
+            "speech_recent": human.get("speech_recent"),
+            "utterance_age_s": human.get("utterance_age_s",
+                                         telemetry.get("utterance_age_s")),
+            "presence_present": human.get("presence_present"),
+        }
+        interaction = getattr(self, "interaction", None)
+        if interaction is not None:
+            try:
+                context = interaction.human_context() or {}
+            except Exception:
+                context = {}
+            if isinstance(context, dict):
+                if sources["face_count"] is None:
+                    sources["face_count"] = context.get("face_count")
+                if sources["speech_source"] in (None, ""):
+                    sources["speech_source"] = context.get("speech_source")
+                if sources["presence_present"] is None and context.get("presence"):
+                    # Any modality can honestly report "someone is here"; it is a
+                    # weaker fact than a face, and scored as one.
+                    sources["presence_present"] = (
+                        str(context.get("presence")) == "user_present")
         facts: Dict[str, Any] = {}
-        for key in MESH_PERCEPTION_KEYS:
-            value = human.get(key, telemetry.get(key))
+        for key, value in sources.items():
             if value is None or value == "":
                 continue
             facts[f"remote_{key}"] = value
@@ -2096,6 +2156,17 @@ class AndroidAgent:
             "speech_recent": bool(human.get("speech_recent")),
         }
         telemetry = self.telemetry if isinstance(self.telemetry, dict) else {}
+        peers = observation.get("mesh_peers")
+        if not isinstance(peers, list) or not peers:
+            # The observation is the *model's* view of the world; the merged
+            # advertisement store is the router's. On a host with no shell only the
+            # mesh writes that store, and a routed --say runs before the first tick,
+            # so reading the observation alone left the primary with no peer
+            # candidates at all and the hive stayed silent however clearly a phone
+            # could see the operator.
+            peers = telemetry.get("mesh_peers")
+        if not isinstance(peers, list):
+            peers = []
         if telemetry.get("voice_active"):
             self_facts["voice_active"] = True
         try:
@@ -2114,7 +2185,7 @@ class AndroidAgent:
             "priority": int(getattr(election, "priority", 500)),
         }]
         peer_tts = getattr(self, "_peer_tts", None) or {}
-        for peer in (observation.get("mesh_peers") or []):
+        for peer in peers:
             if not isinstance(peer, dict):
                 continue
             device = str(peer.get("device_id") or peer.get("id") or "").strip()
@@ -2267,11 +2338,20 @@ class AndroidAgent:
             self._delegated_from = None
         self.log("MESH", f"ran delegated {action_type} for {peer}: "
                          f"{result.get('status')}")
+        # Forward the receiver's own explanation, not just its status: the sender
+        # has no other way to see why a delegated action did not happen.
+        outcome = (result.get("reason") or result.get("message"))
+        if str(result.get("status")) != "success" or not result.get("delivered"):
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "delegated %s for %s finished %s delivered=%s: %s", action_type,
+                peer, result.get("status"), result.get("delivered"),
+                outcome or "no reason given")
         self._mesh_reply(peer, {"id": payload.get("id"),
                                 "status": result.get("status"),
                                 "action_type": action_type,
                                 "delivered": result.get("delivered"),
-                                "reason": result.get("reason")})
+                                "reason": outcome})
 
     def _record_delegated_result(self, peer: str, payload: Any) -> None:
         """Record the outcome a subordinate reported for a delegated action."""

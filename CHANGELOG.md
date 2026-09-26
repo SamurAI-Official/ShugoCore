@@ -6,6 +6,43 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### A failed delegated action says why (v1.30.14)
+
+The A51 accepted the primary's delegated `speak` and then reported `error` with
+`delivered=None` and no reason: `_execute_speak` put the cause in `message`, the
+delegation handler forwarded only `reason`, and the receiver logged only the
+status. A device-side failure was therefore invisible from both ends -- the hub
+could see that the hive chose the right mouth and that it did not speak, but not
+why.
+
+Every failure on the speech path now carries a machine-readable reason
+(`speak_listener_failed: <Exc>: <message>`, `speak_listener_returned_false`), the
+delegation handler forwards it (falling back to `message`), and the receiver logs
+it through the module logger -- which on Android lands in logcat and on a host in
+stderr, both of which outlive the run. A listener that returns false is no longer
+reported as a success: the platform held the text and refused it, and saying so is
+the whole point of this path.
+
+### A node reports what it can actually perceive, from both doors (v1.30.13)
+
+Measured against the live hive, a phone's own perception never reached its
+advertisement, so the router saw three healthy speakers and scored every one of
+them `0.00`:
+
+* a phone's **camera** facts land on the interaction bus (`face_count`, the
+  attribution verdict), not in telemetry;
+* a phone's **microphone** facts land in telemetry under the shell's own
+  spellings (`voice_active`, `scene_speech_source`), not the router's;
+* the shell pushes no local face/gaze at all -- only its peers' facts.
+
+`_mesh_perception_facts` now reads both doors and maps the platform's spellings,
+so an advertisement says what the device actually perceived. A camera refused by
+policy no longer makes a phone invisible either: telemetry's voice energy and the
+bus's presence are advertised as `remote_presence_present`, a new weak signal
+(0.15) that is deliberately below the selection floor on its own -- a person in
+the next room is not an operator -- but which, with live voice, makes the phone
+in front of them the answer.
+
 ### The nearest device can now be found: presence is advertised (v1.30.12)
 
 The routed path -- "the primary decides the words, the device closest to the

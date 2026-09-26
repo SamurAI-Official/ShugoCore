@@ -24,6 +24,10 @@ SCORE_WEIGHTS = {
     "speech_directed": 0.30,
     "speech_person": 0.20,
     "voice_active": 0.10,
+    # Any modality's honest "someone is here" from the interaction bus: weaker than
+    # a face, stronger than nothing, and never enough on its own (it cannot cross
+    # the floor by itself) because a person in the next room is not an operator.
+    "presence_present": 0.15,
     "utterance_recent_s": 5.0,
     "utterance_recent": 0.10,
     "utterance_stale_s": 15.0,
@@ -79,6 +83,9 @@ def proximity_score(facts: Optional[Dict[str, Any]], *,
     if f.get("voice_active"):
         score += SCORE_WEIGHTS["voice_active"]
         why.append("voice")
+    if f.get("presence_present"):
+        score += SCORE_WEIGHTS["presence_present"]
+        why.append("present")
     utterance_age = f.get("utterance_age_s", f.get("transcript_age_s"))
     if isinstance(utterance_age, (int, float)):
         if utterance_age <= SCORE_WEIGHTS["utterance_recent_s"]:

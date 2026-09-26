@@ -49,6 +49,15 @@ class ProximityPolicyTestCase(unittest.TestCase):
         self.assertEqual(stale, 0.0)
         self.assertIn("stale(120s)", why)
 
+    def test_presence_alone_cannot_cross_the_floor(self):
+        alone, why = rr.proximity_score({"presence_present": True})
+        self.assertLess(alone, rr.DEFAULT_FLOOR)
+        self.assertIn("present", why)
+        # A present human who is also making noise is worth answering.
+        together, _ = rr.proximity_score({"presence_present": True,
+                                          "voice_active": True})
+        self.assertGreaterEqual(together, rr.DEFAULT_FLOOR)
+
     def test_selection_prefers_the_closest_speaker(self):
         chosen, why = rr.select([
             {"device_id": "desktop", "facts": {}, "can_speak": False},
@@ -237,6 +246,46 @@ class DelegationAuthorityTestCase(unittest.TestCase):
         self.assertEqual(replies[0]["status"], "refused")
         self.assertIn("not the primary", replies[0]["reason"])
 
+    def test_a_failed_delegated_speak_reports_why(self):
+        """A delegated speak that fails must say what went wrong.
+
+        The sender has no other way to learn it: the outcome travels as data, and
+        "error" with no reason is exactly the silence this path exists to remove.
+        """
+        class _Broken:
+            def speak(self, text):
+                raise RuntimeError("tts engine not ready")
+
+        tab = _probe_agent(node_id="android-tab", primary="shugo-desktop")
+        tab._speak_listener = _Broken()
+        tab.interaction = None
+        tab.conversation = None
+        replies = []
+        tab._mesh_reply = lambda peer, payload: replies.append(payload)
+        tab._handle_delegated_action("shugo-desktop", {
+            "action_type": "speak", "params": {"text": "hello"}, "id": "q3"})
+        self.assertEqual(replies[0]["status"], "error")
+        self.assertIn("speak_listener_failed: RuntimeError", replies[0]["reason"])
+        self.assertIn("tts engine not ready", replies[0]["reason"])
+
+    def test_a_platform_refused_speak_is_not_reported_as_success(self):
+        """The platform held the text and refused it -- that is not a success."""
+        class _Refusing:
+            def speak(self, text):
+                return False
+
+        tab = _probe_agent(node_id="android-tab", primary="shugo-desktop")
+        tab._speak_listener = _Refusing()
+        tab.interaction = None
+        tab.conversation = None
+        replies = []
+        tab._mesh_reply = lambda peer, payload: replies.append(payload)
+        tab._handle_delegated_action("shugo-desktop", {
+            "action_type": "speak", "params": {"text": "hello"}, "id": "q4"})
+        self.assertEqual(replies[0]["status"], "error")
+        self.assertFalse(replies[0]["delivered"])
+        self.assertEqual(replies[0]["reason"], "speak_listener_returned_false")
+
     def test_non_delegatable_actions_are_refused(self):
         tab = _probe_agent(node_id="android-tab", primary="shugo-desktop")
         replies = []
@@ -356,6 +405,53 @@ class AdvertisementCarriesPresenceTestCase(unittest.TestCase):
         chosen, why = hub.select_response_node()
         self.assertIsNone(chosen)
         self.assertIn("no device reports speech output", why)
+
+    def test_a_phone_without_a_camera_still_reports_it_can_hear_someone(self):
+        """The A51's camera can be refused by policy; the microphone still knows.
+
+        Voice energy and the fused scene verdict arrive in telemetry under the
+        shell's own spellings, and the interaction bus reports the human's
+        presence, so a camera-less phone is still a place the operator can be.
+        """
+        class _Bus:
+            def human_context(self):
+                return {"presence": "user_present",
+                        "speech_source": "instruction_directed"}
+
+        hub = _probe_agent(node_id="shugo-desktop")
+        hub.node_id = "shugo-desktop"
+        tab = self._advertising_node("shugo-tab", {})
+        tab.interaction = _Bus()
+        tab.telemetry = {"voice_active": True,
+                         "scene_speech_source": "instruction_directed"}
+        payload = tab._mesh_heartbeat_payload()
+        self.assertTrue(payload["remote_voice_active"])
+        self.assertTrue(payload["remote_presence_present"])
+        self.assertEqual(payload["remote_speech_source"], "instruction_directed")
+        hub._mesh_heartbeat_received(payload)
+        chosen, why = hub.select_response_node()
+        self.assertEqual(chosen["device_id"], "shugo-tab")
+        self.assertIn("voice", why)
+
+    def test_the_router_reads_the_merged_store_not_only_the_observation(self):
+        """A host with no shell never populates the observation's peer list.
+
+        The mesh writes ``telemetry['mesh_peers']`` the moment an advertisement
+        arrives; the observation is built later (on a phone, by the Kotlin shell).
+        A routed `--say` runs before the first tick, so reading only the
+        observation meant no peer candidate existed and the answer was always
+        "no device reports speech output".
+        """
+        hub = _probe_agent(node_id="shugo-desktop")
+        hub.node_id = "shugo-desktop"
+        tab = self._advertising_node("shugo-tab", {
+            "face_count": 1, "gaze_toward_camera": True,
+            "speech_source": "instruction_directed"})
+        hub._mesh_heartbeat_received(tab._mesh_heartbeat_payload())
+        hub.last_observation = {}                 # no tick has run yet
+        chosen, why = hub.select_response_node()
+        self.assertEqual(chosen["device_id"], "shugo-tab")
+        self.assertIn("closest to the operator", why)
 
     def test_stale_advertisements_stop_placing_a_peer(self):
         hub = _probe_agent(node_id="shugo-desktop")

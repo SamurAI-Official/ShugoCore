@@ -116,6 +116,26 @@ class EvaluateTestCase(unittest.TestCase):
 
 
 class HostScanTestCase(unittest.TestCase):
+    def test_phone_probe_uses_an_absolute_path(self):
+        """run-as has no chdir on Android 16: relative paths read as 'missing'."""
+        args = []
+
+        def _fake_adb(adb, serial, command):
+            args.append(command)
+            return ""
+
+        original = cm._adb_run
+        cm._adb_run = _fake_adb
+        try:
+            cm.probe_phone("A16", "serial", "adb", "com.samurai.shugocore")
+        finally:
+            cm._adb_run = original
+        listing = [a for a in args if "ls -l" in a]
+        self.assertTrue(listing, "the probe never listed the data dir")
+        self.assertIn("/data/user/0/com.samurai.shugocore/files", listing[0])
+        self.assertIn("/data/user/0/com.samurai.shugocore/files/mesh_token.txt",
+                      " ".join(args))
+
     def test_probe_host_reads_a_real_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             for name in ("semantic_memory.db", "audit_chain.jsonl",

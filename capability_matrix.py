@@ -214,12 +214,24 @@ def _adb_run(adb: str, serial: str, command: str) -> str:
     return proc.stdout or ""
 
 
+def phone_files_root(package: str = "com.samurai.shugocore") -> str:
+    """Absolute path to an Android app's files dir.
+
+    ``run-as`` does **not** chdir into the app directory on Android 16, so
+    ``run-as <pkg> ls files`` fails there with "no such file or directory" and
+    every claim would look missing. Absolute paths work on every version tested
+    (13, 14, 16).
+    """
+    return f"/data/user/0/{package}/files"
+
+
 def probe_phone(name: str, serial: str, adb: str, package: str,
                 expected_token: str = None, events: tuple = ()) -> dict:
     """Read a phone's app data dir through ``run-as`` (debug builds only)."""
-    files = parse_android_listing(_adb_run(adb, serial, f"run-as {package} ls -l files"))
+    root = phone_files_root(package)
+    files = parse_android_listing(_adb_run(adb, serial, f"run-as {package} ls -l {root}"))
     token = _adb_run(adb, serial,
-                     f"run-as {package} cat files/mesh_token.txt").strip()
+                     f"run-as {package} cat {root}/mesh_token.txt").strip()
     version = ""
     match = re.search(r"versionName=(\S+)",
                       _adb_run(adb, serial, f"dumpsys package {package}"))
@@ -230,6 +242,7 @@ def probe_phone(name: str, serial: str, adb: str, package: str,
                       state={"token": token or None})
     result["name"] = name
     result["serial"] = serial
+    result["data_dir"] = root
     if not files:
         result["note"] = ("no readable data dir (device offline, or run-as "
                           "refused on a non-debug build)")

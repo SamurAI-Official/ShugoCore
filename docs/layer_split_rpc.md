@@ -157,6 +157,17 @@ Three traps, each found by running it rather than reading it:
 A linker error is usually a *running* previous build: `LNK1104: cannot open file
 'bin\ggml-rpc-server.exe'` means an old peripheral process still holds the file.
 
+### Version rule
+
+Both ends must be built from the commit the parent repo pins. A host and a
+peripheral on different trees can disagree about the wire protocol while every
+local test passes, and the earlier measurements in this file are only true of the
+commit they name. The pin is `git ls-tree HEAD -- <submodule path>`; a leading
+`+` in `git submodule status` means the checkout has drifted from it. Changing the
+pin is an explicit change: bump it, rebuild **both** ends, and re-measure, naming
+the commit. `git add -A` will move the pin for you if you are not watching -- that
+is how it moved once already.
+
 ## Reproduce
 
 One command, end to end (starts the app's peripheral itself, prints the table

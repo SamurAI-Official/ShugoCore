@@ -6,6 +6,30 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### The fleet builds llama.cpp from the pinned commit (v1.30.16)
+
+The Phase 0 commit silently moved the recorded llama.cpp pin: `git add -A` staged
+the gitlink, taking it from `6703d78` -- what the phone's peripheral is built from,
+and the commit `docs/layer_split_rpc.md` measured -- to a newer local checkout
+`95887577`, 410 commits ahead. A host and a peripheral built from different trees
+can disagree about the wire protocol while every local test passes, so the pin is
+restored in `88cea0a` and the decision is recorded rather than implied.
+
+Both revisions were checked before choosing, because the question had to be about
+parity and not capability: `llama_state_seq_save_file` / `_load_file`,
+`llama_memory_clear` / `llama_memory_seq_rm` (what `llama_jni.cpp` actually calls),
+`--rpc` and `--slot-save-path` are all present at the pin, and the peripheral's
+CMake target is `ggml-rpc-server` at both revisions. Both also measure the same:
+host RSS 537 -> 170 MB with all 24 layers on a peripheral holding 377 MB and
+**tokens identical** to local greedy decode.
+
+So nothing was gained by the jump and protocol risk was. The Windows host was
+rebuilt from the pin, and the loopback tables were re-measured there
+(`runtime/evidence/mesh_model_host/loopback_measurement.md`): the bench at the pin
+reads local 476MB / 22.15 tok/s -> all 24 layers 445MB / 40.03 tok/s.
+`docs/layer_split_rpc.md` now carries the rule: a pin change is explicit -- bump
+it, rebuild **both** ends, re-measure, and name the commit in the numbers.
+
 ### Phase 0: the layer split builds and is measurable on Windows (v1.30.15)
 
 First step of the approved distributed-inference plan: make the layer-split path

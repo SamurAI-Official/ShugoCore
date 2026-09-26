@@ -302,6 +302,26 @@ def _startup_say(agent, args) -> None:
             policy["response_target"] = args.response_target
         log.info("response target forced to %s", args.response_target)
     time.sleep(2.0)                          # let the peer dials settle
+    # A delegated action is judged against the *receiver's* election, which holds
+    # its previous lease holder until a heartbeat or two after a restart. Wait
+    # until this node is seen as primary by a live peer before addressing one --
+    # otherwise the first delegation of a fresh start is refused as "not the
+    # primary", which is exactly the transient we kept hitting.
+    deadline = time.monotonic() + 45.0
+    while time.monotonic() < deadline:
+        try:
+            election = getattr(agent, "mesh_election", None)
+            settled = (election is not None
+                       and str(election.tick().get("primary") or "")
+                       == str(agent.node_id)
+                       and len(election.live_peers()) >= 1)
+        except Exception:
+            settled = False
+        if settled:
+            break
+        time.sleep(1.0)
+    else:
+        log.warning("hive has not settled on this node as primary; speaking anyway")
     for spec in args.say:
         text, _, device = str(spec).partition("@")
         text, device = text.strip(), device.strip()

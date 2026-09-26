@@ -2150,11 +2150,15 @@ class AndroidAgent:
             except Exception:
                 primary = None
         if primary is None or str(primary) != peer:
-            self.log("MESH", f"refused delegated action from {peer}: not the "
-                             f"primary ({primary})", level="WARN")
+            # Say what this node believes, not just that it disagreed: a stale or
+            # empty election view is the usual cause, and naming it turns a
+            # mystery refusal into a diagnosis.
+            detail = (f"sender is not the primary (mine is "
+                      f"{primary or 'unknown'}, sender {peer})")
+            self.log("MESH", f"refused delegated action from {peer}: {detail}",
+                     level="WARN")
             self._mesh_reply(peer, {"id": (payload or {}).get("id"),
-                                    "status": "refused",
-                                    "reason": "sender is not the primary"})
+                                    "status": "refused", "reason": detail})
             return
         if not isinstance(payload, dict):
             return

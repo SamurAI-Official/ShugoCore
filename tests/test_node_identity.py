@@ -47,6 +47,16 @@ class LoadOrCreateTestCase(unittest.TestCase):
                              "shugo-mac")
             self.assertEqual(ni.read(tmp), "shugo-mac")
 
+    def test_an_explicit_choice_overrides_a_generated_name(self):
+        """A host told its identity adopts it; nothing silently renames a node."""
+        with tempfile.TemporaryDirectory() as tmp:
+            generated = ni.load_or_create(tmp, caps="desktop")
+            self.assertNotEqual(generated, "shugo-desktop")
+            self.assertEqual(
+                ni.load_or_create(tmp, suggested="shugo-desktop",
+                                  caps="desktop"), "shugo-desktop")
+            self.assertEqual(ni.read(tmp), "shugo-desktop")
+
     def test_generated_ids_are_unique_stable_and_suffixed(self):
         with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
             first = ni.load_or_create(a, caps="s5e8835")

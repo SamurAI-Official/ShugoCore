@@ -119,6 +119,89 @@ def usable_headroom(mem_available_bytes: Optional[int],
 
 
 
+# -- process liveness / RSS ---------------------------------------------------
+# Both the benchmark and the orchestrator need to ask "is that peripheral still
+# there, and how much is it holding?". The first version answered with `ps -p`,
+# which does not exist on Windows: the answer there was a traceback, not a
+# liveness check. These helpers are portable and never raise.
+
+_WAIT_TIMEOUT = 0x00000102
+
+
+def process_alive(pid) -> bool:
+    """True while a process id is live. Never raises."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000 | 0x00100000, False, pid)
+        if not handle:
+            return False
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) == _WAIT_TIMEOUT
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True                     # exists, just not ours to signal
+    except OSError:
+        return False
+    return True
+
+
+def process_rss_mb(pid) -> float:
+    """Resident set size of a process in MiB (0.0 when unmeasurable)."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return 0.0
+    if pid <= 0:
+        return 0.0
+    if os.name == "nt":
+        import ctypes
+
+        class _Counters(ctypes.Structure):
+            _fields_ = [("cb", ctypes.c_ulong),
+                        ("PageFaultCount", ctypes.c_ulong),
+                        ("PeakWorkingSetSize", ctypes.c_size_t),
+                        ("WorkingSetSize", ctypes.c_size_t),
+                        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                        ("PagefileUsage", ctypes.c_size_t),
+                        ("PeakPagefileUsage", ctypes.c_size_t)]
+
+        counters = _Counters()
+        counters.cb = ctypes.sizeof(_Counters)
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return 0.0
+        try:
+            ok = ctypes.windll.psapi.GetProcessMemoryInfo(
+                handle, ctypes.byref(counters), counters.cb)
+            if not ok:
+                return 0.0
+            return counters.WorkingSetSize / (1024.0 * 1024.0)
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        proc = subprocess.run(["ps", "-o", "rss=", "-p", str(pid)],
+                              capture_output=True, text=True, timeout=10)
+        return int((proc.stdout or "0").strip() or 0) / 1024.0
+    except Exception:
+        return 0.0
+
+
 def plan_layer_split(nodes: List[Dict[str, Any]], total_layers: int,
                      bytes_per_layer: int,
                      local_layers_min: int = 1) -> Dict[str, Any]:

@@ -123,6 +123,40 @@ The peripheral is real: after loading, the phone's `MemAvailable` fell 504 MB ->
 5. **Transport work** (the throughput unlock): measure USB `adb forward`,
    then evaluate RDMA/wired options before promising a speed win.
 
+## Building the host (Windows, MSVC)
+
+`scripts/build_llama_rpc.py` runs the whole thing; the commands used to live only
+in prose. It locates CMake/Ninja (the Android SDK's copies work as host tools),
+loads the MSVC environment through `vswhere`, records the submodule commit and
+the repo pin in `runtime/evidence/mesh_model_host/llama_build.txt`, and verifies
+the result:
+
+```powershell
+python scripts/build_llama_rpc.py --host            # llama-server + ggml-rpc-server
+python scripts/build_llama_rpc.py --android --ndk G:\Android\Sdk\ndk\27.0.12077973
+python scripts/build_llama_rpc.py --host --dry-run  # show what it would run
+```
+
+Three traps, each found by running it rather than reading it:
+
+1. **Static backends, not shared.** With ggml's shared/dynamic backends the first
+   Windows build produced a `llama-server.exe` that logged "failed to find
+   ggml_backend_init" for its own DLLs and could not offload. The host build now
+   sets `-DBUILD_SHARED_LIBS=OFF -DGGML_BACKEND_DL=OFF`; the Android peripheral
+   keeps the documented shared build.
+2. **`--list-devices` is not a working-build check** on a static build: it
+   reports `(none)` for a binary that then loads the model, holds 377 MB on a
+   peripheral and returns identical tokens. The builder gates on `--rpc` being
+   present in the server's help instead, and records the device list as
+   information.
+3. **The MSVC environment must be captured, not inlined.** `cmd /c "call …"` with
+   a quoted path does not survive Windows argv quoting, and `set` wraps long
+   values so `PATH` came back empty. The environment is now dumped to JSON from
+   inside the environment (`capture_msvc_env`).
+
+A linker error is usually a *running* previous build: `LNK1104: cannot open file
+'bin\ggml-rpc-server.exe'` means an old peripheral process still holds the file.
+
 ## Reproduce
 
 One command, end to end (starts the app's peripheral itself, prints the table

@@ -6,6 +6,36 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### Phase 0: the layer split builds and is measurable on Windows (v1.30.15)
+
+First step of the approved distributed-inference plan: make the layer-split path
+reproducible instead of a shell history, and answer the questions the KV phase
+depends on *before* designing it.
+
+- **`scripts/build_llama_rpc.py`** builds the host (`llama-server` +
+  `ggml-rpc-server`, static backends) and the arm64 peripheral from the pinned
+  submodule. It finds CMake/Ninja (the Android SDK's copies work as host tools)
+  and the MSVC environment via `vswhere`, records the checkout, the repo pin and
+  the source facts in `runtime/evidence/mesh_model_host/llama_build.txt`, and does
+  not call a build good until the server offers `--rpc`.
+- **The pinned llama.cpp has the KV APIs Phase 2 needs**
+  (`llama_state_seq_save_file` / `_load_file`, `--slot-save-path`), so parking a
+  sequence's state on a peripheral is supported rather than a gamble.
+- **Measured on Windows over loopback** (`runtime/evidence/mesh_model_host/loopback_measurement.md`):
+  with all 24 layers of a 0.5B on a peripheral, host RSS falls **537 -> 170 MB**
+  while the peripheral holds **377 MB**, and the tokens are **identical** to local
+  greedy decode. With mmap the host keeps the GGUF mapped, so the win is visible
+  only with `--no-mmap`.
+- **`mesh_rpc.process_alive` / `process_rss_mb`**: the benchmark asked "is the
+  peripheral still there?" with `ps -p`, which does not exist on Windows -- it
+  raised instead of reporting. Portable now, so the bench runs here.
+
+Four traps, each found by running the thing rather than reading it: shared/dynamic
+ggml backends produce a server that cannot offload (static now);
+`--list-devices` is not a working-build check for a static build; `cmd /c "call …"`
+cannot carry a quoted path and `set` wraps `PATH` away; and `LNK1104` on
+`bin\ggml-rpc-server.exe` means an old peripheral process still holds the file.
+
 ### A failed delegated action says why (v1.30.14)
 
 The A51 accepted the primary's delegated `speak` and then reported `error` with

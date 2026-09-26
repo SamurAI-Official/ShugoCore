@@ -67,6 +67,13 @@ def load_or_create(data_dir: str, *, suggested: Optional[str] = None,
     """
     stored = read(data_dir)
     if stored:
+        # An explicit choice is the operator speaking: it wins over a stored (or
+        # previously generated) name, because a host that is told its identity
+        # must adopt it -- otherwise renaming a host silently renames the node.
+        choice = sanitize(suggested) if suggested else None
+        if choice and choice != stored:
+            _persist(data_dir, choice)
+            return choice
         return stored
     if suggested:
         node_id = sanitize(suggested)

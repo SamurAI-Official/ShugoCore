@@ -639,6 +639,13 @@ class ShugonetAgentRuntime:
         if not isinstance(payload, dict):
             return
         node_id = str(payload.get("node_id") or msg.get("from") or "").strip()
+        sender = str(msg.get("from") or "").strip()
+        if sender and sender == self.agent_id:
+            # A peer answering to our own name: every election that sees both
+            # frames will merge them into one record, so one of the two nodes
+            # must be renamed. Warn (once per sender) rather than ignore it.
+            logger.warning("shugonet: another node is advertising my identity "
+                           "(%s); one node must be renamed", sender)
         if not node_id:
             return
         record = dict(payload)

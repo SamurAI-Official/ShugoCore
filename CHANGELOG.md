@@ -6,6 +6,34 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### One identity per node (v1.30.10)
+
+**The defect.** A node had two names: the mesh id it *self-declared* -- derived
+from device capabilities, e.g. `android-Unknown (s5e8835)`, a string with spaces,
+parentheses and a SoC token two devices can share -- and the name its peers
+*dialled* it by (`shugo-tab`, from their peer maps). Nothing could address a node
+by the name it answered to: delegated work and response routing aimed at a name
+that was not in `_outbound` ("unknown peer"), and two devices reporting the same
+SoC would have collided and shadowed each other in every election.
+
+**The fix.** `node_identity.py` is the single source of truth: a short,
+filesystem/CLI-safe id persisted as `<data-dir>/node_id.txt`, adopted on every
+start, used as the election node id, the transport agent id **and** the dial name.
+Precedence is stored id, then an explicit `mesh_node_id`, then
+`shugo-<caps>-<random>` -- the suffix is what makes an automatically named node
+unique, because capability strings are not. Both layers now also *detect* a
+duplicate: a heartbeat claiming our own identity logs a loud error in the agent and
+a warning in the transport instead of being silently ignored.
+
+**Migration.** Each phone's name was pre-written as the name it is already dialled
+by (`shugo-tab`, `shugo-a51`, `shugo-a16`), so no peer map changed: identity and
+dial name are now the same string by construction, which is what makes a node
+addressable by a peer that only knows one of them.
+
+Tests: 10 new -- sanitize (including the old capability form), persistence,
+adoption of a stored id, uniqueness across data dirs, an unwritable data dir, and
+that the agent actually uses the stored id for the election *and* the transport.
+
 ### Unknown headroom is not zero headroom (a Mac could not join the hive)
 
 The Mac joined the mesh and advertised every 10 s, but never appeared as a

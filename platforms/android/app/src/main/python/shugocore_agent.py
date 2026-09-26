@@ -135,6 +135,18 @@ class AndroidAgent:
         # this, MemoryManager/DecisionEngine fail to open their SQLite files
         # and the whole agent construction throws.
         self.data_dir = data_dir
+        # v1.30.10: one identity per device. The same string is the election node
+        # id, the transport agent id and the name peers dial, so a node can be
+        # addressed by the name it answers to (delegated work, response routing).
+        # Persisted in the data dir, so a restart or upgrade keeps the name; an
+        # explicitly passed mesh_node_id wins over generation.
+        try:
+            from node_identity import load_or_create as _load_identity
+            self.node_id = _load_identity(self.data_dir, suggested=mesh_node_id,
+                                          caps=self.device_caps)
+        except Exception:
+            self.node_id = (mesh_node_id
+                            or f"shugo-{self.device_caps or 'android'}")
         # v1.30.4: bearer token for the desktop server (paired with
         # desktop_api_url). Empty / None means no token; the local llama.cpp
         # server is open, so the token is opt-in. Stored only on this
@@ -187,7 +199,7 @@ class AndroidAgent:
         if _HAS_MESH_ELECTION:
             try:
                 self.mesh_election = MeshElection(
-                    node_id=mesh_node_id or f"android-{self.device_caps}",
+                    node_id=self.node_id,
                     priority=mesh_priority)
             except Exception:
                 self.mesh_election = None
@@ -847,7 +859,7 @@ class AndroidAgent:
             # mesh instead of an ADB cable.
             share_dir, stage_dir = AndroidAgent._mesh_artifact_dirs(self.data_dir)
             self.shugonet_runtime = ShugonetAgentRuntime(
-                agent_id=f"shugo-{self.device_caps or 'android'}",
+                agent_id=self.node_id,
                 host="0.0.0.0", port=mesh_port,
                 memory=shugonet_memory,
                 fallback_controller=shugonet_fallbacks,
@@ -1758,7 +1770,13 @@ class AndroidAgent:
         node_id = str(payload.get("node_id") or "").strip()
         if not node_id:
             return
-        if node_id == getattr(self.mesh_election, "node_id", None):
+        if node_id == getattr(self, "node_id", None):
+            # Another node is advertising THIS node's identity. It would shadow
+            # us in every peer's election (and in ours), so say so loudly rather
+            # than silently ignoring the frame.
+            self.log("MESH", f"another node is advertising my identity "
+                             f"({node_id}); one node must be renamed",
+                     level="ERROR")
             return
         peers = self.telemetry.get("mesh_peers")
         if not isinstance(peers, list):
@@ -2016,7 +2034,8 @@ class AndroidAgent:
         election = self.mesh_election
         candidates = [{
             "device_id": (election.node_id if election is not None
-                          else f"shugo-{self.device_caps or 'node'}"),
+                          else getattr(self, "node_id", None)
+                          or f"shugo-{self.device_caps or 'node'}"),
             "facts": self_facts,
             "can_speak": self._speak_listener is not None,
             "is_self": True,

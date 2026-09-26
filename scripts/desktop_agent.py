@@ -61,6 +61,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from shugocore_agent import create_agent  # noqa: E402
+from node_identity import load_or_create as _load_identity  # noqa: E402
 from fleet_deploy import (  # noqa: E402
     FleetDeployHandler,
     SubprocessAdbRunner,
@@ -338,7 +339,7 @@ def main(argv=None) -> int:
     if args.artifact_dir:
         os.environ["SHUGOCORE_ARTIFACT_DIR"] = str(args.artifact_dir)
 
-    mesh_id = args.mesh_node_id or f"shugo-{caps}"
+    mesh_id = args.mesh_node_id or _load_identity(str(data_dir), caps=caps)
     log.info("booting node: mesh id '%s' (election prio %s), data dir %s",
              mesh_id, args.mesh_priority, data_dir)
     agent = create_agent(device_caps=caps, api_url=args.api_url,

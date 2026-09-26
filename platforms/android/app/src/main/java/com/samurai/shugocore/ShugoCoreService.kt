@@ -54,6 +54,15 @@ class ShugoCoreService : Service() {
     private var ttsProvider: TtsProvider? = null
     private var meshManager: DeviceMeshManager? = null
     @Volatile private var agentRunning = false
+    // One agent per process. onStartCommand is START_STICKY and every
+    // startService (activity, boot receiver, UI Start) schedules the bootstrap,
+    // and initializeInference() had no "already bootstrapped" guard -- so each
+    // call built a SECOND AndroidAgent inside the same Chaquopy interpreter:
+    // two tick loops (duplicate counters in logcat), two SQLite connections
+    // ("database is locked" on every tick) and a mesh runtime whose second bind
+    // failed with EADDRINUSE. The lock serialises concurrent starts; the
+    // pyAgent check makes a repeat call a no-op.
+    private val bootstrapLock = Any()
     private val lastLogSeq = java.util.concurrent.atomic.AtomicInteger()
     private val lastLogSeqSeedDone = java.util.concurrent.atomic.AtomicBoolean()
     @Volatile private var lastCapsSignature = ""
@@ -191,7 +200,7 @@ class ShugoCoreService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "Service started")
         startForeground(1, buildNotification("Initializing ShugoCore..."))
-        executor.execute { initializeInference() }
+        executor.execute { maybeInitializeInference() }
         executor.scheduleAtFixedRate({
             try {
                 // Control-plane housekeeping runs even while the agent is
@@ -282,6 +291,25 @@ class ShugoCoreService : Service() {
     }
 
     
+    /**
+     * Boot the Python agent exactly once per service process.
+     *
+     * Holds [bootstrapLock] for the whole (slow) bootstrap so two concurrent
+     * startService calls cannot both pass the check, and treats an existing
+     * [pyAgent] as proof the agent is up (reporting [agentRunning] true again so
+     * a duplicate call cannot leave the flag inconsistent).
+     */
+    private fun maybeInitializeInference() {
+        synchronized(bootstrapLock) {
+            if (pyAgent != null) {
+                Log.i(TAG, "agent already bootstrapped; ignoring duplicate bootstrap")
+                agentRunning = true
+                return
+            }
+            initializeInference()
+        }
+    }
+
     private fun initializeInference() {
         try {
             val caps = capabilityDetector?.detect()

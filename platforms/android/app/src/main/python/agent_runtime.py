@@ -59,6 +59,15 @@ _HEARTBEAT_INTERVAL = 10.0
 _MAX_CLIENT_THREADS = 16  # hard cap on concurrent inbound client handlers
 
 
+def _encode_frame(message: Dict[str, Any]) -> bytes:
+    """Serialize one frame the way every peer expects (sorted keys + newline).
+
+    Shared by outbound connections and by advertisements pushed down an
+    *accepted* socket, so both directions speak byte-identical NDJSON.
+    """
+    return (json.dumps(message, sort_keys=True) + "\n").encode("utf-8")
+
+
 class _PeerConnection:
     """A single TCP connection to a peer, sending NDJSON messages."""
 
@@ -104,7 +113,7 @@ class _PeerConnection:
             if not self._connected or self.sock is None:
                 return False
             try:
-                data = (json.dumps(message, sort_keys=True) + "\n").encode("utf-8")
+                data = _encode_frame(message)
                 self.sock.sendall(data)
                 return True
             except Exception as exc:
@@ -581,26 +590,28 @@ class ShugonetAgentRuntime:
 
         The provider is consulted every interval instead of captured once, so
         the agent may wire the election after ``start()`` and a thermal change is
-        reflected on the next beat. The first cycle logs once -- either the
-        advertisement went out (with the peer count) or the provider had nothing
-        to say -- because a silently inert producer is exactly the failure this
-        transport was added to fix.
+        reflected on the next beat. The *first successful* advertisement logs
+        once, and an empty first cycle logs once too: a one-shot log keyed to the
+        very first cycle went silent for good when the mesh came up seconds later
+        than the agent, which is how a phone that was advertising perfectly well
+        looked inert in the fleet logs.
         """
         announced = False
+        explained = False
         while not self._stop_event.wait(self._heartbeat_interval):
             try:
                 sent = self.broadcast_heartbeat()
             except Exception as exc:
                 logger.warning("heartbeat broadcast failed: %s", exc)
                 continue
-            if announced:
-                continue
-            announced = True
             if sent:
-                logger.info("mesh heartbeat: advertising to %d peer(s) "
-                            "every %.0fs", sent, self._heartbeat_interval)
-            else:
-                logger.info("mesh heartbeat: nothing to advertise "
+                if not announced:
+                    announced = True
+                    logger.info("mesh heartbeat: advertising to %d peer(s) "
+                                "every %.0fs", sent, self._heartbeat_interval)
+            elif not explained:
+                explained = True
+                logger.info("mesh heartbeat: nothing to advertise yet "
                             "(provider=%s, peers=%d)",
                             self._heartbeat_provider is not None,
                             len(self._outbound))

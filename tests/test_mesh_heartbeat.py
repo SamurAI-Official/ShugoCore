@@ -130,6 +130,50 @@ class MeshHeartbeatTransportTestCase(unittest.TestCase):
         self.assertEqual(self.a.broadcast_heartbeat(), 0)
 
 
+class HeartbeatLoopLoggingTestCase(unittest.TestCase):
+    """The advertisement loop must explain itself even when it starts early.
+
+    A node boots, starts advertising on its own cadence, and only then does the
+    mesh come up (the phones dial their peers seconds later). Reporting the
+    first cycle once and never again meant a phone that was advertising
+    perfectly well never appeared in the log -- read as an inert producer.
+    """
+
+    def setUp(self):
+        self.peer = ShugonetAgentRuntime(agent_id="shugo-desktop",
+                                        host="127.0.0.1", port=_free_port(),
+                                        heartbeat_interval=0)
+        self.peer.start()
+
+    def tearDown(self):
+        self.peer.stop()
+
+    def test_late_peer_is_announced_after_an_empty_start(self):
+        runtime = ShugonetAgentRuntime(agent_id="android-gts9fe",
+                                      host="127.0.0.1", port=_free_port(),
+                                      heartbeat_interval=0.05)
+        runtime.set_heartbeat_provider(
+            lambda: {"node_id": "android-gts9fe", "priority": 500,
+                     "mem_available_bytes": _COMFORTABLE_MEM})
+        try:
+            with self.assertLogs("agent_runtime", level="INFO") as early:
+                runtime.start()
+                self.assertTrue(_wait_for(
+                    lambda: any("nothing to advertise yet" in line
+                                for line in early.output), timeout=3.0),
+                    "the empty first cycles were never explained")
+            with self.assertLogs("agent_runtime", level="INFO") as late:
+                runtime.add_peer("shugo-desktop", "127.0.0.1",
+                                 self.peer.status()["port"])
+                self.assertTrue(_wait_for(
+                    lambda: (runtime.reconnect_peers() >= 1
+                             and any("advertising to 1 peer(s)" in line
+                                     for line in late.output)), timeout=5.0),
+                    "the advertisement that finally went out was not logged")
+        finally:
+            runtime.stop()
+
+
 class HeartbeatDispatchTestCase(unittest.TestCase):
     """Wire-level behaviour of one inbound frame (no sockets)."""
 

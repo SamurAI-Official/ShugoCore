@@ -6,6 +6,52 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### The duplicate agent: one service process built two of them
+
+The Tab logged two `SHUGONET: runtime started` lines and two tick counters,
+every tick failed with "database is locked", and the mesh runtime's second bind
+died with EADDRINUSE.
+
+`onStartCommand` is `START_STICKY` and schedules `initializeInference()` on
+*every* `startService`, and that function had no "already bootstrapped" guard --
+so each call built a second `AndroidAgent` inside the same Chaquopy interpreter:
+two tick loops, two SQLite connections, two mesh binds. The activity, the boot
+receiver and the UI Start button all reach that path, so it was a matter of
+when, not if.
+
+Bootstrap now goes through `maybeInitializeInference()`, which holds
+`bootstrapLock` for the whole (slow) bootstrap and returns early when `pyAgent
+!= null` -- concurrent starts cannot both pass the check, and a repeat call is a
+no-op that repairs `agentRunning` instead of leaving it stale.
+`tests/test_android_agent_singleton.py` asserts the invariant against the source
+(there is no Kotlin test harness), including that `initializeInference()` keeps
+exactly one call site.
+
+### The fleet token, and a heartbeat log that hid a healthy node
+
+Bringing the real four-node hive up surfaced two things the loopback tests could
+not:
+
+1. **A Python-only node must present the mesh token.** `_accepts()` refuses any
+   frame without one when the runtime was built with an `auth_token`, and the
+   phones are token-gated, so the desktop's unstamped advertisements were
+   answered with `shugonet refused malformed message` every 10 s while the
+   phones stayed followers of *each other*. A host joins the hive by supplying
+   the fleet secret through `SHUGOCORE_MESH_TOKEN` or
+   `<data-dir>/mesh_token.txt` -- the same precedence `_load_mesh_token()`
+   already used on Android.
+2. **The advertisement loop's first-cycle-only log lied.** The loop logged
+   either its first cycle or nothing, so a node whose peers connected a few
+   seconds *after* it booted (exactly how the phones come up) advertised
+   perfectly and never said so -- read here as an inert producer. The first
+   *successful* advertisement now logs, and an empty first cycle logs once too,
+   so "silent" and "not advertising" can be told apart in the fleet logs.
+
+With both fixed the live hive converged: the desktop reports
+`role=primary mesh_peers=2 beats=2` and the phones refuse nothing, electing
+`primary='shugo-desktop'`. The Mac remains the only node without heartbeats (it
+still runs the pre-heartbeat bundle), which is why it is not yet a live peer.
+
 ### Track 1 election: heartbeats over the mesh, and why every node said 'standalone'
 
 Every node in the hive honestly reported `role=standalone`. Getting to the bottom

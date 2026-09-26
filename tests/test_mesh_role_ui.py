@@ -12,7 +12,10 @@ JAVA = os.path.join(ROOT, "platforms", "android", "app", "src", "main",
 
 
 def read(relpath: str) -> str:
-    with open(os.path.join(JAVA, relpath)) as fh:
+    # Explicit UTF-8: the Kotlin sources contain non-ASCII glyphs, and the
+    # Windows default codec (cp1252) raises UnicodeDecodeError on them, which
+    # turned this guard into a platform-specific failure.
+    with open(os.path.join(JAVA, relpath), encoding="utf-8") as fh:
         return fh.read()
 
 

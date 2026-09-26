@@ -159,11 +159,17 @@ def _status_line(agent, runtime, ticks) -> str:
     declared = (telemetry.get("mesh_peers")
                 if isinstance(telemetry, dict) else None)
     heard = (mesh.get("heartbeat") or {}).get("heard")
+    # `beats` is how many peers have *ever* been heard (a distinct-node count),
+    # so it cannot show whether the hive is live right now; `rx` counts every
+    # advertisement frame received, which is what proves a peer is still
+    # advertising after a redeploy or a peer restart.
+    rx = stats.get("heartbeats_received")
+    tx = stats.get("heartbeats_sent")
     return (f"tick {ticks} | cycles={loop.get('cycles')} "
             f"rate={loop.get('success_rate')} | node={lease.get('node_id', '?')} "
             f"prio={lease.get('priority', '?')} role={status.get('mesh_role', '?')} "
             f"primary={status.get('mesh_primary')} connected={len(connected)} "
-            f"mesh_peers={len(declared or [])} beats={heard} "
+            f"mesh_peers={len(declared or [])} beats={heard} rx={rx} tx={tx} "
             f"imported={stats.get('imported')}")
 
 

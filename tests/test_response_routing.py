@@ -8,6 +8,7 @@ node that has one, only the primary may direct another node, and an inbound
 import os
 import socket
 import sys
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -285,6 +286,90 @@ class InboundSendTransportTestCase(unittest.TestCase):
         finally:
             sender.stop()
             listener.stop()
+
+
+class AdvertisementCarriesPresenceTestCase(unittest.TestCase):
+    """A device's advertisement must say where it is and whether it can speak.
+
+    The primary measures proximity from what each node advertises. A device that
+    sees the operator but never says so is invisible to the router, and the hive
+    answers a person standing in front of a phone with silence.
+    """
+
+    def _advertising_node(self, node_id, human, can_speak=True):
+        from mesh_election import MeshElection
+        agent = _probe_agent(node_id=node_id, primary="shugo-desktop")
+        agent.node_id = node_id
+        agent.mesh_election = MeshElection(node_id, priority=500)
+        agent.last_observation = {"human": human}
+        if can_speak:
+            agent._speak_listener = _Speaker()
+        return agent
+
+    def test_the_advertisement_carries_presence_and_speaker_capability(self):
+        tab = self._advertising_node("shugo-tab", {
+            "face_count": 1, "gaze_toward_camera": True,
+            "speech_source": "instruction_directed", "speech_recent": True})
+        payload = tab._mesh_heartbeat_payload()
+        self.assertTrue(payload["can_speak"])
+        self.assertEqual(payload["remote_face_count"], 1)
+        self.assertTrue(payload["remote_face_present"])
+        self.assertTrue(payload["remote_gaze_toward_camera"])
+        self.assertEqual(payload["remote_speech_source"], "instruction_directed")
+
+    def test_a_device_that_perceived_nothing_advertises_no_presence(self):
+        quiet = self._advertising_node(
+            "shugo-a16", {"face_count": 0, "speech_source": "none"})
+        payload = quiet._mesh_heartbeat_payload()
+        self.assertNotIn("remote_gaze_toward_camera", payload)
+        self.assertFalse(any(key.startswith("remote_speech_source")
+                             and payload[key] not in ("", "none")
+                             for key in payload))
+
+    def test_the_hub_places_a_peer_from_its_advertisement(self):
+        hub = _probe_agent(node_id="shugo-desktop")
+        hub.node_id = "shugo-desktop"
+        tab = self._advertising_node("shugo-tab", {
+            "face_count": 1, "gaze_toward_camera": True,
+            "speech_source": "instruction_directed"})
+        hub._mesh_heartbeat_received(tab._mesh_heartbeat_payload())
+        peers = hub.telemetry["mesh_peers"]
+        self.assertEqual(peers[0]["device_id"], "shugo-tab")
+        self.assertTrue(peers[0]["can_speak"])
+        self.assertTrue(peers[0]["remote_face_present"])
+        self.assertTrue(hub._peer_tts["shugo-tab"])
+        # The tick folds the merged advertisements into the observation, which is
+        # what the router reads; do the same step here.
+        hub.last_observation = {"mesh_peers": peers}
+        chosen, why = hub.select_response_node()
+        self.assertEqual(chosen["device_id"], "shugo-tab")
+        self.assertIn("closest to the operator", why)
+
+    def test_a_peer_that_reports_no_speaker_is_never_the_mouth(self):
+        hub = _probe_agent(node_id="shugo-desktop")
+        hub.node_id = "shugo-desktop"
+        mute = self._advertising_node("shugo-mac", {
+            "face_count": 1, "speech_source": "instruction_directed"},
+            can_speak=False)
+        hub._mesh_heartbeat_received(mute._mesh_heartbeat_payload())
+        hub.last_observation = {"mesh_peers": hub.telemetry["mesh_peers"]}
+        chosen, why = hub.select_response_node()
+        self.assertIsNone(chosen)
+        self.assertIn("no device reports speech output", why)
+
+    def test_stale_advertisements_stop_placing_a_peer(self):
+        hub = _probe_agent(node_id="shugo-desktop")
+        hub.node_id = "shugo-desktop"
+        tab = self._advertising_node("shugo-tab", {"face_count": 1})
+        payload = tab._mesh_heartbeat_payload()
+        payload["received_at"] = None
+        hub._mesh_heartbeat_received(payload)
+        peers = hub.telemetry["mesh_peers"]
+        peers[0]["received_at"] = time.time() - 120      # two minutes ago
+        hub.last_observation = {"mesh_peers": peers}
+        chosen, why = hub.select_response_node()
+        self.assertIsNone(chosen)
+        self.assertIn("nobody reports the operator present", why)
 
 
 if __name__ == "__main__":

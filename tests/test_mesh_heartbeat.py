@@ -229,6 +229,7 @@ class AgentHeartbeatWiringTestCase(unittest.TestCase):
     def _dummy(election):
         class _Dummy:
             _mesh_mem_headroom = AndroidAgent._mesh_mem_headroom
+            _mesh_perception_facts = AndroidAgent._mesh_perception_facts
             _mesh_heartbeat_payload = AndroidAgent._mesh_heartbeat_payload
             _mesh_heartbeat_received = AndroidAgent._mesh_heartbeat_received
             _mesh_heartbeat_tick = AndroidAgent._mesh_heartbeat_tick

@@ -70,6 +70,12 @@ _ORCH_MIN_BATTERY_PCT = 15
 DELEGATE_TOPIC = "orchestrate/delegate"
 DELEGATE_RESULT_TOPIC = "orchestrate/result"
 DELEGATABLE_ACTIONS = ("speak", "ask_user")
+# What a node advertises over the mesh so the primary can measure which device is
+# closest to the operator. Only facts a node actually perceived are sent: a device
+# that saw nothing reports nothing rather than a guess.
+MESH_PERCEPTION_KEYS = ("face_count", "face_present", "gaze_toward_camera",
+                        "voice_active", "speech_source", "speech_recent",
+                        "utterance_age_s")
 _DELEGATE_LOCK = threading.Lock()
 PIPELINE_STAGES = ("OBSERVE", "VERIFY_ATTENTION", "GATE", "DECIDE",
                    "EXECUTE", "EVALUATE", "RECORD", "CONSOLIDATE")
@@ -1719,6 +1725,37 @@ class AndroidAgent:
         except Exception:
             return 0
 
+    def _mesh_perception_facts(self) -> Dict[str, Any]:
+        """The perception facts this node contributes to its advertisement.
+
+        Sent under the ``remote_*`` spelling the Android shell already streams,
+        so whichever transport carried the advertisement the router needs only
+        one spelling. Without these the primary scores every device at zero and
+        stays silent even with an operator standing in front of a phone.
+        """
+        observation = (self.last_observation
+                       if isinstance(getattr(self, "last_observation", None), dict)
+                       else {})
+        human = (observation.get("human")
+                 if isinstance(observation.get("human"), dict) else {})
+        telemetry = getattr(self, "telemetry", None)
+        if not isinstance(telemetry, dict):
+            telemetry = {}
+        facts: Dict[str, Any] = {}
+        for key in MESH_PERCEPTION_KEYS:
+            value = human.get(key, telemetry.get(key))
+            if value is None or value == "":
+                continue
+            facts[f"remote_{key}"] = value
+        # State the face verdict explicitly rather than leaving it to be inferred
+        # from the count: "I am looking at a person" is the single most useful
+        # fact the router can receive, and it should not depend on a spelling.
+        if "remote_face_present" not in facts:
+            count = facts.get("remote_face_count")
+            if isinstance(count, (int, float)):
+                facts["remote_face_present"] = int(count) > 0
+        return facts
+
     def _mesh_heartbeat_payload(self) -> Dict[str, Any]:
         """The advertisement THIS node publishes over the ShugoNet mesh.
 
@@ -1752,6 +1789,9 @@ class AndroidAgent:
                 # never to one without).
                 payload["can_speak"] = (getattr(self, "_speak_listener", None)
                                         is not None)
+                # Where this device is relative to the operator, as measured by
+                # its own camera and microphone.
+                payload.update(self._mesh_perception_facts())
             return payload
         except Exception as exc:
             self.log("MESH", f"heartbeat payload failed: {exc}", level="WARN")
@@ -1807,7 +1847,22 @@ class AndroidAgent:
             "paired": payload.get("paired", True),
             "seq": payload.get("seq", 0),
             "source": "mesh",
+            "received_at": time.time(),
         }
+        # Carry what the advertisement said about being a mouth and about who it
+        # can see. Without these the router treats every peer as a speaker and as
+        # a device with nobody standing in front of it -- which is exactly the
+        # silence an operator sees when the hive should answer through the phone
+        # in their hand.
+        can_speak = payload.get("can_speak")
+        if can_speak is not None:
+            entry["can_speak"] = bool(can_speak)
+            peer_tts = getattr(self, "_peer_tts", None)
+            if isinstance(peer_tts, dict):
+                peer_tts[node_id] = bool(can_speak)
+        for key, value in payload.items():
+            if str(key).startswith("remote_"):
+                entry[key] = value
         merged = [p for p in peers
                   if str(p.get("device_id") or p.get("node_id") or "") != node_id]
         merged.append(entry)
@@ -2066,11 +2121,19 @@ class AndroidAgent:
             if not device:
                 continue
             age = peer.get("age_s")
+            if not isinstance(age, (int, float)):
+                # Facts decay: a face seen two minutes ago does not mean the
+                # operator is standing there now, so age them from the moment the
+                # advertisement arrived when the peer did not stamp one itself.
+                received = peer.get("received_at")
+                if isinstance(received, (int, float)):
+                    age = max(0.0, time.time() - float(received))
             candidates.append({
                 "device_id": device,
                 "facts": {k: v for k, v in peer.items()
                           if str(k).startswith("remote_")},
-                "can_speak": bool(peer_tts.get(device, True)),
+                "can_speak": bool(peer.get("can_speak",
+                                          peer_tts.get(device, True))),
                 "is_self": False,
                 "priority": int(peer.get("priority", 500) or 500),
                 "age_s": age if isinstance(age, (int, float)) else None,

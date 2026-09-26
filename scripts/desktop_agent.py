@@ -315,6 +315,13 @@ def _startup_say(agent, args) -> None:
     # until this node is seen as primary by a live peer before addressing one --
     # otherwise the first delegation of a fresh start is refused as "not the
     # primary", which is exactly the transient we kept hitting.
+    #
+    # A *routed* answer needs one more thing: the observation must list the peers,
+    # because the router scores their facts. A node that just booted has an
+    # election verdict before its first observation, so the first routed
+    # utterance used to answer "no device reports speech output" while the phones
+    # were plainly able to speak.
+    routed = [spec for spec in args.say if "@" not in str(spec)]
     deadline = time.monotonic() + 45.0
     while time.monotonic() < deadline:
         try:
@@ -323,6 +330,9 @@ def _startup_say(agent, args) -> None:
                        and str(election.tick().get("primary") or "")
                        == str(agent.node_id)
                        and len(election.live_peers()) >= 1)
+            if settled and routed:
+                candidates = agent._response_candidates()
+                settled = any(not c.get("is_self") for c in candidates)
         except Exception:
             settled = False
         if settled:

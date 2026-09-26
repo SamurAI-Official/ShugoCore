@@ -6,6 +6,35 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### The nearest device can now be found: presence is advertised (v1.30.12)
+
+The routed path -- "the primary decides the words, the device closest to the
+operator says them" -- could not choose a phone at all. Two independent gaps, both
+found by measuring the live hive rather than reading the code:
+
+1. **No node advertised where it was.** A node's advertisement carried identity,
+   priority, thermal state, headroom and `can_speak` -- and nothing about the
+   operator. The primary scored every device at `0.00`, so even with the operator
+   standing in front of the Tab the honest answer was "nobody reports the operator
+   present" and the hive stayed silent. Nodes now advertise what they actually
+   perceived (`remote_face_present`, `remote_face_count`,
+   `remote_gaze_toward_camera`, `remote_voice_active`, `remote_speech_source`,
+   `remote_speech_recent`, `remote_utterance_age_s`) under the same spelling the
+   Android shell already streams, so one spelling reaches the router whichever
+   transport delivered it. Nothing observed means nothing advertised.
+2. **`can_speak` was dead data.** Devices advertised it; nothing read it, so a
+   peer with no speaker was treated as a mouth. The receiving node now records it
+   on the peer entry and in `_peer_tts`, and the router consults it, which is what
+   the routing contract always claimed.
+
+Two smaller corrections in the same path: the age of a peer's facts is now derived
+from when the advertisement arrived (so evidence decays even when the peer stamps
+no age, and a face seen two minutes ago stops placing a device), and a **routed**
+`--say` waits for the observation to list the peers, not just for the election to
+settle -- a hub that had just booted had a verdict before its first tick and
+answered the first utterance with "no device reports speech output" while the
+phones could plainly speak.
+
 ### A mesh advertisement is authoritative for the receiver's own verdict (v1.30.11)
 
 Delegated work was dispatched correctly and then refused: the receiver answered

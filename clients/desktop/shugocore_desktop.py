@@ -69,6 +69,15 @@ BACKENDS = [
 
 KEY_BACKENDS = [b for b in BACKENDS if b["transport"] == "openai"]
 
+# Consent-gated action types offered as quick picks in the SECURITY pane. A
+# convenience list only: the node validates every grant against `policy`'s
+# consent-gated families and refuses anything outside them.
+CONSENT_QUICK_PICKS = (
+    "network_send", "network_query", "network_sync", "fleet_deploy",
+    "api_call", "database_update", "hardware_interaction",
+    "mobile_request_compute", "robot_navigate",
+)
+
 
 def backend_by_label(label: str) -> dict:
     for spec in BACKENDS:
@@ -835,6 +844,28 @@ class DesktopUI(tk.Tk):
         self.sec_rows["baseline"] = ttk.Label(baseline, text="-",
                                               wraplength=900, justify="left")
         self.sec_rows["baseline"].pack(anchor="w")
+        consent = self._section(parent, "Operator consent (Track 1)")
+        row = ttk.Frame(consent)
+        row.pack(anchor="w")
+        ttk.Label(row, text="Action").pack(side="left")
+        self.var_consent_action = tk.StringVar(value="network_send")
+        ttk.Combobox(row, textvariable=self.var_consent_action, width=26,
+                     values=CONSENT_QUICK_PICKS).pack(side="left", padx=6)
+        ttk.Label(row, text="TTL (s)").pack(side="left")
+        self.var_consent_ttl = tk.StringVar(value="")
+        ttk.Entry(row, textvariable=self.var_consent_ttl, width=8).pack(
+            side="left", padx=6)
+        ttk.Button(row, text="Grant", command=self._grant_consent).pack(
+            side="left", padx=(2, 4))
+        ttk.Button(row, text="Revoke", command=self._revoke_consent).pack(
+            side="left")
+        self.sec_rows["consent_msg"] = ttk.Label(
+            consent, text="blank TTL = no expiry; grants are operator-issued",
+            wraplength=900, justify="left")
+        self.sec_rows["consent_msg"].pack(anchor="w")
+        self.sec_rows["grants"] = ttk.Label(consent, text="-", wraplength=900,
+                                            justify="left")
+        self.sec_rows["grants"].pack(anchor="w")
 
     def _verify_audit(self) -> None:
         path = os.path.join(self.var_datadir.get().strip(), "audit_chain.jsonl")
@@ -847,6 +878,85 @@ class DesktopUI(tk.Tk):
         except Exception as exc:
             self.sec_rows["audit_check"].config(
                 text=f"verify failed: {exc}", foreground="#b3261e")
+
+    # -- operator consent (SECURITY pane) --------------------------------
+
+    def _consent_registry(self):
+        """The registry the decision gate consults (engine registry first)."""
+        engine = getattr(self.agent, "engine", None)
+        return (getattr(engine, "consents", None)
+                or getattr(self.agent, "consents", None))
+
+    def _consent_note(self, text: str, error: bool = False) -> None:
+        label = self.sec_rows.get("consent_msg")
+        if label is not None:
+            label.config(text=text,
+                         foreground="#b3261e" if error else "#137333")
+
+    def _grant_consent(self) -> None:
+        action = self.var_consent_action.get().strip()
+        ttl_raw = self.var_consent_ttl.get().strip()
+        ttl = None
+        if ttl_raw:
+            try:
+                ttl = float(ttl_raw)
+            except ValueError:
+                self._consent_note("TTL must be a number of seconds",
+                                   error=True)
+                return
+            if ttl <= 0:
+                self._consent_note("TTL must be positive", error=True)
+                return
+        registry = self._consent_registry()
+        if registry is None:
+            self._consent_note("this node has no consent registry",
+                               error=True)
+            return
+        try:
+            registry.grant(
+                action_type=action, granted_by="desktop-ui",
+                note="operator grant from the desktop control plane",
+                ttl_seconds=ttl)
+        except Exception as exc:
+            self._consent_note(f"grant failed: {exc}", error=True)
+            return
+        self._consent_note(f"granted '{action}'"
+                           + (f" for {ttl:g}s" if ttl else " (no expiry)"))
+        self._refresh_grants()
+
+    def _revoke_consent(self) -> None:
+        action = self.var_consent_action.get().strip()
+        registry = self._consent_registry()
+        if registry is None:
+            self._consent_note("this node has no consent registry",
+                               error=True)
+            return
+        try:
+            removed = int(registry.revoke(action))
+        except Exception as exc:
+            self._consent_note(f"revoke failed: {exc}", error=True)
+            return
+        self._consent_note(f"revoked {removed} grant(s) for '{action}'")
+        self._refresh_grants()
+
+    def _refresh_grants(self) -> None:
+        label = self.sec_rows.get("grants")
+        registry = self._consent_registry()
+        if label is None or registry is None:
+            return
+        try:
+            snapshot = registry.grants() or {}
+        except Exception as exc:
+            label.config(text=f"grants unavailable: {exc}",
+                         foreground="#b3261e")
+            return
+        if not snapshot:
+            label.config(text="no grants in force - consent-gated actions are "
+                              "refused (fail-closed)", foreground="#444")
+            return
+        parts = [f"{action}({len(entries)})"
+                 for action, entries in sorted(snapshot.items())]
+        label.config(text="in force: " + ", ".join(parts), foreground="#444")
 
     def _update_security(self, snap: dict) -> None:
         policy = snap["status"].get("policy") or {}
@@ -863,6 +973,7 @@ class DesktopUI(tk.Tk):
         self.sec_rows["baseline"].config(
             text=json.dumps(baseline)[:600] if isinstance(baseline, dict)
             else "not reported by this node")
+        self._refresh_grants()
 
     # -- LOG pane ---------------------------------------------------------
     def _build_log(self, parent) -> None:

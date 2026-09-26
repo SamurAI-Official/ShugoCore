@@ -100,6 +100,8 @@ ACTIVITY_RPM_CAP = 2000          # max timestamps retained across endpoints
 APPROVALS_MAX_PENDING = 200      # pending approval requests surfaced per call
 FLEET_MAX_NODES = 200            # paired mobile nodes surfaced per call
 SENSOR_STREAM_RING = 100         # bounded sensor samples retained (drop-oldest)
+CONSENT_MAX_GRANTS = 64          # consent grants surfaced per call
+CONSENT_MAX_TTL_SECONDS = 86400.0  # operator TTL cap (24 h)
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +156,44 @@ def _approval_request_id(path: str) -> Optional[str]:
             and parts[4]):
         return parts[4]
     return None
+
+
+def _consent_action_type(path: str) -> Optional[str]:
+    """Extract ``<action_type>`` from a consent path.
+
+    Accepts ``/api/v1/consent/<action_type>`` (grant) and
+    ``/api/v1/consent/<action_type>/revoke`` (revoke). Returns None unless the
+    normalized path has exactly one of those shapes and the action type is
+    non-empty without embedded slashes.
+    """
+    parts = path.split("/")
+    if (len(parts) == 5 and parts[1] == "api" and parts[2] == "v1"
+            and parts[3] == "consent" and parts[4]):
+        return parts[4]
+    if (len(parts) == 6 and parts[1] == "api" and parts[2] == "v1"
+            and parts[3] == "consent" and parts[4] and parts[5] == "revoke"):
+        return parts[4]
+    return None
+
+
+def _grantable_action_types() -> set:
+    """Action types an operator may grant: the consent-gated families.
+
+    Read from :mod:`policy` so the vocabulary stays in one place, and
+    fail-closed: if policy cannot be imported the set is empty and every grant
+    is refused.
+    """
+    names = ("SIDE_EFFECTING_ACTION_TYPES", "ROBOTICS_ACTION_TYPES",
+             "MOBILE_ACTION_TYPES", "NETWORK_ACTION_TYPES",
+             "FLEET_ACTION_TYPES")
+    try:
+        import policy as _policy
+    except Exception:
+        return set()
+    grantable: set = set()
+    for name in names:
+        grantable.update(getattr(_policy, name, set()) or set())
+    return grantable
 
 
 def _is_loopback_origin(origin: str) -> bool:
@@ -336,6 +376,8 @@ class ShugoCoreServer:
                 return "uptime"
             if path == "/api/v1/approvals":
                 return "approvals"
+            if path == "/api/v1/consent":
+                return "consent"
             if path == "/api/v1/fleet":
                 return "fleet"
             if path == "/api/v1/sensors":
@@ -353,6 +395,9 @@ class ShugoCoreServer:
                 return "fleet_pair"
             if _approval_request_id(path) is not None:
                 return ("approve" if path.endswith("/approve") else "deny")
+            if _consent_action_type(path) is not None:
+                return ("consent_revoke" if path.endswith("/revoke")
+                        else "consent_grant")
         return None
 
     def record(self, route: Optional[str], http_status: int,
@@ -553,6 +598,125 @@ class ShugoCoreServer:
             return 500, {"error": f"approval resolve failed: {type(exc).__name__}"}
         return 200, {"request_id": rid, "decision": "approve" if approved
                      else "deny", "resolved": ok}
+
+    # -- operator consent surface ---------------------------------------------
+
+    def handle_consent(self) -> Tuple[int, Dict[str, Any]]:
+        """GET /api/v1/consent -> operator grants currently in force.
+
+        The ConsentRegistry is what the decision engine consults before a
+        consent-gated action (side-effecting / robotics / mobile / network /
+        fleet) may execute, and a grant may only ever come from an operator
+        channel -- the acting agent may not assert its own consent. Until
+        v1.30.5 that channel did not exist on the wire, so a device could never
+        be granted egress at all: audit chains filled up with "no external
+        consent grant for 'network_send'". Fail-closed: with no registry on the
+        engine the listing is empty and ``enabled`` is False.
+        """
+        registry = getattr(self.engine, "consents", None)
+        if registry is None or not hasattr(registry, "grants"):
+            return 200, {"grants": {}, "actions": [], "count": 0,
+                         "enabled": False}
+        try:
+            snapshot = registry.grants()
+        except Exception as exc:
+            logger.warning("consent listing failed: %s", type(exc).__name__)
+            return 500, {"error": f"consent listing failed: {type(exc).__name__}"}
+        grants: Dict[str, List[Dict[str, Any]]] = {}
+        total = 0
+        for action_type, entries in sorted(snapshot.items())[:CONSENT_MAX_GRANTS]:
+            safe_entries: List[Dict[str, Any]] = []
+            for entry in entries if isinstance(entries, list) else []:
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    safe_entries.append({
+                        "granted_by": _safe_text(entry.get("granted_by"), 64),
+                        "scope": _safe_text(entry.get("scope"), 64),
+                        "note": _safe_text(entry.get("note"), 300),
+                        "granted_at": round(
+                            float(entry.get("granted_at", 0.0)), 3),
+                        "expires_at": (round(float(entry["expires_at"]), 3)
+                                       if entry.get("expires_at") else None),
+                    })
+                except (TypeError, ValueError):
+                    # One malformed entry must not 500 the whole listing.
+                    logger.warning("skipping malformed consent entry: %s",
+                                   type(entry).__name__)
+                    continue
+            if safe_entries:
+                grants[_safe_text(action_type, 64)] = safe_entries
+                total += len(safe_entries)
+        return 200, {"grants": grants, "actions": sorted(grants),
+                     "count": total, "enabled": True}
+
+    def grant_consent(self, action_type: str,
+                      body: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+        """POST /api/v1/consent/<action_type> -> operator-issued grant.
+
+        Only consent-gated action types may be granted (``policy``'s
+        side-effecting / robotics / mobile / network / fleet families), the TTL
+        is capped at ``CONSENT_MAX_TTL_SECONDS``, and the registry journals the
+        grant itself.
+        """
+        body = body if isinstance(body, dict) else {}
+        registry = getattr(self.engine, "consents", None)
+        if registry is None or not hasattr(registry, "grant"):
+            return 503, {"error": "no consent registry on this engine"}
+        action = _safe_text(action_type, 64)
+        if not action:
+            return 400, {"error": "action_type required"}
+        grantable = _grantable_action_types()
+        if action not in grantable:
+            return 400, {
+                "error": f"'{action}' is not a consent-gated action",
+                "grantable": sorted(grantable)[:CONSENT_MAX_GRANTS],
+            }
+        ttl: Optional[float] = None
+        ttl_raw = body.get("ttl_seconds")
+        if ttl_raw not in (None, ""):
+            try:
+                ttl = float(ttl_raw)
+            except (TypeError, ValueError):
+                return 400, {"error": "ttl_seconds must be a number"}
+            if ttl <= 0:
+                return 400, {"error": "ttl_seconds must be positive"}
+            ttl = min(ttl, CONSENT_MAX_TTL_SECONDS)
+        try:
+            entry = registry.grant(
+                action_type=action,
+                granted_by=_safe_text(body.get("granted_by"), 64) or "operator",
+                scope=_safe_text(body.get("scope"), 64) or "*",
+                note=_safe_text(body.get("note"), 300),
+                ttl_seconds=ttl)
+        except Exception as exc:
+            logger.warning("consent grant failed: %s", type(exc).__name__)
+            return 500, {"error": f"consent grant failed: {type(exc).__name__}"}
+        entry = entry if isinstance(entry, dict) else {}
+        return 200, {
+            "status": "granted",
+            "action_type": action,
+            "granted_by": _safe_text(entry.get("granted_by"), 64),
+            "expires_at": entry.get("expires_at"),
+            "ttl_seconds": ttl,
+            "active": len(registry.grants().get(action, [])),
+        }
+
+    def revoke_consent(self, action_type: str) -> Tuple[int, Dict[str, Any]]:
+        """POST /api/v1/consent/<action_type>/revoke -> drop every grant."""
+        registry = getattr(self.engine, "consents", None)
+        if registry is None or not hasattr(registry, "revoke"):
+            return 503, {"error": "no consent registry on this engine"}
+        action = _safe_text(action_type, 64)
+        if not action:
+            return 400, {"error": "action_type required"}
+        try:
+            removed = int(registry.revoke(action))
+        except Exception as exc:
+            logger.warning("consent revoke failed: %s", type(exc).__name__)
+            return 500, {"error": f"consent revoke failed: {type(exc).__name__}"}
+        return 200, {"status": "revoked", "action_type": action,
+                     "removed": removed}
 
     # -- C2: fleet dashboard --------------------------------------------------
 
@@ -945,6 +1109,23 @@ class ShugoCoreHandler(http_server.BaseHTTPRequestHandler):
                 status, payload = 404, {"error": "not found"}
             else:
                 status, payload = core.resolve_approval(rid, approved=False)
+        elif norm_path == "/api/v1/consent" and method == "GET":
+            status, payload = core.handle_consent()
+        elif method == "POST" and norm_path.endswith("/revoke"):
+            # Path shape: /api/v1/consent/<action_type>/revoke
+            action = _consent_action_type(norm_path)
+            if action is None:
+                status, payload = 404, {"error": "not found"}
+            else:
+                status, payload = core.revoke_consent(action)
+        elif method == "POST" and norm_path.startswith("/api/v1/consent/"):
+            # Path shape: /api/v1/consent/<action_type>
+            action = _consent_action_type(norm_path)
+            if action is None:
+                status, payload = 404, {"error": "not found"}
+            else:
+                status, payload = core.grant_consent(
+                    action, _read_json_body(self))
         elif norm_path == "/api/v1/task" and method == "POST":
             status, payload = core.handle_task(_read_json_body(self))
         core.record(route, status, (time.monotonic() - started) * 1000.0)

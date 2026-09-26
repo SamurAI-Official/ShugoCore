@@ -6,6 +6,43 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### Operator consent surface: the missing half of the governance model
+
+The decision engine gates side-effecting, robotics, mobile, network and fleet
+actions behind `ConsentRegistry`, and the README is explicit that a grant may
+only come from an operator - "a `consent` flag written by the acting agent
+itself is never trusted". The *approval* half of that model existed on the wire
+(`GET /api/v1/approvals`, `POST /api/v1/approvals/<id>/approve|deny`). The
+*consent* half existed nowhere: `ConsentRegistry.grant()` had no caller in the
+tree, no HTTP route, and no UI. A device therefore could never be granted
+network egress - the A51's audit chain filled with
+`policy_block: no external consent grant for 'network_send'` while its mesh
+transport was healthy and connected to all three peers - and the same gap would
+have blocked agent-driven `fleet_deploy`, which the engine consent-gates.
+
+- **`shugocore_server.py`**: `GET /api/v1/consent` (grants in force, bounded by
+  `CONSENT_MAX_GRANTS` and sanitized), `POST /api/v1/consent/<action_type>`
+  (grant, with `ttl_seconds` capped at `CONSENT_MAX_TTL_SECONDS` = 24 h and
+  `granted_by`/`scope`/`note` recorded) and
+  `POST /api/v1/consent/<action_type>/revoke`. Only `policy`'s consent-gated
+  families are grantable; an unknown type is refused with the grantable list and
+  an unimportable `policy` grants nothing (fail-closed). Bearer auth and rate
+  limiting apply exactly as for `/api/v1/approvals`.
+- **`security_inventory.py`**: the consent block now reports the registry the
+  gate consults. It read `agent.consent_registry`, which the engine never sees
+  (`shugocore_agent` builds a `ConsentRegistry` but never passes
+  `DecisionEngine(consents=...)`), so operator grants would have been invisible
+  in the very pane meant to show them.
+- **`clients/desktop/shugocore_desktop.py`**: the SECURITY pane gains an
+  "Operator consent (Track 1)" control - action quick-picks, optional TTL,
+  Grant / Revoke, and a live "in force" line read from the same registry.
+- **`tests/test_consent_surface.py`** (new) - 10 tests over real HTTP: route
+  naming (including slash-smuggling), empty-but-enabled listing, unknown-type
+  refusal, grant -> engine allows (`has_grant_for_attended_action`) -> revoke ->
+  engine refuses with the exact reason seen on the A51, TTL expiry, TTL
+  validation and the 24 h cap, `fleet_deploy` grantability, the security
+  inventory integration, and bearer-token enforcement.
+
 ### Fleet rollout: `fleet_deploy`, consent- and approval-gated ADB installs
 
 Updating the hive was a manual `adb install` with no governance and one

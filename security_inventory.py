@@ -123,7 +123,15 @@ def collect_agent_inventory(agent: Any) -> Dict[str, Any]:
             "declared": len(declared), "acked": acked,
         }
 
-    consent = getattr(agent, "consent_registry", None)
+    # The decision gate consults the ENGINE's registry: shugocore_agent builds
+    # its own ConsentRegistry but never injects it (DecisionEngine's ``consents``
+    # argument stays None), so reporting the agent attribute first would show an
+    # always-empty consent surface while the operator's grants live on the
+    # engine. Read whichever registry the gate actually consults.
+    engine = getattr(agent, "engine", None)
+    consent = (getattr(engine, "consents", None)
+               or getattr(agent, "consents", None)
+               or getattr(agent, "consent_registry", None))
     grants = getattr(consent, "grants", None)
     if callable(grants):
         try:

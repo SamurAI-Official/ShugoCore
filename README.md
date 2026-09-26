@@ -174,7 +174,7 @@ defeats nothing:
 | Layer | Enforcement |
 |---|---|
 | Tier 3 world model | Immutable invariants (`no_harm`, `consent_required`, `no_manipulation`, `privacy`, `auditability`) evaluated before any model call or execution |
-| `ConsentRegistry` | Side-effecting actions (`api_call`, `database_update`, `hardware_interaction`) require operator-issued grants - a `consent` flag written by the acting agent itself is never trusted |
+| `ConsentRegistry` | Consent-gated actions (side-effecting, robotics, mobile, network, fleet) require operator-issued grants over `GET/POST /api/v1/consent` - a `consent` flag written by the acting agent itself is never trusted |
 | `ApprovalBroker` | Side effects additionally require human approval; fail-closed (no operator channel attached, or TTL expiry, means denied) |
 | Policy verdict token | The engine binds an allow verdict to the canonical hash of the exact decision; the execution layer refuses missing, non-allow, or mismatched tokens |
 | `CapabilityRegistry` | https-only egress, host allowlists, HTTP-method allowlists, SQL statement-type allowlists, empty-by-default hardware command allowlists |
@@ -394,6 +394,32 @@ the handler verify the version the device reports afterwards:
 A rollout only upgrades in place if every device trusts the signing key; a
 mismatch (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`) is reported per target and the
 device keeps its data - see the fleet-key notes in `CHANGELOG.md`.
+
+### Operator consent surface
+
+`ConsentRegistry` gates side-effecting, robotics, mobile, network and fleet
+actions, and a grant may only come from an operator - the acting agent may never
+assert its own consent. The operator channel is the consent surface:
+
+| Route | Purpose |
+|---|---|
+| `GET /api/v1/consent` | Grants currently in force (bounded, sanitized) |
+| `POST /api/v1/consent/<action_type>` | Issue a grant; JSON body may carry `ttl_seconds` (capped at 24 h), `granted_by`, `scope`, `note` |
+| `POST /api/v1/consent/<action_type>/revoke` | Drop every grant for the type |
+
+Only `policy`'s consent-gated families may be granted; anything else is refused,
+and if `policy` cannot be imported nothing is grantable (fail-closed). Bearer
+auth and rate limiting apply exactly as they do to `/api/v1/approvals`. Example:
+
+```bash
+curl -s -X POST http://127.0.0.1:11435/api/v1/consent/network_send \
+     -H 'Authorization: Bearer <token>' -H 'Content-Type: application/json' \
+     -d '{"granted_by": "operator", "ttl_seconds": 3600}'
+```
+
+The desktop control plane exposes the same thing in its SECURITY pane, and
+`GET /api/v1/security` reports the grants in force (from the registry the gate
+actually consults).
 
 ### Memory mesh semantics (v1.30.0)
 
@@ -851,6 +877,10 @@ Done in v1.30.4:
   `SHUGOCORE_AUDIT_HTTPS_URL` / `SHUGOCORE_AUDIT_FILE_PATH`)
 - ✅ Human-approval console surface (`GET /api/v1/approvals`,
   `POST /api/v1/approvals/<id>/approve|deny`)
+- ✅ Operator consent surface (`GET /api/v1/consent`,
+  `POST /api/v1/consent/<action_type>`,
+  `POST /api/v1/consent/<action_type>/revoke`) with TTLs, plus a
+  SECURITY-pane Grant/Revoke control in the desktop control plane
 - ✅ Fleet dashboard endpoint (`GET /api/v1/fleet`); a full desktop UI tab
   still needs building
 - ✅ Bounded sensor live-stream endpoint (`GET /api/v1/sensors`); the

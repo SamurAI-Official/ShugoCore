@@ -120,6 +120,25 @@ class TestPeerConnection(unittest.TestCase):
         conn = _PeerConnection("test", "127.0.0.1", 19999)
         self.assertFalse(conn.connected)
 
+    def test_failed_dial_closes_socket(self):
+        """A refused dial must close the socket it created.
+
+        The reconnect loop retries a down peer every few seconds, so a socket
+        left to the garbage collector leaked one fd -- and one ResourceWarning
+        per attempt in logcat -- for as long as the peer stayed unreachable.
+        """
+        fake_sock = MagicMock()
+        fake_sock.connect.side_effect = ConnectionRefusedError(
+            111, "Connection refused")
+        fake_mod = MagicMock()
+        fake_mod.socket.return_value = fake_sock
+        conn = _PeerConnection("offline", "127.0.0.1", 19999)
+        with patch("agent_runtime.socket", fake_mod):
+            self.assertFalse(conn.connect())
+        fake_sock.close.assert_called_once()
+        self.assertFalse(conn.connected)
+        self.assertIsNone(conn.sock)
+
 
 class TestPeerServerHardening(unittest.TestCase):
     """Frame-size bound, message validation and optional shared-secret gate."""

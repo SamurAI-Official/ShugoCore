@@ -72,6 +72,7 @@ class _PeerConnection:
 
     def connect(self) -> bool:
         with self._lock:
+            sock: Optional[socket.socket] = None
             try:
                 self.close()
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -84,6 +85,15 @@ class _PeerConnection:
             except Exception as exc:
                 logger.warning("peer %s connect failed: %s", self.peer_id, exc)
                 self._connected = False
+                # Close the socket we just created: leaving it to the garbage
+                # collector leaked one fd (plus a ResourceWarning storm in
+                # logcat) per attempt, and the reconnect loop retries a down
+                # peer every few seconds for as long as it stays down.
+                if sock is not None:
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
                 return False
 
     def send(self, message: Dict[str, Any]) -> bool:

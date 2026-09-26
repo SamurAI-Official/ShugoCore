@@ -6,6 +6,28 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### Fleet re-key hardening: peer-dial fd leak and a race-free liveness gate
+
+Bringing the four-node hive onto a single signing key surfaced two defects that
+only appear on a quiet-but-healthy fleet (the Tab S9 FE stayed green while the
+A51 was reported down by the smoke gate).
+
+- **`agent_runtime._PeerConnection.connect()`** - a refused dial now closes the
+  socket it created. The old path abandoned a live socket to the garbage
+  collector, so an unreachable peer cost one leaked fd per reconnect pass and
+  filled logcat with `ResourceWarning`s every few seconds (measured on the Tab
+  S9 FE with the A51's node down). Regression test:
+  `tests/test_agent_runtime.py::TestPeerConnection.test_failed_dial_closes_socket`.
+- **`tests/android_device_smoke.py`** - the `service_alive` gate polls for the
+  Chaquopy marker and accepts `python.stdout` OR `python.stderr`. Sampling
+  `python.stderr` exactly once failed a genuinely healthy A51: the warm-up
+  clears logcat (`wait_for_agent_loop`), the device ring buffer is hard-capped
+  at 5 MiB (`logcat -G` refuses more), and a node that emits no warnings writes
+  `python.stderr` once per decision (~50 s while thermally throttled) - so the
+  single sample landed in the cleared window while `Decision made for task` was
+  found in the same phase. Both tags are written by the embedded interpreter
+  alone, so the claim (Chaquopy is up) is unchanged; only the race is gone.
+
 ### Desktop control plane, host-node launcher, and a strict-server json_mode
 
 The desktop side had no control surface: the only ways to run a node were the

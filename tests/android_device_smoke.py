@@ -456,18 +456,29 @@ def step_service_alive(serial: str, logger: List[str]) -> bool:
 
     The on-device Python is a Chaquopy embedded runtime (no `python3`
     binary), so liveness is proven by the 1 Hz agent-loop decision line the
-    engine emits to logcat under the `python.stderr` tag — never by trying
-    to exec a python binary via run-as.
+    engine emits to logcat — never by trying to exec a python binary via
+    run-as. Both `python.stdout` and `python.stderr` are written by the
+    embedded interpreter alone, so either tag proves it is up.
+
+    v1.30.5 fleet run: the marker is POLLED and matches either tag. Sampling
+    `python.stderr` once failed a healthy A51 — the warm-up clears logcat
+    (`wait_for_agent_loop`), the device ring buffer is hard-capped at 5 MiB
+    (`logcat -G` refuses more), and a node with no warnings emits
+    `python.stderr` only once per decision (~50 s when thermally throttled),
+    so the single sample landed in the cleared window while the agent was
+    demonstrably ticking ('Decision made for task' was found in the same
+    phase). Polling removes the race without weakening the claim.
     """
     rc, out, err = run(
         "-s", serial, "shell", "ps", "|", "grep", "-i", "shugocore"
     )
     alive = rc == 0 and "shugocore" in out.lower()
-    runtime_in_logs = bool(log_lines_containing(serial, "python.stderr"))
+    runtime_in_logs = expect_in_logs(serial, "python.", within_s=ack_window())
     loop_ok = expect_in_logs(serial, "Decision made for task", within_s=ack_window())
     for ln in [
         f"  ps grep shugocore: {'yes' if alive else 'no'}",
-        f"  Chaquopy runtime (python.stderr in logcat): {'yes' if runtime_in_logs else 'no'}",
+        f"  Chaquopy runtime (python.stdout/stderr in logcat): "
+        f"{'yes' if runtime_in_logs else 'no'}",
         f"  agent loop ('Decision made for task'): {'yes' if loop_ok else 'no'}",
     ]:
         _log(logger, ln)

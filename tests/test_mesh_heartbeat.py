@@ -426,6 +426,63 @@ class RestartedPeerTestCase(unittest.TestCase):
             "a replayed advertisement did not renew the lease")
 
 
+class HeadroomSemanticsTestCase(unittest.TestCase):
+    """Unreported headroom is unknown; a *reported* zero is genuinely empty.
+
+    Eligibility shows up in the verdict: an ineligible peer can never win the
+    lease. (The tie-break is priority then node id, so two nodes on priority 10
+    resolve alphabetically -- which is why a host that should lead the fleet is
+    started with a lower number.)
+    """
+
+    def test_unreported_headroom_stays_a_candidate(self):
+        election = MeshElection("shugo-desktop", priority=10)
+        election.observe_heartbeat({"node_id": "shugo-MacBook", "priority": 10,
+                                    "thermal_status": 0, "seq": 1})
+        self.assertEqual(election.tick()["primary"], "shugo-MacBook",
+                         "a node that cannot measure its memory went invisible")
+
+    def test_reported_zero_headroom_is_still_ineligible(self):
+        election = MeshElection("shugo-desktop", priority=10)
+        election.observe_heartbeat({"node_id": "phone", "priority": 500,
+                                    "mem_available_bytes": 0, "seq": 1})
+        # A node does not candidate itself: with the only peer ineligible there
+        # is no candidate at all, so nobody takes the lease from this node.
+        self.assertIsNone(election.tick()["primary"])
+
+    def test_unusable_headroom_fails_closed(self):
+        election = MeshElection("shugo-desktop", priority=10)
+        election.observe_heartbeat({"node_id": "phone", "priority": 500,
+                                    "mem_available_bytes": "lots", "seq": 1})
+        self.assertIsNone(election.tick()["primary"])
+
+
+class IncumbencyTestCase(unittest.TestCase):
+    """A tie must not re-home the hive; a better candidate still takes over."""
+
+    def test_an_equal_ranked_challenger_does_not_depose_the_holder(self):
+        election = MeshElection("shugo-desktop", priority=10)
+        election.observe_heartbeat({"node_id": "shugo-desktop", "priority": 10,
+                                    "seq": 1})
+        election.observe_heartbeat({"node_id": "shugo-MacBook", "priority": 10,
+                                    "seq": 1})
+        first = election.tick()["primary"]
+        self.assertIn(first, ("shugo-desktop", "shugo-MacBook"))
+        for _ in range(3):
+            self.assertEqual(election.tick()["primary"], first,
+                             "an equal-ranked join moved the primary lease")
+
+    def test_a_better_candidate_still_takes_the_lease(self):
+        election = MeshElection("android-tab", priority=500)
+        election.observe_heartbeat({"node_id": "android-tab", "priority": 500,
+                                    "seq": 1})
+        self.assertEqual(election.tick()["primary"], "android-tab")
+        election.observe_heartbeat({"node_id": "shugo-desktop", "priority": 10,
+                                    "seq": 1})
+        self.assertEqual(election.tick()["primary"], "shugo-desktop",
+                         "a stronger node must be able to take over")
+
+
 class ElectionEligibilityTestCase(unittest.TestCase):
     """The two exclusion rules that decide who may hold the lease."""
 

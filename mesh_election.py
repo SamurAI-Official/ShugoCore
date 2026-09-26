@@ -132,10 +132,13 @@ class MeshElection:
             thermal = int(payload.get("thermal_status", 0))
         except (TypeError, ValueError):
             thermal = 0
-        try:
-            mem = int(payload.get("mem_available_bytes", 0))
-        except (TypeError, ValueError):
-            mem = 0
+        if "mem_available_bytes" in payload:
+            try:
+                mem = int(payload["mem_available_bytes"])
+            except (TypeError, ValueError):
+                mem = 0            # reported but unusable: fail closed
+        else:
+            mem = None             # not reported: unknown, so still a candidate
         ts = _now() if now is None else float(now)
         entry = {
             "node_id": node_id, "priority": priority,
@@ -187,8 +190,14 @@ class MeshElection:
                 return "thermal-critical"
         except (TypeError, ValueError):
             return "thermal-unknown"
+        mem = entry.get("mem_available_bytes")
+        if mem is None:
+            # Unreported headroom is *unknown*, not zero: a node that cannot
+            # measure its free memory stays a candidate instead of advertising
+            # itself out of the election (which is how a Mac went invisible).
+            return None
         try:
-            if int(entry.get("mem_available_bytes", 0)) <= 0:
+            if int(mem) <= 0:
                 return "no-headroom"
         except (TypeError, ValueError):
             return "no-headroom"
@@ -229,6 +238,21 @@ class MeshElection:
         ts = _now() if now is None else float(now)
         candidates = self._live_candidates(ts)
         winner = candidates[0]["node_id"] if candidates else None
+        # Incumbency: an equal-ranked challenger does not depose the holder. The
+        # ranking is (priority, node_id), so a node joining with the same
+        # priority could take the lease from a healthy holder on the alphabet
+        # alone -- the fleet re-homed for no reason and a new primary had to take
+        # over mid-flight. A strictly *better* candidate still wins.
+        if winner and candidates:
+            with self._lock:
+                holder = self._primary_id
+            if holder and holder != winner:
+                incumbent = next((e for e in candidates
+                                  if e.get("node_id") == holder), None)
+                if incumbent is not None and (
+                        int(incumbent.get("priority", 100))
+                        <= int(candidates[0].get("priority", 100))):
+                    winner = holder
         with self._lock:
             previous = self._primary_id
             if winner != previous:

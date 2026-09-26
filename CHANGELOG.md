@@ -6,6 +6,33 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### Unknown headroom is not zero headroom (a Mac could not join the hive)
+
+The Mac joined the mesh and advertised every 10 s, but never appeared as a
+candidate. Two reasons, both about treating a *missing* measurement as a
+*measured* failure:
+
+- A host that cannot read its own free memory advertised `mem_available_bytes: 0`,
+  and the election refuses a candidate reporting no headroom -- so the node
+  advertised itself out of its own hive. Unmeasurable memory is now **omitted**
+  from the advertisement, and the receiver treats an absent field as *unknown*
+  rather than empty. A field that is present and zero still means "measured
+  empty" and is still ineligible; a field that is present but unusable ("lots")
+  still fails closed.
+- The old unit test asserted the opposite (`absence is not fabrication`,
+  fail-closed). That rule excluded exactly the node that needed the entry most, so
+  the test now states the new one and keeps the two cases that matter (reported
+  zero, unusable value) as ineligible.
+
+Incumbency landed with it, because making a second host eligible exposed it: the
+ranking is `(priority, node_id)`, so a machine joining on the same priority could
+take the lease from a healthy holder on the alphabet alone, re-homing the fleet
+mid-flight. A **strictly better** candidate still takes over; an equal-ranked one
+no longer does.
+
+With both changes the Mac is a full hive member, and the hub keeps the lease it
+already holds.
+
 ### Answers come from the device nearest the operator (response routing)
 
 A hive has several mouths but one operator. `speak` and `ask_user` now choose

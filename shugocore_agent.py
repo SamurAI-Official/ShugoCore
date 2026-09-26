@@ -1728,11 +1728,16 @@ class AndroidAgent:
             payload = election.local_heartbeat(
                 thermal_status=thermal,
                 mem_available_bytes=self._mesh_mem_headroom())
-            # Tell the fleet whether this node can actually speak, so the primary
-            # can route an answer to a device with a speaker (and never to one
-            # without). Guarded: a stubbed election in a test may hand back
-            # something that is not a plain dict.
             if isinstance(payload, dict):
+                # Free memory we could not measure is *unknown*, not zero. The
+                # election refuses a candidate that reports no headroom, so
+                # advertising 0 would exclude a node that simply cannot read its
+                # own free memory (some macOS/POSIX hosts) from the hive.
+                if int(payload.get("mem_available_bytes") or 0) <= 0:
+                    payload.pop("mem_available_bytes", None)
+                # Tell the fleet whether this node can actually speak, so the
+                # primary can route an answer to a device with a speaker (and
+                # never to one without).
                 payload["can_speak"] = (getattr(self, "_speak_listener", None)
                                         is not None)
             return payload

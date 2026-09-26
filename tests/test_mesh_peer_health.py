@@ -119,13 +119,16 @@ class TestHealthHeartbeat(unittest.TestCase):
 
 
 class TestPeerHealthOmission(unittest.TestCase):
-    """A peer that never advertised mesh/health stays ineligible —
-    absence is not fabrication (fail-closed)."""
+    """A peer that never advertised memory stays a candidate: unknown, not zero.
 
-    def test_peer_without_health_defaults_to_safe(self):
-        """A peer with no thermal_status / mem fields defaults to
-        thermal=0 / mem=0. The election treats mem=0 as no-headroom
-        (ineligible), per the documented rule."""
+    This rule used to fail closed, which excluded any node that cannot read its
+    own free memory (macOS/POSIX hosts) from the hive entirely -- the node that
+    needed the mesh entry most. Unknown is now its own state: a peer that
+    *reports* zero headroom is still ineligible, and one that reports garbage
+    still fails closed.
+    """
+
+    def test_peer_without_memory_is_unknown_not_ineligible(self):
         e = MeshElection(node_id="android-A51", priority=500)
         # Peer advertises no health fields at all.
         e.observe_heartbeat({
@@ -134,9 +137,9 @@ class TestPeerHealthOmission(unittest.TestCase):
         })
         e.local_heartbeat(thermal_status=0, mem_available_bytes=2_000_000)
         result = e.tick()
-        # Peer has no mem_available_bytes -> defaults to 0 -> excluded.
-        self.assertEqual(result["primary"], "android-A51")
-        self.assertTrue(result["is_primary"])
+        # Priority 10 < 500 and eligible, so the peer leads the hive.
+        self.assertEqual(result["primary"], "macbook")
+        self.assertFalse(result["is_primary"])
 
     def test_peer_with_health_beats_local(self):
         """A peer that DOES advertise health can win."""

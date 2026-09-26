@@ -441,6 +441,14 @@ class AndroidAgent:
                 self.tool_registry.register_handler(
                     "mesh_sync", self._tool_mesh_sync,
                     description="Pull a peer agent's Tier 2 memory into mine")
+                self.tool_registry.register_handler(
+                    "mesh_artifact_fetch", self._tool_mesh_artifact_fetch,
+                    description="Fetch a build artifact a peer shares over the "
+                                "mesh (chunked and digest-verified)")
+                self.tool_registry.register_handler(
+                    "mesh_artifact_offer", self._tool_mesh_artifact_offer,
+                    description="Offer one of my shared build artifacts to a "
+                                "peer, which then pulls it")
             except Exception as exc:
                 self.log("AGENT", f"subsystems init failed: {exc}",
                          level="WARN")
@@ -679,6 +687,74 @@ class AndroidAgent:
                     peers.append((pid, host, port))
         return peers
 
+    @staticmethod
+    def _mesh_artifact_dirs(data_dir: Optional[str] = None) -> tuple:
+        """(share, stage) directories for mesh build sharing.
+
+        Both are overridable -- ``SHUGOCORE_ARTIFACT_ROOT`` for what this node
+        offers, ``SHUGOCORE_ARTIFACT_DIR`` for what it accepts -- so a host can
+        point its share straight at a build-output directory. On Android they
+        live under the app's writable data dir. Creation is best effort: with no
+        share directory the node simply serves nothing, and the mesh status says
+        so instead of pretending.
+        """
+        base = str(data_dir or "") or "."
+        share = (os.environ.get("SHUGOCORE_ARTIFACT_ROOT")
+                 or os.path.join(base, "shared"))
+        stage = (os.environ.get("SHUGOCORE_ARTIFACT_DIR")
+                 or os.path.join(base, "artifacts"))
+        for path in (share, stage):
+            try:
+                os.makedirs(path, exist_ok=True)
+            except Exception:
+                pass
+        return share, stage
+
+    def _mesh_artifact_audit(self, event: str, detail: Dict[str, Any]) -> None:
+        """Record build traffic in this node's audit chain (best effort)."""
+        chain = getattr(getattr(self, "engine", None), "audit", None)
+        if chain is None:
+            return
+        try:
+            chain.append(event, detail)
+        except Exception as exc:
+            self.log("MESH", f"artifact audit failed: {exc}", level="WARN")
+
+    def _tool_mesh_artifact_fetch(self, name: str, peer: Optional[str] = None,
+                                  dest_dir: Optional[str] = None):
+        """Tool: pull a build a peer shares, chunked and digest-verified."""
+        from subsystems.tools import ToolResult
+        runtime = getattr(self, "shugonet_runtime", None)
+        if runtime is None:
+            return ToolResult.err_result("My mesh is not running.")
+        if not peer:
+            return ToolResult.err_result("Tell me which peer to fetch from.")
+        result = runtime.fetch_artifact(peer, name, dest_dir=dest_dir)
+        if result.get("status") != "success":
+            reason = result.get("reason") or result.get("message") or "unreachable"
+            return ToolResult.err_result(f"Artifact fetch failed: {reason}.")
+        return ToolResult.ok_result(
+            f"Fetched {result['name']} from {result['peer']} "
+            f"({result['bytes']} bytes in {result['chunks']} verified chunk(s), "
+            f"sha256 {str(result['sha256'])[:12]}...).", data=result)
+
+    def _tool_mesh_artifact_offer(self, name: str, peer: Optional[str] = None):
+        """Tool: offer a shared build to a peer, which then pulls it."""
+        from subsystems.tools import ToolResult
+        runtime = getattr(self, "shugonet_runtime", None)
+        if runtime is None:
+            return ToolResult.err_result("My mesh is not running.")
+        if not peer:
+            return ToolResult.err_result("Tell me which peer to send it to.")
+        result = runtime.offer_artifact(peer, name)
+        if result.get("status") != "success":
+            reason = result.get("reason") or result.get("message") or "unreachable"
+            return ToolResult.err_result(f"Artifact offer failed: {reason}.")
+        return ToolResult.ok_result(
+            f"Offered {result['name']} ({result['size']} bytes) to "
+            f"{result['peer']}; it pulls the build itself.",
+            data=result)
+
     def _tool_mesh_status(self):
         """Tool: report mesh peers and shared-memory state (read-only)."""
         from subsystems.tools import ToolResult
@@ -752,12 +828,18 @@ class AndroidAgent:
                                          "fallbacks", None)
             mesh_port = int(_os.environ.get("SHUGOCORE_MESH_PORT", "9000"))
             mesh_token = AndroidAgent._load_mesh_token(self.data_dir)
+            # v1.30.6 build sharing: this node serves the files in its share
+            # directory (addressed by bare name only) and stages what peers send
+            # it in another, so a new build can reach the whole hive over the
+            # mesh instead of an ADB cable.
+            share_dir, stage_dir = AndroidAgent._mesh_artifact_dirs(self.data_dir)
             self.shugonet_runtime = ShugonetAgentRuntime(
                 agent_id=f"shugo-{self.device_caps or 'android'}",
                 host="0.0.0.0", port=mesh_port,
                 memory=shugonet_memory,
                 fallback_controller=shugonet_fallbacks,
-                auth_token=mesh_token)
+                auth_token=mesh_token,
+                artifact_root=share_dir, artifact_dir=stage_dir)
             self.shugonet_runtime.start()
             # Track 1 over the mesh: advertise our own election heartbeat and
             # feed peer advertisements back into telemetry['mesh_peers'] -- the
@@ -769,6 +851,9 @@ class AndroidAgent:
                 self._mesh_heartbeat_payload)
             self.shugonet_runtime.set_heartbeat_handler(
                 self._mesh_heartbeat_received)
+            # Build traffic joins the audit chain (resolved lazily: the engine's
+            # chain may not exist yet at this point).
+            self.shugonet_runtime.set_artifact_audit(self._mesh_artifact_audit)
             peers = (self._parse_mesh_peers(
                         _os.environ.get("SHUGOCORE_MESH_PEERS", ""))
                      + self._load_mesh_peers_file())

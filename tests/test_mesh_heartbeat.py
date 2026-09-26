@@ -392,6 +392,40 @@ class AgentGuardTestCase(unittest.TestCase):
         self.assertTrue(self._node(None)._mesh_may_act("speak"))
 
 
+class RestartedPeerTestCase(unittest.TestCase):
+    """A peer that reboots must not go invisible to nodes that remember it.
+
+    An advertisement counter starts over from 1, and the old rule dropped any
+    sequence that did not increase -- while returning True as if it had been
+    observed. A node was therefore blind to that peer for good, however often it
+    advertised, which is what made the hive flap after every phone redeploy.
+    """
+
+    def _beat(self, node_id="android-gts9fe", seq=1):
+        return {"node_id": node_id, "priority": 500, "thermal_status": 0,
+                "mem_available_bytes": _COMFORTABLE_MEM, "seq": seq}
+
+    def test_a_restarted_peer_is_live_again(self):
+        election = MeshElection("shugo-desktop", priority=10)
+        election.observe_heartbeat(self._beat(seq=459), now=0.0)
+        self.assertEqual([p["node_id"] for p in election.live_peers(now=0.0)],
+                         ["android-gts9fe"])
+        # The peer reboots ~90 s later; its counter begins again.
+        election.observe_heartbeat(self._beat(seq=1), now=90.0)
+        self.assertTrue(
+            election.live_peers(now=90.0),
+            "a restarted peer went invisible: its advertisement was dropped")
+        self.assertEqual(election.live_peers(now=90.0)[0]["seq"], 1)
+
+    def test_a_duplicate_advertisement_renews_the_lease(self):
+        election = MeshElection("shugo-desktop", priority=10)
+        election.observe_heartbeat(self._beat(seq=5), now=0.0)
+        election.observe_heartbeat(self._beat(seq=5), now=45.0)
+        self.assertTrue(
+            election.live_peers(now=50.0),
+            "a replayed advertisement did not renew the lease")
+
+
 class ElectionEligibilityTestCase(unittest.TestCase):
     """The two exclusion rules that decide who may hold the lease."""
 

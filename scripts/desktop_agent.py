@@ -31,11 +31,19 @@ pull over ``sync`` -- ``--seed-fact`` puts knowledge there so a freshly started
 node is not empty when another device tests the mesh against it.
 
 Election identity is ``shugo-<device-caps>`` with ``--mesh-priority`` (lower
-wins the primary lease; Android custodians default to 500). Note that peer
-*heartbeats* are published by the Android Kotlin layer over DDS
-(``DeviceMeshManager`` -> ``update_mesh_peers``); the ShugoNet TCP mesh carries
-no heartbeat/health message yet, so a Python-only fleet serves memory normally
-but honestly reports ``role=standalone`` on every node.
+wins the primary lease; Android custodians default to 500). Heartbeats ride the
+ShugoNet mesh itself, so a Python-only fleet elects a real primary -- and a node
+that *restarts* is handled: its counter starts over and the receiver renews the
+lease instead of going blind to that peer until it is restarted too.
+
+Builds travel the mesh as well: ``--share-dir`` is what this node offers to peers
+(bare file names only), ``--artifact-dir`` is where what they send lands, and
+``--artifact-fetch NAME=PEER`` / ``--artifact-offer NAME=PEER`` ship or receive a
+build at startup -- the same command a new laptop or the Mac runs to pick up the
+current APK from the hub. Every transfer is chunked and digest-verified on both
+ends, and the mesh shared secret is required (``--token``,
+``SHUGOCORE_MESH_TOKEN`` or ``<data-dir>/mesh_token.txt``): a token-gated node
+refuses every frame without it.
 
 Ctrl+C shuts down cleanly (mesh socket, memory worker, consolidation).
 """
@@ -109,6 +117,21 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--mesh-node-id", default=None,
                     help="election identity (default: 'shugo-<device-caps>'; "
                          "the agent's fallback would be 'android-<caps>')")
+    ap.add_argument("--share-dir", default=None,
+                    help="directory this node offers over the mesh; peers pull "
+                         "build artifacts from it by file name "
+                         "(default: <data-dir>/shared)")
+    ap.add_argument("--artifact-dir", default=None,
+                    help="directory where builds pulled from peers land "
+                         "(default: <data-dir>/artifacts)")
+    ap.add_argument("--artifact-fetch", action="append", default=[],
+                    metavar="NAME=PEER",
+                    help="pull one artifact from a peer at startup "
+                         "(repeatable; chunked and digest-verified)")
+    ap.add_argument("--artifact-offer", action="append", default=[],
+                    metavar="NAME=PEER",
+                    help="offer one of my shared artifacts to a peer at "
+                         "startup; the peer pulls it (repeatable)")
     ap.add_argument("--deploy-target", action="append", default=[],
                     metavar="SERIAL",
                     help="allow ADB deployment to this device serial "
@@ -165,11 +188,16 @@ def _status_line(agent, runtime, ticks) -> str:
     # advertising after a redeploy or a peer restart.
     rx = stats.get("heartbeats_received")
     tx = stats.get("heartbeats_sent")
+    artifacts = mesh.get("artifacts") or {}
+    shared = len(runtime.list_artifacts() or [])
+    art_in = artifacts.get("received")
+    art_out = artifacts.get("sent")
     return (f"tick {ticks} | cycles={loop.get('cycles')} "
             f"rate={loop.get('success_rate')} | node={lease.get('node_id', '?')} "
             f"prio={lease.get('priority', '?')} role={status.get('mesh_role', '?')} "
             f"primary={status.get('mesh_primary')} connected={len(connected)} "
             f"mesh_peers={len(declared or [])} beats={heard} rx={rx} tx={tx} "
+            f"artifacts={shared} art_in={art_in} art_out={art_out} "
             f"imported={stats.get('imported')}")
 
 
@@ -206,6 +234,47 @@ def _enable_fleet_deploy(agent, args) -> None:
              len(targets), ", ".join(targets), root)
 
 
+def _split_target(spec: str):
+    """Parse ``NAME=PEER`` into (name, peer); None when malformed."""
+    if "=" not in str(spec):
+        return None
+    name, _, peer = str(spec).partition("=")
+    name, peer = name.strip(), peer.strip()
+    if not name or not peer:
+        return None
+    return name, peer
+
+
+def _startup_artifacts(runtime, args) -> None:
+    """Run the startup build jobs: ``--artifact-fetch`` / ``--artifact-offer``.
+
+    This is how a node ships or receives a build over the mesh -- the operator's
+    alternative to an ADB cable, and the path a laptop or the Mac uses to pick up
+    the current APK from the hub.
+    """
+    jobs = ([("fetch", spec) for spec in args.artifact_fetch]
+            + [("offer", spec) for spec in args.artifact_offer])
+    if not jobs:
+        return
+    time.sleep(2.0)                          # let the peer dials settle
+    for action, spec in jobs:
+        target = _split_target(spec)
+        if target is None:
+            log.warning("ignoring malformed artifact spec %r (want NAME=PEER)",
+                        spec)
+            continue
+        name, peer = target
+        try:
+            if action == "fetch":
+                result = runtime.fetch_artifact(peer, name)
+            else:
+                result = runtime.offer_artifact(peer, name)
+        except Exception as exc:
+            log.warning("artifact %s %s failed: %s", action, name, exc)
+            continue
+        log.info("artifact %s %s <-> %s: %s", action, name, peer, result)
+
+
 def main(argv=None) -> int:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -224,6 +293,10 @@ def main(argv=None) -> int:
         os.environ["SHUGOCORE_MESH_PEERS"] = ",".join(args.peer)
     if args.token:
         os.environ["SHUGOCORE_MESH_TOKEN"] = args.token
+    if args.share_dir:
+        os.environ["SHUGOCORE_ARTIFACT_ROOT"] = str(args.share_dir)
+    if args.artifact_dir:
+        os.environ["SHUGOCORE_ARTIFACT_DIR"] = str(args.artifact_dir)
 
     mesh_id = args.mesh_node_id or f"shugo-{caps}"
     log.info("booting node: mesh id '%s' (election prio %s), data dir %s",
@@ -284,6 +357,7 @@ def main(argv=None) -> int:
                 log.warning("sync %s failed: %s", peer_id, exc)
 
     _enable_fleet_deploy(agent, args)
+    _startup_artifacts(runtime, args)
 
     ticks = 0
     next_status = (time.monotonic() + args.status_every

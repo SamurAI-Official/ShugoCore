@@ -65,8 +65,15 @@ class TestHealthHeartbeat(unittest.TestCase):
         result = e.tick()
         self.assertEqual(result["primary"], "macbook")
 
-    def test_stale_seq_rejected(self):
-        """A heartbeat with seq <= last-known seq is rejected (no-op)."""
+    def test_a_restarted_peer_replaces_its_record(self):
+        """A lower seq is a rebooted peer, not a stale frame: accept it.
+
+        Dropping it (the old rule) left a node that remembered a high sequence
+        blind to that peer for good -- it advertised every 10 s and stayed
+        invisible, which is what made the hive flap after every redeploy. A
+        duplicate (equal seq) still cannot rewrite the record; see
+        test_mesh_election.TestElectionRules.
+        """
         e = MeshElection(node_id="android-A51", priority=500)
         e.observe_heartbeat({
             "node_id": "macbook",
@@ -80,13 +87,14 @@ class TestHealthHeartbeat(unittest.TestCase):
             "priority": 10,
             "mem_available_bytes": DESKTOP_MEM,
             "thermal_status": 0,
-            "seq": 3,  # stale
+            "seq": 3,  # the peer rebooted and its counter began again
         })
+        self.assertTrue(result)
         tick_result = e.tick()
         self.assertEqual(tick_result["primary"], "macbook")
         entry = e._nodes.get("macbook")
         self.assertIsNotNone(entry)
-        self.assertEqual(int(entry.get("seq", 0)), 5)
+        self.assertEqual(int(entry.get("seq", 0)), 3)
 
     def test_fresh_seq_updates_entry(self):
         """A heartbeat with seq > last-known seq updates the entry."""

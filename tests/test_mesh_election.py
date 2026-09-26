@@ -92,11 +92,23 @@ class TestElectionRules(unittest.TestCase):
         self.assertEqual(status["ineligible"].get("macbook"), "no-headroom")
         self.assertEqual(status["role"], "unknown")
 
-    def test_observe_heartbeat_rejects_stale_seq(self):
+    def test_a_replayed_advertisement_cannot_rewrite_the_record(self):
+        """Equal seq = a duplicate frame: it renews the lease, nothing else.
+
+        A *lower* seq is a restarted peer and does replace the record; that rule
+        lives in test_mesh_heartbeat.RestartedPeerTestCase.
+        """
         e = MeshElection(node_id="android-A51", priority=500)
-        self.assertTrue(e.observe_heartbeat({"node_id": "macbook", "seq": 5}))
-        self.assertTrue(e.observe_heartbeat({"node_id": "macbook", "seq": 3}))
+        self.assertTrue(e.observe_heartbeat({"node_id": "macbook", "seq": 5,
+                                            "priority": 10,
+                                            "thermal_status": 3}))
+        # A replayed copy of an older frame, carrying different fields, must not
+        # be able to overwrite what we already know about the peer.
+        self.assertTrue(e.observe_heartbeat({"node_id": "macbook", "seq": 5,
+                                            "priority": 999,
+                                            "thermal_status": 0}))
         self.assertEqual(e.status()["nodes"]["macbook"]["seq"], 5)
+        self.assertEqual(e.status()["nodes"]["macbook"]["priority"], 10)
 
 
 class TestAgentGuardrail(unittest.TestCase):

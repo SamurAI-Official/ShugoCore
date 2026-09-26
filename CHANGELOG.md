@@ -6,6 +6,55 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### A restarted peer is visible again (the hive stops flapping)
+
+`MeshElection.observe_heartbeat()` dropped any advertisement whose sequence did
+not increase -- and returned `True` as if it had been observed. A peer that
+reboots begins its counter again, so a node that remembered a high sequence
+stayed **blind to that peer forever**: the phone advertised every 10 s, the hub
+counted the frames (`rx` grew) and still reported `role=standalone`, and only
+restarting the hub recovered the hive. That is what made the fleet flap after
+every redeploy.
+
+The lease is now renewed on an equal sequence (a replayed frame renews the lease
+but still cannot rewrite the record's fields) and a *rollback* is treated as a
+restart, logged and accepted ("peer … restarted (seq 459 -> 1); renewing its
+lease"). Two regression tests were added that **fail against the old logic**, and
+the two tests that encoded the old rule were rewritten to state the new one
+explicitly rather than deleted.
+
+### The hive ships its own builds (mesh artifact transfer)
+
+Memory already travelled the mesh; a *build* could not leave the machine that
+made it without an ADB cable. The ShugoNet transport now carries artifacts:
+`artifact_manifest` / `artifact` (chunked, offset-addressed) and `artifact_offer`
+(the receiver pulls), behind new surfaces -- `fetch_artifact()`,
+`offer_artifact()`, `list_artifacts()`, `artifact_receipts()` -- and the agent
+tools `mesh_artifact_fetch` / `mesh_artifact_offer`.
+
+Safety is inherited, not re-invented: every request sits behind the same shared
+secret gate; artifacts are addressed by *bare file name* out of one allowlisted
+directory per node, with containment re-checked on the real path (so `../..` or a
+symlink reaches nothing outside it); one transfer is capped (256 MiB) and chunked
+(192 KiB, which still fits one frame after base64); the manifest digest is
+verified before a byte is written *and* the assembled file is digested again
+before it is moved into place, so a partial transfer never becomes an artifact.
+Receipts and `mesh_artifact_received` / `mesh_artifact_offered` /
+`mesh_artifact_failed` events land in the node's own audit chain.
+
+Live proof on the real hive, hub out and back: the desktop shared the current
+`app-debug.apk` (78,117,673 bytes, sha256 `d4ce2339…`), a plain mesh node pulled
+it in 398 verified chunks and the reassembled file was bit-for-bit identical to
+the source; the same node then offered a file that the hub pulled into its
+staging dir, digest-checked -- `artifacts=1 art_in=1` in the hub's status line,
+with the receipt in `audit_chain.jsonl`.
+
+A host joins the channel with `--share-dir` / `--artifact-dir` (defaults
+`<data-dir>/shared` and `<data-dir>/artifacts`) or by setting
+`SHUGOCORE_ARTIFACT_ROOT` / `SHUGOCORE_ARTIFACT_DIR`, and can ship or receive at
+startup with `--artifact-offer NAME=PEER` / `--artifact-fetch NAME=PEER` -- the
+same command a laptop or the Mac runs to pick up the current build.
+
 ### The duplicate agent: one service process built two of them
 
 The Tab logged two `SHUGONET: runtime started` lines and two tick counters,

@@ -469,6 +469,44 @@ Verified across two devices (A51 + Tab S9 FE): the A51 imported **64** facts
 from its peer and the Tab imported 2 in the opposite direction, with the
 imported knowledge then recallable through each agent's own memory API.
 
+### Build transfer over the mesh (v1.30.7)
+
+The same transport ships *builds*, so a node that makes one can hand it to the
+hive without an ADB cable:
+
+- **One shared directory per node.** `--share-dir` (or
+  `SHUGOCORE_ARTIFACT_ROOT`, default `<data-dir>/shared`) is what this node
+  offers; `--artifact-dir` / `SHUGOCORE_ARTIFACT_DIR` (default
+  `<data-dir>/artifacts`) is where builds it receives land. Artifacts are
+  addressed by **bare file name** only, and the real path is re-checked for
+  containment, so `../..` or a symlink reaches nothing outside the share root.
+- **Pull:** `--artifact-fetch app-debug.apk=shugo-desktop` (or the
+  `mesh_artifact_fetch` tool) pulls the build in verified chunks. The manifest
+  digest is checked before the first byte is written and the assembled file is
+  digested again before it is renamed into place — a partial transfer is deleted,
+  never promoted.
+- **Push:** `--artifact-offer app-debug.apk=shugo-mac` (or
+  `mesh_artifact_offer`) sends name/size/digest; the *receiver* pulls the bytes,
+  so no node ever writes on a peer's say-so alone. The receiver must know the
+  offerer as a peer (`SHUGOCORE_MESH_PEERS` / `mesh_peers.json`).
+- **Bounds and evidence.** One transfer is capped (256 MiB) and chunked
+  (192 KiB); every request is behind the mesh token; receipts are in
+  `status()["artifacts"]` / `artifact_receipts()` and
+  `mesh_artifact_received|offered|failed` events go to the node's audit chain.
+- **Joining laptop / Mac:** pull the repo, set the mesh token and peers, then
+
+  ```bash
+  python3 scripts/desktop_agent.py --device-caps mac --data-dir ~/.shugocore \
+      --mesh-priority 20 --sync all \
+      --artifact-fetch app-debug.apk=shugo-desktop
+  ```
+
+  which lands the current build in `~/.shugocore/artifacts/`, digest-verified.
+  Verified end to end on the real hive: the desktop shared its
+  `app-debug.apk` (78,117,673 bytes, sha256 `d4ce2339…`), a plain mesh node
+  pulled it in **398** verified chunks bit-for-bit, and an offer in the other
+  direction was audited by the hub (`artifacts=1 art_in=1`).
+
 ### Quickstart
 
 ```python

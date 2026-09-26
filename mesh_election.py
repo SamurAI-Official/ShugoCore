@@ -148,10 +148,29 @@ class MeshElection:
             prev = self._nodes.get(node_id)
             if prev is not None:
                 try:
-                    if int(entry["seq"]) <= int(prev.get("seq", 0)):
-                        return True
+                    seq = int(entry["seq"])
+                    prev_seq = int(prev.get("seq", 0))
                 except (TypeError, ValueError):
-                    pass
+                    seq = prev_seq = None
+                if seq is not None and prev_seq is not None:
+                    if seq == prev_seq:
+                        # The same advertisement again (a duplicated frame): the
+                        # lease is what matters, so renew it without rewriting the
+                        # record. Returning early *without* touching last_seen --
+                        # the old behaviour -- let a live peer's lease lapse.
+                        prev["last_seen"] = ts
+                        return True
+                    if seq < prev_seq:
+                        # The peer restarted, so its counter began again. The old
+                        # rule dropped every such advertisement while reporting it
+                        # as observed, leaving a node that remembered a high
+                        # sequence blind to that peer *forever* -- the peer
+                        # advertised every 10 s and stayed invisible until the
+                        # observer was restarted too. A rollback on one TCP stream
+                        # is a restart, not reordering.
+                        logger.info(
+                            "mesh election: peer %s restarted (seq %s -> %s); "
+                            "renewing its lease", node_id, prev_seq, seq)
             self._nodes[node_id] = entry
         return True
 

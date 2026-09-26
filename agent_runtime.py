@@ -36,9 +36,12 @@ Usage (embedded in a ShugoCore agent)::
     register_network_handlers(execution_layer, runtime)
 """
 
+import base64
+import hashlib
 import hmac
 import json
 import logging
+import os
 import socket
 import threading
 import time
@@ -57,6 +60,12 @@ _MAX_FRAME_BYTES = 1_048_576  # hard cap on one NDJSON frame (memory-DoS bound)
 # 10 s advertisement survives two dropped frames before a node looks dead.
 _HEARTBEAT_INTERVAL = 10.0
 _MAX_CLIENT_THREADS = 16  # hard cap on concurrent inbound client handlers
+# Artifact transfer (build updates between nodes). One chunk must still fit an
+# NDJSON frame after base64's 4/3 expansion, and a single artifact is capped so
+# a hostile or mistaken peer cannot fill a phone's storage.
+_MAX_ARTIFACT_BYTES = 256 * 1024 * 1024
+_ARTIFACT_CHUNK_BYTES = 192 * 1024
+_ARTIFACT_DIGEST_CACHE = 8
 
 
 def _encode_frame(message: Dict[str, Any]) -> bytes:
@@ -66,6 +75,36 @@ def _encode_frame(message: Dict[str, Any]) -> bytes:
     *accepted* socket, so both directions speak byte-identical NDJSON.
     """
     return (json.dumps(message, sort_keys=True) + "\n").encode("utf-8")
+
+
+def _artifact_name_ok(name: str) -> bool:
+    """True for a bare file name: no separators, no traversal, no NUL.
+
+    Shared artifacts are addressed by *name* only, so a peer can never ask for
+    ``../../etc/passwd`` or an absolute path -- the name is joined to this
+    node's own share directory and containment is re-checked on the real path.
+    """
+    if not isinstance(name, str) or not name or len(name) > 200:
+        return False
+    if name in (".", "..") or name.startswith("."):
+        return False
+    return not any(bad in name for bad in ("/", "\\", "\x00"))
+
+
+def _sha256_file(path: str, limit: int) -> str:
+    """Digest a file, refusing anything larger than ``limit`` bytes."""
+    digest = hashlib.sha256()
+    total = 0
+    with open(path, "rb") as handle:
+        while True:
+            block = handle.read(1024 * 1024)
+            if not block:
+                break
+            total += len(block)
+            if total > limit:
+                raise ValueError(f"artifact exceeds {limit} bytes")
+            digest.update(block)
+    return digest.hexdigest()
 
 
 class _PeerConnection:
@@ -315,6 +354,10 @@ class ShugonetAgentRuntime:
         fallback_controller: Optional[Any] = None,
         reconnect_interval: float = 5.0,
         heartbeat_interval: float = _HEARTBEAT_INTERVAL,
+        artifact_root: Optional[str] = None,
+        artifact_dir: Optional[str] = None,
+        max_artifact_bytes: int = _MAX_ARTIFACT_BYTES,
+        artifact_chunk_bytes: int = _ARTIFACT_CHUNK_BYTES,
     ):
         self.agent_id = agent_id
         self._host = host
@@ -354,6 +397,20 @@ class ShugonetAgentRuntime:
         self._heartbeat_handler: Optional[Callable[[Dict[str, Any]], None]] = None
         self._heartbeats: Dict[str, Dict[str, Any]] = {}
         self._heartbeat_thread: Optional[threading.Thread] = None
+        # Build updates ride the same mesh: a node shares files from one
+        # allowlisted directory (addressed by bare name only) and stages what it
+        # receives in another. Sizes are capped, every byte is digest-verified,
+        # and the shared-secret gate already covers every inbound request.
+        self._artifact_root = (os.path.abspath(str(artifact_root))
+                               if artifact_root else None)
+        self._artifact_dir = (os.path.abspath(str(artifact_dir))
+                              if artifact_dir else None)
+        self._max_artifact_bytes = max(64 * 1024, int(max_artifact_bytes))
+        self._artifact_chunk_bytes = max(
+            16 * 1024, min(int(artifact_chunk_bytes), self._max_frame_bytes // 2))
+        self._artifact_digest_cache: Dict[str, tuple] = {}
+        self._artifact_receipts: List[Dict[str, Any]] = []
+        self._artifact_audit: Optional[Callable[[str, Dict[str, Any]], None]] = None
         if peer_map:
             for pid, (phost, pport) in peer_map.items():
                 self.add_peer(pid, phost, pport)
@@ -474,6 +531,14 @@ class ShugonetAgentRuntime:
                     "handler": self._heartbeat_handler is not None,
                     "heard": len(self._heartbeats),
                 },
+                "artifacts": {
+                    "sharing": self._artifact_root,
+                    "stage_dir": self._artifact_dir,
+                    "max_bytes": self._max_artifact_bytes,
+                    "chunk_bytes": self._artifact_chunk_bytes,
+                    "sent": self._stats.get("artifacts_sent", 0),
+                    "received": self._stats.get("artifacts_received", 0),
+                },
             }
 
     # -- heartbeat / election transport --------------------------------------
@@ -572,6 +637,323 @@ class ShugonetAgentRuntime:
             handler(record)
         except Exception as exc:
             logger.warning("heartbeat handler failed: %s", exc)
+
+    # -- artifact transfer (build updates between nodes) ---------------------
+
+    def set_artifact_audit(
+            self, hook: Optional[Callable[[str, Dict[str, Any]], None]]) -> None:
+        """Set the callable that records artifact events (the audit chain)."""
+        self._artifact_audit = hook if callable(hook) else None
+
+    def _audit_artifact(self, event: str, detail: Dict[str, Any]) -> None:
+        hook = self._artifact_audit
+        if hook is None:
+            return
+        try:
+            hook(event, detail)
+        except Exception as exc:
+            logger.warning("artifact audit hook failed: %s", exc)
+
+    def artifact_descriptor(self, name: str) -> Optional[Dict[str, Any]]:
+        """Describe one *shared* artifact, or None if it is not servable.
+
+        The name is joined to this node's own share root and the real path is
+        re-checked for containment, so a peer cannot address anything outside it.
+        Oversized files are refused rather than truncated, and the digest is
+        cached per (size, mtime) so chunk requests do not re-read the file.
+        """
+        root = self._artifact_root
+        if root is None or not _artifact_name_ok(name):
+            return None
+        try:
+            real_root = os.path.realpath(root)
+            real_path = os.path.realpath(os.path.join(root, name))
+            if os.path.commonpath([real_root, real_path]) != real_root:
+                return None
+            if not os.path.isfile(real_path):
+                return None
+            size = os.path.getsize(real_path)
+            mtime = os.path.getmtime(real_path)
+        except (OSError, ValueError):
+            return None
+        if size <= 0 or size > self._max_artifact_bytes:
+            return None
+        cached = self._artifact_digest_cache.get(name)
+        if cached and cached[0] == size and cached[1] == mtime:
+            digest = cached[2]
+        else:
+            try:
+                digest = _sha256_file(real_path, self._max_artifact_bytes)
+            except Exception as exc:
+                logger.warning("artifact %s is not servable: %s", name, exc)
+                return None
+            with self._lock:
+                self._artifact_digest_cache[name] = (size, mtime, digest)
+                while len(self._artifact_digest_cache) > _ARTIFACT_DIGEST_CACHE:
+                    self._artifact_digest_cache.pop(
+                        next(iter(self._artifact_digest_cache)))
+        return {"name": name, "path": real_path, "size": size, "sha256": digest}
+
+    def list_artifacts(self) -> List[Dict[str, Any]]:
+        """Describe every servable artifact in this node's share directory."""
+        root = self._artifact_root
+        if root is None:
+            return []
+        try:
+            names = sorted(os.listdir(root))
+        except OSError:
+            return []
+        out: List[Dict[str, Any]] = []
+        for name in names[:64]:
+            descriptor = self.artifact_descriptor(name)
+            if descriptor:
+                out.append({"name": descriptor["name"], "size": descriptor["size"],
+                            "sha256": descriptor["sha256"]})
+        return out
+
+    def artifact_manifest(self, peer: str, name: str) -> Dict[str, Any]:
+        """Ask a peer to describe one artifact it shares (size + digest)."""
+        conn = self._outbound.get(peer)
+        if conn is None:
+            return {"status": "refused", "reason": f"unknown peer '{peer}'"}
+        resp = self._one_shot_request(conn, {
+            "type": "artifact_manifest", "from": self.agent_id, "name": name,
+            "id": str(uuid.uuid4().hex[:12])})
+        if not resp:
+            return {"status": "error", "message": "peer unreachable", "peer": peer}
+        reason = self._peer_error(resp)
+        if reason is not None:
+            return {"status": "refused", "peer": peer, "reason": reason}
+        return {"status": "success", "peer": peer,
+                "name": str(resp.get("name") or name),
+                "size": int(resp.get("size") or 0),
+                "sha256": str(resp.get("sha256") or "")}
+
+    def fetch_artifact(self, peer: str, name: str,
+                       dest_dir: Optional[str] = None,
+                       expect_sha256: Optional[str] = None) -> Dict[str, Any]:
+        """Pull one artifact from a peer chunk by chunk, digest-verified.
+
+        The manifest is read first, so the size cap and the caller's expected
+        digest are checked *before* a byte is written. Each chunk is verified
+        against the manifest digest (a build that changes mid-transfer aborts the
+        pull), and the assembled file is digested again before it is moved into
+        place -- so a partial or corrupted transfer never becomes a real artifact.
+        """
+        if not _artifact_name_ok(name):
+            return {"status": "refused", "reason": f"invalid artifact name '{name}'"}
+        conn = self._outbound.get(peer)
+        if conn is None:
+            return {"status": "refused", "reason": f"unknown peer '{peer}'"}
+        target_dir = dest_dir or self._artifact_dir
+        if not target_dir:
+            return {"status": "refused",
+                    "reason": "no staging directory configured on this node"}
+        manifest = self.artifact_manifest(peer, name)
+        if manifest.get("status") != "success":
+            return {"status": manifest.get("status", "error"), "peer": peer,
+                    "name": name,
+                    "reason": manifest.get("reason") or manifest.get("message")}
+        size = int(manifest.get("size") or 0)
+        digest = str(manifest.get("sha256") or "")
+        if len(digest) != 64:
+            return {"status": "refused", "peer": peer, "name": name,
+                    "reason": "peer advertised no digest"}
+        if size <= 0 or size > self._max_artifact_bytes:
+            return {"status": "refused", "peer": peer, "name": name,
+                    "reason": f"artifact size {size} exceeds the cap "
+                              f"{self._max_artifact_bytes}"}
+        if expect_sha256 and str(expect_sha256).lower() != digest:
+            return {"status": "refused", "peer": peer, "name": name,
+                    "reason": "peer digest does not match the expected build"}
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+        except OSError as exc:
+            return {"status": "error", "message": f"stage dir unusable: {exc}"}
+        tmp_path = os.path.join(target_dir, name + ".part")
+        final_path = os.path.join(target_dir, name)
+        written = 0
+        chunks = 0
+        try:
+            with open(tmp_path, "wb") as handle:
+                while written < size:
+                    want = min(self._artifact_chunk_bytes, size - written)
+                    resp = self._one_shot_request(conn, {
+                        "type": "artifact", "from": self.agent_id, "name": name,
+                        "offset": written, "length": want,
+                        "id": str(uuid.uuid4().hex[:12])})
+                    if not resp:
+                        raise IOError(f"peer unreachable at offset {written}")
+                    reason = self._peer_error(resp)
+                    if reason is not None:
+                        raise IOError(f"peer refused chunk at {written}: {reason}")
+                    # NB: not `int(resp.get("offset") or -1)` -- offset 0 is
+                    # falsy, so that idiom rejects the very first chunk.
+                    try:
+                        answered = int(resp.get("offset"))
+                    except (TypeError, ValueError):
+                        raise IOError("peer answered without an offset")
+                    if answered != written:
+                        raise IOError(f"peer answered the wrong offset at {written}")
+                    if str(resp.get("sha256") or "") != digest:
+                        raise IOError("artifact changed on the peer mid-transfer")
+                    data = base64.b64decode(resp.get("data") or "", validate=True)
+                    if not data:
+                        raise IOError(f"empty chunk at offset {written}")
+                    if written + len(data) > self._max_artifact_bytes:
+                        raise IOError("artifact exceeded the size cap")
+                    handle.write(data)
+                    written += len(data)
+                    chunks += 1
+            actual = _sha256_file(tmp_path, self._max_artifact_bytes)
+            if actual != digest:
+                raise IOError(f"digest mismatch after transfer "
+                              f"({actual[:12]} != {digest[:12]})")
+            os.replace(tmp_path, final_path)
+        except Exception as exc:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            logger.warning("artifact %s from %s failed: %s", name, peer, exc)
+            return {"status": "error", "peer": peer, "name": name, "bytes": written,
+                    "message": str(exc)[:200]}
+        receipt = {"name": name, "peer": peer, "path": final_path, "bytes": written,
+                   "sha256": digest, "chunks": chunks, "received_at": time.time()}
+        with self._lock:
+            self._stats["artifacts_received"] = (
+                self._stats.get("artifacts_received", 0) + 1)
+            self._artifact_receipts.append(receipt)
+            del self._artifact_receipts[:-16]
+        logger.info("artifact received: %s from %s (%d bytes, %d chunks, %s)",
+                    name, peer, written, chunks, digest[:12])
+        self._audit_artifact("mesh_artifact_received", dict(receipt))
+        return {"status": "success", **receipt}
+
+    def offer_artifact(self, peer: str, name: str) -> Dict[str, Any]:
+        """Hand a locally shared build to a peer: it pulls the bytes back.
+
+        This is the operator's "send this update to the hive" action. The offer
+        carries name, size and digest only -- the peer decides, then fetches from
+        this node, so no inbound write ever happens on a node's say-so alone.
+        """
+        descriptor = self.artifact_descriptor(name)
+        if descriptor is None:
+            return {"status": "refused",
+                    "reason": f"'{name}' is not in this node's share directory"}
+        conn = self._outbound.get(peer)
+        if conn is None:
+            return {"status": "refused", "reason": f"unknown peer '{peer}'"}
+        resp = self._one_shot_request(conn, {
+            "type": "artifact_offer", "from": self.agent_id, "name": name,
+            "size": descriptor["size"], "sha256": descriptor["sha256"],
+            "id": str(uuid.uuid4().hex[:12])})
+        if not resp:
+            return {"status": "error", "message": "peer unreachable", "peer": peer}
+        reason = self._peer_error(resp)
+        if reason is not None:
+            return {"status": "refused", "peer": peer, "reason": reason}
+        detail = {"name": descriptor["name"], "peer": peer,
+                  "size": descriptor["size"], "sha256": descriptor["sha256"]}
+        with self._lock:
+            self._stats["artifacts_sent"] = self._stats.get("artifacts_sent", 0) + 1
+        self._audit_artifact("mesh_artifact_offered", dict(detail))
+        return {"status": "success", **detail}
+
+    def _receive_offered_artifact(self, peer: str, name: str, size: int,
+                                  sha256: str) -> None:
+        """Pull an offered build in the background (best effort, audited)."""
+        result = self.fetch_artifact(peer, name, expect_sha256=sha256)
+        if result.get("status") == "success":
+            return
+        reason = result.get("reason") or result.get("message")
+        logger.warning("offered artifact %s from %s not received: %s",
+                       name, peer, reason)
+        self._audit_artifact("mesh_artifact_failed",
+                             {"name": name, "peer": peer, "size": size,
+                              "reason": reason})
+
+    def artifact_receipts(self, limit: int = 16) -> List[Dict[str, Any]]:
+        """The most recent received artifacts (path, bytes, digest)."""
+        with self._lock:
+            return [dict(item)
+                    for item in self._artifact_receipts[-max(1, int(limit)):]]
+
+    def _artifact_manifest_reply(self, name: Any) -> Dict[str, Any]:
+        """Answer a manifest request for one shared artifact."""
+        wanted = str(name or "")
+        if not _artifact_name_ok(wanted):
+            return {"type": "error", "status": "error",
+                    "reason": "invalid artifact name"}
+        descriptor = self.artifact_descriptor(wanted)
+        if descriptor is None:
+            return {"type": "error", "status": "error",
+                    "reason": "artifact is not shared by this node"}
+        return {"type": "artifact_manifest", "status": "ok",
+                "name": descriptor["name"], "size": descriptor["size"],
+                "sha256": descriptor["sha256"],
+                "chunk_bytes": self._artifact_chunk_bytes}
+
+    def _artifact_chunk_reply(self, msg: Dict[str, Any]) -> Dict[str, Any]:
+        """Answer one chunk request (offset/length) from a shared artifact."""
+        name = str(msg.get("name") or "")
+        descriptor = (self.artifact_descriptor(name)
+                      if _artifact_name_ok(name) else None)
+        if descriptor is None:
+            return {"type": "error", "status": "error",
+                    "reason": "artifact is not shared by this node"}
+        try:
+            offset = max(0, int(msg.get("offset") or 0))
+            length = int(msg.get("length") or 0)
+        except (TypeError, ValueError):
+            return {"type": "error", "status": "error", "reason": "bad chunk range"}
+        length = min(max(1, length), self._artifact_chunk_bytes)
+        try:
+            with open(descriptor["path"], "rb") as handle:
+                handle.seek(offset)
+                data = handle.read(length)
+        except OSError as exc:
+            logger.warning("artifact %s unreadable: %s", name, exc)
+            return {"type": "error", "status": "error",
+                    "reason": "artifact unreadable"}
+        return {"type": "artifact_chunk", "status": "ok", "name": name,
+                "offset": offset, "length": len(data), "total": descriptor["size"],
+                "sha256": descriptor["sha256"],
+                "data": base64.b64encode(data).decode("ascii"),
+                "eof": offset + len(data) >= descriptor["size"]}
+
+    def _artifact_accept_offer(self, msg: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate a build offer and pull it back in the background."""
+        name = str(msg.get("name") or "")
+        peer = str(msg.get("from") or "").strip()
+        sha256 = str(msg.get("sha256") or "").strip().lower()
+        try:
+            size = int(msg.get("size") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        if not peer or peer == self.agent_id:
+            return {"type": "error", "status": "error",
+                    "reason": "invalid offer source"}
+        if not _artifact_name_ok(name):
+            return {"type": "error", "status": "error",
+                    "reason": "invalid artifact name"}
+        if len(sha256) != 64 or any(c not in "0123456789abcdef" for c in sha256):
+            return {"type": "error", "status": "error",
+                    "reason": "offer carries no usable digest"}
+        if size <= 0 or size > self._max_artifact_bytes:
+            return {"type": "error", "status": "error",
+                    "reason": f"offer size {size} exceeds the cap "
+                              f"{self._max_artifact_bytes}"}
+        if self._artifact_dir is None:
+            return {"type": "error", "status": "error",
+                    "reason": "this node has no staging directory"}
+        threading.Thread(target=self._receive_offered_artifact,
+                         args=(peer, name, size, sha256),
+                         daemon=True).start()
+        return {"type": "artifact_offer_result", "status": "accepted",
+                "name": name, "size": size, "sha256": sha256,
+                "from": self.agent_id}
 
     def _start_heartbeat_loop(self) -> None:
         """Start the advertisement loop (no-op when disabled or already up)."""
@@ -882,6 +1264,18 @@ class ShugonetAgentRuntime:
         elif msg_type == "heartbeat":
             # Track 1 advertisement: consumed, never acked.
             self._on_heartbeat_message(msg)
+        elif msg_type in ("artifact_manifest", "artifact", "artifact_offer"):
+            # Build sharing over the same mesh (and the same secret gate):
+            # manifests and chunks are request/response, an offer makes the
+            # receiver pull the bytes back from us.
+            if msg_type == "artifact_manifest":
+                resp = self._artifact_manifest_reply(msg.get("name", ""))
+            elif msg_type == "artifact":
+                resp = self._artifact_chunk_reply(msg)
+            else:
+                resp = self._artifact_accept_offer(msg)
+            resp.update({"in_response_to": msg_id, "from": self.agent_id})
+            self._send_json(sock, resp)
         elif msg_type in ("ack", "query_result", "sync_result"):
             with self._lock:
                 rid = msg.get("in_response_to", "")
@@ -891,8 +1285,7 @@ class ShugonetAgentRuntime:
 
     def _send_json(self, sock: socket.socket, msg: Dict[str, Any]) -> None:
         try:
-            data = (json.dumps(msg, sort_keys=True) + "\n").encode("utf-8")
-            sock.sendall(data)
+            sock.sendall(_encode_frame(msg))
         except Exception:
             pass
 

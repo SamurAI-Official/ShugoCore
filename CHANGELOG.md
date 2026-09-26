@@ -6,6 +6,45 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### Capability retention, checked instead of asserted (Phase C)
+
+Every capability this system claims lives somewhere concrete on each node, so
+`capability_matrix.py` reads that state and reports per node whether the
+capability is still there: Tier 2 memory, the hash-linked audit chain, the
+decision and episodic journals, pending timers, learned user facts, the
+personality model, the profile marker, local weights, the mesh secret, the
+configured peers, and the two build directories v1.30.7 added.
+
+It is read-only and dependency-free (a directory listing is all it needs), so one
+classifier serves both a host data dir and an Android app data dir read through
+`run-as`:
+
+```bash
+python3 capability_matrix.py --host-dir runtime/desktop --host-name hub \
+    --phone "Tab S9 FE=<serial>" --phone "A51=<serial>" \
+    --token-file runtime/desktop/mesh_token.txt
+```
+
+Verdicts are honest about *why* something is absent: `ok`, `empty` (present but
+zero bytes -- a failure, not a pass), `missing`, `mismatch` (a secret that is not
+the fleet's), `n/a` for claims a node does not carry (a host serves weights from
+its backend, and takes peers from CLI/env), and `not-created` for things a host
+only writes when it uses them. Only `missing`/`empty`/`mismatch` fail, and a node
+whose data dir cannot be read is reported as such rather than as 13 lost
+capabilities.
+
+First live run, real devices, after restarts plus **three in-place upgrades**:
+
+| node | result |
+| --- | --- |
+| Tab S9 FE | 13/13 ok |
+| A51 | 13/13 ok |
+| desktop hub | 8 ok, 2 not-created, 3 n/a, 0 failing |
+
+That is the "in-place upgrade keeps your memory and models" claim verified against
+the devices rather than asserted, and the fixture tests include what a reinstall
+looks like (every claim missing) so the check would catch the real failure.
+
 ### A restarted peer is visible again (the hive stops flapping)
 
 `MeshElection.observe_heartbeat()` dropped any advertisement whose sequence did

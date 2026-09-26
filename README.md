@@ -507,6 +507,30 @@ hive without an ADB cable:
   pulled it in **398** verified chunks bit-for-bit, and an offer in the other
   direction was audited by the hub (`artifacts=1 art_in=1`).
 
+### Capability retention: what each node still has (v1.30.7)
+
+Claims about memory, identity and models are only worth what the devices can back
+up, so `capability_matrix.py` reads the real state and reports it per node:
+
+```bash
+python3 capability_matrix.py --host-dir runtime/desktop --host-name hub \
+    --phone "Tab S9 FE=<serial>" --phone "A51=<serial>" \
+    --token-file runtime/desktop/mesh_token.txt
+```
+
+| node | after restarts + three in-place upgrades |
+| --- | --- |
+| Tab S9 FE | 13/13 ok |
+| A51 | 13/13 ok |
+| desktop hub | 8 ok, 2 not-created, 3 n/a, 0 failing |
+
+Verdicts distinguish *why* something is absent — `empty` (0 bytes, a failure, not
+a pass), `missing`, `mismatch` (a mesh secret that is not the fleet's), `n/a`
+(claims a node does not carry) and `not-created` (a host writes timers/facts only
+when it uses them) — so the matrix flags a reinstall (every claim missing) while
+not crying wolf about a host that keeps its weights in the model backend. A laptop
+or the Mac runs the same tool against its own data dir once it has joined.
+
 ### Quickstart
 
 ```python

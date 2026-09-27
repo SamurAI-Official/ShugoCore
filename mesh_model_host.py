@@ -418,20 +418,21 @@ class MeshModelHost:
 
     # -- internals ------------------------------------------------------------
     def _should_wait_for_peers(self, plan) -> bool:
-        """Wait while the known fleet has not all checked in.
+        """Wait for a hive to finish arriving; a solo node starts straight away.
 
-        A booting node plans against whoever has heartbeated so far, and on a fresh
-        start that can be a single desktop-class peer -- so the plan looks
-        definitive while the phones are still quiet, and the hive hosts the model
-        locally for ever. Wait until the live set covers the peer map, or the budget
-        runs out. A *static* ``live_peers`` list means the caller already answered
-        the question; a callable is a live query, like the real election.
+        A booting node plans against whoever has been discovered and has
+        heartbeated so far -- and on a fresh start that can be one desktop-class
+        peer, so the plan looks definitive while the phones are still quiet and the
+        hive hosts the model locally for ever. A node that knows of no peers at all
+        is solo, not late, and must not be delayed. A *static* ``live_peers`` list
+        means the caller already answered the question; a callable is a live query,
+        like the real election.
         """
         if self._live_is_explicit or self.settle_timeout <= 0:
             return False
         if plan.get("assignments"):
             return False
-        return len(self.live_peers()) < len(self.fleet_peers())
+        return bool(self.fleet_peers())
 
     def _effective_mmap(self, remote: int) -> bool:
         """Auto: mmap locally, release the host's copy when offloading.

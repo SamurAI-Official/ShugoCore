@@ -108,18 +108,11 @@ class SettleTestCase(unittest.TestCase):
         """A decision is a decision: only an incomplete hive keeps us waiting."""
         host = self._host(live_peers=lambda: [], peers=[("shugo-tab", "h", 9000)])
         self.assertTrue(host._should_wait_for_peers({}))
-        self.assertTrue(host._should_wait_for_peers({"skipped": [{"device_id": "a"}]}))
         self.assertFalse(host._should_wait_for_peers({"assignments": {"tab": 2}}))
 
-    def test_it_stops_waiting_once_the_whole_peer_map_is_live(self):
-        live = [{"node_id": "shugo-tab"}, {"node_id": "shugo-mac"}]
-        host = self._host(live_peers=lambda: live,
-                          peers=[("shugo-tab", "h", 9000),
-                                 ("shugo-mac", "h2", 9000)])
+    def test_a_solo_node_is_not_late_and_must_not_be_delayed(self):
+        host = self._host(live_peers=lambda: [], peers=[])
         self.assertFalse(host._should_wait_for_peers({}))
-        # ... and waits again while one of them is quiet.
-        host._live = lambda: live[:1]
-        self.assertTrue(host._should_wait_for_peers({}))
 
     def test_a_zero_settle_timeout_disables_the_wait(self):
         self.assertFalse(

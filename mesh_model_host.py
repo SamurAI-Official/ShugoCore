@@ -47,11 +47,27 @@ SETTLE_TIMEOUT_S = 60.0
 # A device that went thermally critical is not offered layers again immediately:
 # the next advertisement it sends may still look cool.
 THERMAL_PIN_S = 300.0
+# A candidate that did not answer is not re-woken on every check either.
+UNREACHABLE_PIN_S = 300.0
 # Re-launching the host model costs a reload, so a rebalance happens at most this
 # often and only once a change has persisted across checks.
 REBALANCE_COOLDOWN_S = 300.0
 REBALANCE_STABLE_RUNS = 2
 MAX_RESTARTS = 3
+
+
+def exclusion_reasons(exclude) -> Dict[str, str]:
+    """Normalise ``exclude`` into ``{device_id: reason}``.
+
+    A reason is what makes an exclusion actionable: "peripheral did not answer" and
+    "the operator is using that machine" are different problems, and a plan that
+    reports one as the other sends the operator after the wrong thing.
+    """
+    if isinstance(exclude, dict):
+        return {str(name).strip(): str(reason or "excluded by operator")
+                for name, reason in exclude.items() if str(name).strip()}
+    return {str(name).strip(): "excluded by operator"
+            for name in (exclude or ()) if str(name).strip()}
 
 
 def plan_for_fleet(live_peers, total_layers: int, bytes_per_layer: int, *,
@@ -62,10 +78,12 @@ def plan_for_fleet(live_peers, total_layers: int, bytes_per_layer: int, *,
 
     ``live_peers`` is whatever the election considers live: a peer that has
     stopped heartbeating is not offered layers, so a plan cannot include a device
-    that is already gone. ``exclude`` is the operator's own list -- the machine you
-    are working on should not be asked to hold layers just because it has memory.
+    that is already gone. ``exclude`` is the caller's own list -- names, or
+    ``{name: reason}`` -- covering the operator's preferences (the machine you are
+    working on should not hold layers just because it has memory) and what a check
+    already learned (a candidate whose peripheral did not answer).
     """
-    skip = {str(name).strip() for name in (exclude or ()) if str(name).strip()}
+    skip = exclusion_reasons(exclude)
     nodes: List[Dict[str, Any]] = []
     excluded: List[Dict[str, Any]] = []
     for peer in live_peers or []:
@@ -75,7 +93,7 @@ def plan_for_fleet(live_peers, total_layers: int, bytes_per_layer: int, *,
         if not device_id:
             continue
         if device_id in skip:
-            excluded.append({"device_id": device_id, "reason": "excluded by operator"})
+            excluded.append({"device_id": device_id, "reason": skip[device_id]})
             continue
         entry = {"device_id": device_id,
                  "mem_available_bytes": peer.get("mem_available_bytes"),
@@ -282,6 +300,7 @@ class MeshModelHost:
                  settle_timeout=SETTLE_TIMEOUT_S,
                  health=None, port_serving=None, clock=None,
                  thermal_pin_s=THERMAL_PIN_S,
+                 unreachable_pin_s=UNREACHABLE_PIN_S,
                  cooldown_s=REBALANCE_COOLDOWN_S,
                  stable_runs=REBALANCE_STABLE_RUNS,
                  max_restarts=MAX_RESTARTS):
@@ -303,6 +322,7 @@ class MeshModelHost:
         self.health_timeout = float(health_timeout)
         self.settle_timeout = float(settle_timeout)
         self.thermal_pin_s = float(thermal_pin_s)
+        self.unreachable_pin_s = float(unreachable_pin_s)
         self.cooldown_s = float(cooldown_s)
         self.stable_runs = max(1, int(stable_runs))
         self.max_restarts = max(0, int(max_restarts))
@@ -369,12 +389,20 @@ class MeshModelHost:
         except Exception:
             return []
 
-    def plan(self) -> Dict[str, Any]:
+    def plan(self, extra_exclude=None) -> Dict[str, Any]:
+        """The plan the live fleet supports, with pins and any extra exclusions.
+
+        ``extra_exclude`` is how a check reports what it just learned -- a candidate
+        that was in the plan and did not answer -- with its reason, so the plan says
+        what actually happened instead of blaming the operator.
+        """
+        exclude = exclusion_reasons(self.exclude)
+        exclude.update(exclusion_reasons(extra_exclude))
         plan = plan_for_fleet(self.live_peers(), self.total_layers,
                               self.bytes_per_layer(),
                               local_layers_min=self.local_layers_min,
                               reserve_bytes=self.reserve_bytes,
-                              exclude=self.exclude)
+                              exclude=exclude)
         return self._apply_pins(plan)
 
     # -- lifecycle ------------------------------------------------------------
@@ -427,12 +455,20 @@ class MeshModelHost:
                 assignments.pop(device, None)
                 unreachable.append({"device_id": device,
                                     "reason": "peripheral did not answer"})
+                # Held out for a while, so the next check does not re-ask a device that
+                # has just been given its chance and stayed silent.
+                self._pin(device, "peripheral did not answer",
+                          seconds=self.unreachable_pin_s)
         remote = sum(assignments.values())
         if not remote:
-            # Say why the hive is hosting this locally: otherwise "local" looks
-            # like it chose not to use the fleet rather than that it could not.
+            # Say why the hive is hosting this locally. A device the plan *did* choose
+            # that then never answered is a different problem from a fleet with no
+            # room, and reporting one as the other sends the operator after the wrong
+            # thing.
             reasons = [f"{item.get('device_id')}:{item.get('reason')}"
                        for item in (plan.get("skipped") or [])]
+            reasons += [f"{item.get('device_id')}:{item.get('reason')}"
+                        for item in unreachable]
             state_reason = ("no peripheral with usable headroom" if not reasons
                             else "skipped " + ", ".join(reasons[:4]))
         else:
@@ -572,6 +608,22 @@ class MeshModelHost:
         if not force and waited < self.cooldown_s:
             return {"action": "deferred", "difference": difference,
                     "reason": f"cooldown ({waited:.0f}s of {self.cooldown_s:.0f}s)"}
+        # Wake what we are about to *add* before stopping anything: only then is the new
+        # plan proven, and only then is a reload worth the KV cache it costs.
+        preflight = self._preflight(difference.get("attach") or [])
+        for item in preflight["unreachable"]:
+            self._pin(str(item["device_id"]),
+                      str(item.get("reason") or "unreachable"),
+                      seconds=self.unreachable_pin_s)
+        if preflight["unreachable"]:
+            plan = self.plan({str(item["device_id"]): str(item.get("reason"))
+                              for item in preflight["unreachable"]})
+            desired = {str(k): int(v)
+                       for k, v in (plan.get("assignments") or {}).items()}
+            difference = split_difference(current, desired)
+            if not difference["changed"]:
+                self._pending_sig, self._pending_runs = None, 0
+                return self._hold_unreachable(state, plan, preflight)
         return self._relaunch(desired, cause=self._difference_reason(difference, plan))
 
     def _watchdog_plan(self, state) -> Dict[str, Any]:
@@ -647,6 +699,61 @@ class MeshModelHost:
                 "state": self._record(state)}
 
     # -- internals ------------------------------------------------------------
+    def _preflight(self, devices) -> Dict[str, Any]:
+        """Wake the candidates and keep only the devices that really answer.
+
+        Reachability is a TCP connect, not a peer's claim -- and it is checked *before*
+        anything running is stopped, because a plan that assumes a device will answer
+        is how a working split got traded for an unreachable one: the A16 went from 8
+        remote layers to 3 when a newly attached Tab never answered.
+        """
+        endpoints = self.endpoints()
+        answered: Dict[str, str] = {}
+        unreachable: List[Dict[str, Any]] = []
+        for device in sorted({str(d) for d in (devices or []) if str(d)}):
+            endpoint = endpoints.get(device, "")
+            if not endpoint:
+                unreachable.append({"device_id": device, "reason": "no endpoint"})
+                continue
+            self._ask_peripheral(device, "start")
+            if self._wait_reachable(endpoint):
+                answered[device] = endpoint
+            else:
+                unreachable.append({"device_id": device,
+                                    "reason": "peripheral did not answer"})
+        return {"endpoints": answered, "unreachable": unreachable}
+
+    @staticmethod
+    def _merge_unreachable(existing, incoming) -> List[Dict[str, Any]]:
+        """De-duplicate by device, so the reported list cannot grow without bound."""
+        merged: Dict[str, Dict[str, Any]] = {}
+        for item in list(existing or []) + list(incoming or []):
+            if not isinstance(item, dict) or not item.get("device_id"):
+                continue
+            device = str(item["device_id"])
+            merged[device] = {"device_id": device,
+                              "reason": str(item.get("reason") or "")}
+        return [merged[key] for key in sorted(merged)]
+
+    def _hold_unreachable(self, state, plan, preflight) -> Dict[str, Any]:
+        """Report a candidate that failed pre-flight, leaving the model alone.
+
+        The running split is still the best plan -- the only thing that changed was a
+        device that never answered -- so reloading would cost the KV cache and buy
+        nothing.
+        """
+        held = dict(state)
+        held["unreachable"] = self._merge_unreachable(
+            state.get("unreachable"), preflight.get("unreachable"))
+        held["skipped"] = plan.get("skipped") or held.get("skipped") or []
+        names = ", ".join(str(item.get("device_id")) for item
+                          in preflight.get("unreachable") or [])
+        held["reason"] = (f"kept the running split: {names} did not answer"
+                          if names else "kept the running split")
+        self._record(held)
+        return {"action": "hold", "reason": held["reason"],
+                "unreachable": preflight.get("unreachable") or []}
+
     def _note_thermal_detaches(self, difference, plan) -> None:
         """Remember a device the plan dropped for heat, so it is not re-offered.
 
@@ -661,14 +768,15 @@ class MeshModelHost:
             if why.startswith("thermal_status="):
                 self._pin(str(device), why)
 
-    def _pin(self, device: str, reason: str) -> None:
+    def _pin(self, device: str, reason: str, *, seconds=None) -> None:
+        """Hold a device out of the plan for a while, with the reason it is held."""
         if not device:
             return
-        self._refused[device] = {
-            "reason": reason,
-            "until": self._clock() + max(0.0, self.thermal_pin_s)}
-        logger.info("mesh model host: detached %s for %gs (%s)", device,
-                    self.thermal_pin_s, reason)
+        hold = self.thermal_pin_s if seconds is None else float(seconds)
+        self._refused[device] = {"reason": reason,
+                                 "until": self._clock() + max(0.0, hold)}
+        logger.info("mesh model host: holding %s out of the plan for %gs (%s)",
+                    device, hold, reason)
 
     def _apply_pins(self, plan) -> Dict[str, Any]:
         """Hold pinned devices out of a plan, with the reason they are being held."""
@@ -683,7 +791,7 @@ class MeshModelHost:
             assignments.pop(device, None)
             held = str(self._refused[device].get("reason") or "thermal")
             plan.setdefault("skipped", []).append(
-                {"device_id": device, "reason": f"detached: {held}"})
+                {"device_id": device, "reason": f"held out: {held}"})
         plan["assignments"] = assignments
         plan["remote_layers"] = sum(assignments.values())
         total = int(plan.get("total_layers") or self.total_layers)

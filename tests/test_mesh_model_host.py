@@ -229,6 +229,16 @@ class EndpointTestCase(unittest.TestCase):
                                                 connect=_refuse))
 
 
+    def test_an_exclusion_can_carry_its_own_reason(self):
+        """A candidate that did not answer is not the operator's choice."""
+        plan = mmh.plan_for_fleet([PEER_AMPLE], 24, 20 * MIB,
+                                  exclude={"shugo-mac": "peripheral did not answer"})
+        self.assertEqual(plan["assignments"], {})
+        reasons = " ".join(item["reason"] for item in plan["skipped"])
+        self.assertIn("peripheral did not answer", reasons)
+        self.assertNotIn("excluded by operator", reasons)
+
+
 class DifferenceTestCase(unittest.TestCase):
     """The diff that decides whether a running split has to change."""
 
@@ -305,21 +315,48 @@ class ReconcileTestCase(unittest.TestCase):
     def setUp(self):
         self.fleet = _Fleet()
         self.peers = []
+        self.hosts = {}
+        # Devices whose peripheral does not answer: the transport port is open (the
+        # peer is a live hive member) but its RPC peripheral is not listening.
+        self.unreachable = set()
+
+    def _host_for(self, device: str) -> str:
+        """A stable address per device, assigned the first time it is seen.
+
+        Assigned lazily because tests add a device mid-run (the late arrival this
+        whole path exists for), and stable because a device's endpoint must not move.
+        """
+        if device not in self.hosts:
+            self.hosts[device] = f"10.0.0.{len(self.hosts) + 1}"
+        return self.hosts[device]
+
+    def _connect(self, address, *_args, **_kwargs):
+        """Answer for every device except the ones this test marked unreachable."""
+        host = str((address or ("", 0))[0])
+        if host in {self.hosts[name] for name in self.unreachable
+                    if name in self.hosts}:
+            raise OSError("connection refused")
+        return _Conn()
 
     def _start(self, peers, **kwargs):
         self.peers = [dict(peer) for peer in peers]
+        # One host per device, so a test can make exactly one peripheral silent: with
+        # every peer on the same address there is no way to express "the phone never
+        # answered" without also silencing the device that is working.
+        for peer in self.peers:
+            self._host_for(str(peer["node_id"]))
         host = mmh.MeshModelHost(
             "model.gguf", binary="llama-server",
             port=1, health_timeout=1.0, settle_timeout=0,
             launcher=self.fleet.launcher,
-            connect=lambda *_a, **_k: _Conn(),
+            connect=self._connect,
             prober=lambda *_a, **_k: True,
             sleep=self.fleet.advance,
             clock=self.fleet.clock,
             health=lambda _base: self.fleet.healthy,
             port_serving=lambda _base: False,
             live_peers=lambda: [dict(peer) for peer in self.peers],
-            peers=lambda: [(peer["node_id"], "127.0.0.1", 9000)
+            peers=lambda: [(peer["node_id"], self._host_for(str(peer["node_id"])), 9000)
                            for peer in self.peers],
             **kwargs)
         # A 20 MiB layer without a 480 MiB file on disk: the plan only needs the size.
@@ -410,6 +447,61 @@ class ReconcileTestCase(unittest.TestCase):
         self.assertIn("gave_up", actions)
         # ... and giving up is final: it stops trying instead of looping.
         self.assertEqual(host.reconcile()["action"], "hold")
+
+
+    def test_a_candidate_that_never_answers_costs_no_reload(self):
+        """The live case: the A16 lost 5 layers to a Tab that never answered.
+
+        The candidate is woken and checked *before* anything running is stopped, and
+        when it stays silent the running split is kept -- a reload would cost the KV
+        cache and buy nothing.
+        """
+        host = self._start([PEER_MEDIUM])
+        first = host.start()
+        self.assertEqual(first["assignments"], {"shugo-a16": 15})
+        self.peers.append(PEER_SMALL)
+        self.assertEqual(host.reconcile()["action"], "deferred")   # a change must stick
+        self.fleet.advance(host.cooldown_s + 1)
+        self.unreachable.add("shugo-a51")          # its peripheral is not listening
+        result = host.reconcile()
+        self.assertEqual(result["action"], "hold")
+        self.assertEqual(host.status()["assignments"], {"shugo-a16": 15})
+        self.assertEqual(len(self.fleet.launchers), 1)             # nothing reloaded
+        names = [item["device_id"] for item in host.status()["unreachable"]]
+        self.assertIn("shugo-a51", names)
+        self.assertIn("did not answer", host.status()["reason"])
+        # It is held out of the plan, so the next check does not wake it again. The
+        # step is shorter than both the hold and the cooldown on purpose: this is the
+        # 60 s-later check, not the expiry of either.
+        self.fleet.advance(host.cooldown_s / 2)
+        self.assertEqual(host.reconcile()["action"], "hold")
+        # Once the hold expires it is tried again, and attaches when it answers.
+        self.unreachable.discard("shugo-a51")
+        self.fleet.advance(host.unreachable_pin_s + 1)
+        self.assertEqual(host.reconcile()["action"], "deferred")
+        self.fleet.advance(host.cooldown_s + 1)
+        self.assertEqual(host.reconcile()["action"], "restart")
+        self.assertIn("shugo-a51", host.status()["assignments"])
+
+    def test_a_device_that_never_answers_is_named_in_the_reason(self):
+        """A chosen device that stayed silent is not "no room" -- say which it is."""
+        host = self._start([PEER_MEDIUM])
+        self.unreachable.add("shugo-a16")
+        state = host.start()
+        self.assertEqual(state["mode"], "local")
+        self.assertIn("shugo-a16", state["reason"])
+        self.assertIn("did not answer", state["reason"])
+        # ... and it is held out, so the next check does not re-ask it.
+        self.assertEqual(host.reconcile()["action"], "hold")
+
+    def test_the_unreachable_list_is_de_duplicated_by_device(self):
+        merged = mmh.MeshModelHost._merge_unreachable(
+            [{"device_id": "shugo-tab", "reason": "peripheral did not answer"}],
+            [{"device_id": "shugo-tab", "reason": "no endpoint"},
+             {"device_id": "shugo-a16", "reason": "peripheral did not answer"}])
+        self.assertEqual([item["device_id"] for item in merged],
+                         ["shugo-a16", "shugo-tab"])
+        self.assertEqual(merged[1]["reason"], "no endpoint")
 
 
 class HostArgsTestCase(unittest.TestCase):

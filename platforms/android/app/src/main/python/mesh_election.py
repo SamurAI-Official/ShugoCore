@@ -16,6 +16,8 @@ Also owns the split-layer command-line builder used by
 
 import logging
 import os
+import subprocess
+import sys
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -32,13 +34,58 @@ except Exception:
         def default_chunk(machine, exe):
             return 24
 
+def parse_vm_stat(text, page_size=16384) -> int:
+    """Available bytes from macOS ``vm_stat`` output.
+
+    "Available" approximates what the kernel would hand out: free, inactive and
+    speculative pages. ``os.sysconf("SC_AVPHYS_PAGES")`` is not defined on macOS,
+    so without this a Mac node advertised no headroom -- and a node advertising
+    none is ineligible in the election and skipped by the layer planner: alive,
+    and contributing nothing.
+    """
+    counted = 0
+    for line in (text or "").splitlines():
+        name, sep, rest = line.partition(":")
+        if not sep or name.strip() not in ("Pages free", "Pages inactive",
+                                           "Pages speculative"):
+            continue
+        digits = "".join(ch for ch in rest if ch.isdigit())
+        if digits:
+            counted += int(digits)
+    try:
+        return max(0, counted) * max(0, int(page_size))
+    except (TypeError, ValueError):
+        return 0
+
+
+def macos_available_memory(run=None) -> int:
+    """Free physical memory on macOS (0 when it cannot be measured)."""
+    runner = run or subprocess.run
+    try:
+        proc = runner(["vm_stat"], capture_output=True, text=True, timeout=10)
+        text = getattr(proc, "stdout", "") or ""
+    except Exception:
+        return 0
+    page_size = 16384                    # Apple silicon default, refined below
+    try:
+        proc = runner(["sysctl", "-n", "hw.pagesize"], capture_output=True,
+                      text=True, timeout=10)
+        reported = int((getattr(proc, "stdout", "") or "").strip())
+        if reported > 0:
+            page_size = reported
+    except Exception:
+        pass
+    return parse_vm_stat(text, page_size)
+
+
 def available_memory_bytes() -> int:
     """Best-effort free physical memory in bytes (0 when unmeasurable).
 
     The election refuses a candidate that reports no headroom, so a node which
     cannot measure memory must not advertise zero: on a desktop host that marks
     every host ineligible and would hand the primary lease to a phone by
-    accident. POSIX, macOS and Android answer via ``sysconf``; Windows via
+    accident. POSIX and Android answer via ``sysconf``; macOS via ``vm_stat``
+    (it does not define ``SC_AVPHYS_PAGES``); Windows via
     ``GlobalMemoryStatusEx``.
     """
     try:
@@ -48,6 +95,12 @@ def available_memory_bytes() -> int:
             return pages * size
     except (AttributeError, ValueError, OSError, TypeError):
         pass
+    if sys.platform == "darwin":
+        # macOS defines neither name above through os.sysconf, which is why a Mac
+        # node used to advertise no headroom at all.
+        available = macos_available_memory()
+        if available > 0:
+            return available
     try:
         import ctypes
 

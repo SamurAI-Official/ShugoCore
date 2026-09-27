@@ -6,6 +6,30 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### Node consistency in one command, and the Mac can measure its memory (v1.30.17)
+
+Consistency on a fleet node has four parts, and every incident so far came from one
+of them drifting silently. `scripts/node_consistency.py` reports all four *on the
+node itself*: the repo commit and its distance from origin; the llama.cpp pin
+versus the checkout; whether the Android bundle still matches the repo's copies;
+and whether the layer-split host binaries exist **and** can offload (`--rpc`
+present -- a build that compiles and cannot offload is how that went wrong once).
+It also reports the node's persisted id and whether it can measure free memory,
+because a node that advertises none is ineligible in the election and skipped by
+the layer planner: alive, and contributing nothing.
+
+That last check found a live fault: **the Mac advertises `mem=0`**.
+`available_memory_bytes()` answered via `os.sysconf` and a Windows `ctypes` path
+and had no macOS branch -- macOS does not define `SC_AVPHYS_PAGES`, so every Mac
+node advertised no headroom and could never be a candidate.
+`mesh_election.macos_available_memory()` now reads `vm_stat` (free + inactive +
+speculative pages, page size from `sysctl -n hw.pagesize`), and the Darwin
+platform is routed there explicitly.
+
+The same observation showed the Mac advertising `shugo-MacBook` while the peer map
+dials `shugo-mac`: still needs its restart to adopt the persisted identity, and the
+checker names that difference rather than leaving it to be inferred from a log.
+
 ### The fleet builds llama.cpp from the pinned commit (v1.30.16)
 
 The Phase 0 commit silently moved the recorded llama.cpp pin: `git add -A` staged

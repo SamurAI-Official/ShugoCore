@@ -98,6 +98,9 @@ class SettleTestCase(unittest.TestCase):
         # host port is already serving another process, and on a machine with a
         # stray llama-server a shared default port makes this class order-dependent.
         kwargs.setdefault("port", 1)
+        # Never wait on a socket in a unit test: with an injected no-op sleep this
+        # loop spins against real time, so the 120 s default is a busy wait.
+        kwargs.setdefault("health_timeout", 0)
         return mmh.MeshModelHost(
             "model.gguf", binary="llama-server",
             launcher=lambda *_a, **_k: _FakeLauncher(),
@@ -133,7 +136,10 @@ class SettleTestCase(unittest.TestCase):
         tiny = {"node_id": "shugo-a51", "mem_available_bytes": 10 * 1024 * 1024,
                 "thermal_status": 0}
         host = self._host(live_peers=[tiny])
-        state = host.start()
+        # Patch the probe rather than let a unit test open a socket: on a machine
+        # with a proxy configured, urlopen to a dead port is several seconds each.
+        with mock.patch.object(mmh, "health_ok", return_value=False):
+            state = host.start()
         self.assertEqual(state["mode"], "local")
         self.assertIn("insufficient_headroom", state["reason"])
 

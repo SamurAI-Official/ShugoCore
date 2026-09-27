@@ -467,6 +467,35 @@ def _startup_model_host(agent, args) -> None:
         log.info("point the agent at it with --api-url http://127.0.0.1:%s",
                  state.get("host_port"))
 
+def _phrase_line(agent, text: str) -> str:
+    """Shape one spoken line with the persona model, if this node has one.
+
+    Uses the decision engine's own step rather than a second implementation, so an
+    operator's line gets exactly the treatment a decided one gets: speech only, before
+    anything gates it, and the draft kept when the phrasing node cannot be reached.
+    """
+    engine = getattr(agent, "engine", None)
+    shape = getattr(engine, "_apply_persona", None)
+    if not callable(shape):
+        return text
+    decision = {"action_type": "speak", "params": {"text": text}}
+    try:
+        decision = shape(decision, {"type": "operator_say"}, False)
+    except Exception as exc:
+        log.warning("persona phrasing skipped: %s", exc)
+        return text
+    persona = decision.get("persona") if isinstance(decision, dict) else {}
+    persona = persona if isinstance(persona, dict) else {}
+    spoken = str((decision.get("params") or {}).get("text") or text)
+    if persona.get("source") == "persona":
+        log.info("persona %s phrased the operator's line: %r -> %r",
+                 persona.get("label"), text, spoken)
+    elif persona.get("source") == "unavailable":
+        log.info("persona unavailable; speaking the operator's line as typed: %s",
+                 persona.get("reason"))
+    return spoken
+
+
 def _startup_say(agent, args) -> None:
     """Speak once through the hive: routed, or forced to a named device.
 
@@ -518,6 +547,8 @@ def _startup_say(agent, args) -> None:
         text, device = text.strip(), device.strip()
         if not text:
             continue
+        # An operator's line is phrased like any other line the hive speaks.
+        text = _phrase_line(agent, text)
         if device:
             result = agent._mesh_delegate(device, {
                 "action_type": "speak", "params": {"text": text}})

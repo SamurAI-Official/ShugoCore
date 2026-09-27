@@ -6,6 +6,7 @@ its voice (every failure returns the draft), and it must never touch anything bu
 """
 import os
 import sys
+import types
 import unittest
 from pathlib import Path
 
@@ -172,6 +173,54 @@ class PersonaInDecisionTestCase(unittest.TestCase):
         out = engine._apply_persona(decision, {})
         self.assertEqual(out["params"]["text"], "still spoken")
         self.assertEqual(out["persona"]["source"], "unavailable")
+
+
+def _desktop_module():
+    """The desktop script, loaded the way its own test file loads it."""
+    import importlib.util
+
+    root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(root / "scripts"))       # its sibling imports live there
+    spec = importlib.util.spec_from_file_location(
+        "desktop_agent_under_test", root / "scripts" / "desktop_agent.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class OperatorLineTestCase(unittest.TestCase):
+    """An operator's line goes through the same persona step a decided one does."""
+
+    def _agent(self, engine):
+        return types.SimpleNamespace(engine=engine)
+
+    def test_the_operator_line_is_phrased_by_the_engine_step(self):
+        class _Engine:
+            @staticmethod
+            def _apply_persona(decision, _task, _advisory_only=False):
+                decision = dict(decision)
+                decision["params"] = dict(decision["params"], text="shaped by persona")
+                decision["persona"] = {"source": "persona", "label": "m@host"}
+                return decision
+
+        module = _desktop_module()
+        self.assertEqual(module._phrase_line(self._agent(_Engine()), "as typed"),
+                         "shaped by persona")
+
+    def test_without_a_phrasing_step_the_line_is_spoken_as_typed(self):
+        module = _desktop_module()
+        self.assertEqual(module._phrase_line(self._agent(None), "as typed"),
+                         "as typed")
+
+    def test_a_broken_phrasing_step_still_speaks_the_line(self):
+        class _Engine:
+            @staticmethod
+            def _apply_persona(*_args, **_kwargs):
+                raise RuntimeError("bad shaper")
+
+        module = _desktop_module()
+        self.assertEqual(module._phrase_line(self._agent(_Engine()), "as typed"),
+                         "as typed")
 
 
 if __name__ == "__main__":

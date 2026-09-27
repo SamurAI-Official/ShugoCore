@@ -6,6 +6,37 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### P1.2: the split is re-planned, the hot device detaches, the model is watched (v1.30.19)
+
+P1.1 decided the split once, at boot, and lived with that decision for the life of the
+process. The first live cross-device run showed what that costs: a phone heartbeated
+**one second** after the settle budget expired, and its capacity was lost until the
+hub was restarted. `reconcile()` now runs on a cadence (`--model-host-reconcile`, 60 s
+by default):
+
+- **A device that arrives gets offered layers**, and one that leaves or goes thermally
+  critical gives its layers back -- the released layers go to whoever can take them, or
+  home to the host. A change must persist across two checks and rebalances are at most
+  5 minutes apart, so a phone that blips over Wi-Fi does not cost a model reload.
+- **`THERMAL_REFUSE_STATUS` is now a runtime detach, not only a planning rule.** A
+  device that becomes critical *while holding layers* is detached, and it is then
+  **pinned** out of the plan for 5 minutes: a device that has just shed layers must not
+  be handed them straight back because its next advertisement still looks cool.
+- **The host model is watched.** Liveness is asked fresh each check rather than trusted
+  from the launch verdict -- a peripheral that dies mid-session takes the model's
+  ability to serve with it, and a stopped process says nothing about that. If it is not
+  serving, it is restarted; each further failure gives up one device's layers, weakest
+  headroom first, until the model runs locally. After three attempts it reports
+  `failed` and stops trying rather than looping, keeping the reason the last attempt
+  actually failed for.
+- **A stopped host model is no longer orphaned.** The desktop agent now stops the model
+  host on shutdown, which is where the seven stale `llama-server` processes on this
+  bench came from.
+
+`reconcile()` plans, so it also cannot regress what P1.1 verified: a healthy split is
+left alone, and a relaunch keeps the same fail-closed path (reachability by real
+connect, argv, health, probe).
+
 ### Layer-split planning: fresh headroom, a fleet-sized settle, and the RPC port (v1.30.19)
 
 The first live cross-device attempt exposed three defects that would each have read

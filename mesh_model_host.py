@@ -10,6 +10,15 @@ then verifies that it answers.
 
 Fail-closed at every step. No plan, no peripheral, or a failed probe means the
 model still runs -- locally -- and the reason is reported rather than implied.
+
+The plan is not one-off. A node plans before part of its fleet has been discovered,
+and the first live cross-device run missed a phone by one second and then hosted the
+model locally for the rest of the process's life. ``reconcile()`` re-plans on a
+cadence instead: a device that appears gets offered the layers the host is holding,
+one that goes thermally critical or drops out gives its layers back, and the host
+model itself is watched -- restarted with fewer remote layers each time until it
+serves.
+
 Two properties are enforced here rather than trusted from the transport:
 
 * **the RPC socket is unauthenticated** (llama.cpp says so itself), so the
@@ -35,6 +44,14 @@ DEFAULT_MODEL_HOST_PORT = 8099
 HEALTH_TIMEOUT_S = 120.0
 ENDPOINT_TIMEOUT_S = 45.0
 SETTLE_TIMEOUT_S = 60.0
+# A device that went thermally critical is not offered layers again immediately:
+# the next advertisement it sends may still look cool.
+THERMAL_PIN_S = 300.0
+# Re-launching the host model costs a reload, so a rebalance happens at most this
+# often and only once a change has persisted across checks.
+REBALANCE_COOLDOWN_S = 300.0
+REBALANCE_STABLE_RUNS = 2
+MAX_RESTARTS = 3
 
 
 def plan_for_fleet(live_peers, total_layers: int, bytes_per_layer: int, *,
@@ -81,6 +98,48 @@ def plan_for_fleet(live_peers, total_layers: int, bytes_per_layer: int, *,
     if excluded:
         plan["skipped"] = list(plan.get("skipped") or []) + excluded
     return plan
+
+
+def split_difference(current, desired) -> Dict[str, Any]:
+    """What changed between the running split and the plan the hive now supports.
+
+    Both are ``{device_id: layers}``. A *detach* is a device holding layers that the
+    plan no longer offers them to (thermally critical, gone, out of headroom); an
+    *attach* is a device the plan has just started using; a *resize* is a device
+    keeping layers, but not the same number. Remote-layer totals are reported as a
+    delta so a caller can see the direction without doing the arithmetic twice.
+    """
+    current = {str(k): int(v) for k, v in (current or {}).items()}
+    desired = {str(k): int(v) for k, v in (desired or {}).items()}
+    detach = sorted(d for d in current if d not in desired)
+    attach = sorted(d for d in desired if d not in current)
+    resize = sorted(d for d in current if d in desired and current[d] != desired[d])
+    return {"changed": bool(detach or attach or resize),
+            "detach": detach, "attach": attach, "resize": resize,
+            "remote_delta": sum(desired.values()) - sum(current.values())}
+
+
+def degrade_split(assignments, headroom=None, *, drop=None) -> Dict[str, Any]:
+    """Give up exactly one device's layers, weakest first.
+
+    The watchdog uses this when the host model will not come up with the split it was
+    given: restart with fewer remote layers rather than failing, repeatedly, until
+    the model runs locally if it has to. The weakest device is the one with the least
+    measured headroom, because that is the one whose RPC peripheral is most likely to
+    be the reason the model cannot load.
+    """
+    current = {str(k): int(v) for k, v in (assignments or {}).items()}
+    if not current:
+        return {"assignments": {}, "dropped": None, "layers": 0,
+                "reason": "nothing remote left to give up"}
+    if drop and str(drop) in current:
+        chosen = str(drop)
+    else:
+        chosen = min(current, key=lambda device: (
+            int((headroom or {}).get(device, 0)), device))
+    remaining = {d: n for d, n in current.items() if d != chosen}
+    return {"assignments": remaining, "dropped": chosen, "layers": current[chosen],
+            "reason": f"degraded: {chosen} gave up {current[chosen]} layer(s)"}
 
 
 def endpoint_map(peers=None, env=None, port=None) -> Dict[str, str]:
@@ -220,7 +279,12 @@ class MeshModelHost:
                  exclude=(),
                  reach_timeout=ENDPOINT_TIMEOUT_S,
                  health_timeout=HEALTH_TIMEOUT_S,
-                 settle_timeout=SETTLE_TIMEOUT_S):
+                 settle_timeout=SETTLE_TIMEOUT_S,
+                 health=None, port_serving=None, clock=None,
+                 thermal_pin_s=THERMAL_PIN_S,
+                 cooldown_s=REBALANCE_COOLDOWN_S,
+                 stable_runs=REBALANCE_STABLE_RUNS,
+                 max_restarts=MAX_RESTARTS):
         self.model_path = str(model_path or "").strip()
         self.agent = agent
         self.binary = binary
@@ -238,6 +302,21 @@ class MeshModelHost:
         self.reach_timeout = float(reach_timeout)
         self.health_timeout = float(health_timeout)
         self.settle_timeout = float(settle_timeout)
+        self.thermal_pin_s = float(thermal_pin_s)
+        self.cooldown_s = float(cooldown_s)
+        self.stable_runs = max(1, int(stable_runs))
+        self.max_restarts = max(0, int(max_restarts))
+        # Two different questions, so two injectable answers: does something already
+        # answer on our port *before* we start, and does the model answer *after*.
+        self._health = health or health_ok
+        self._port_serving = port_serving or (lambda base: health_ok(base))
+        self._clock = clock or time.monotonic
+        self._refused: Dict[str, Dict[str, Any]] = {}
+        self._pending_sig: Optional[tuple] = None
+        self._pending_runs = 0
+        self._last_restart = 0.0
+        self._relaunches = 0
+        self._failures = 0
         self._make_launcher = launcher or _default_launcher
         self._connect = connect
         self._probe = prober or probe_completion
@@ -291,32 +370,43 @@ class MeshModelHost:
             return []
 
     def plan(self) -> Dict[str, Any]:
-        return plan_for_fleet(self.live_peers(), self.total_layers,
+        plan = plan_for_fleet(self.live_peers(), self.total_layers,
                               self.bytes_per_layer(),
                               local_layers_min=self.local_layers_min,
                               reserve_bytes=self.reserve_bytes,
                               exclude=self.exclude)
+        return self._apply_pins(plan)
 
     # -- lifecycle ------------------------------------------------------------
-    def start(self) -> Dict[str, Any]:
-        """Plan, wake the peripherals, launch the model, verify it answers."""
+    def start(self, *, assignments: Optional[Dict[str, int]] = None,
+              cause: str = "") -> Dict[str, Any]:
+        """Plan, wake the peripherals, launch the model, verify it answers.
+
+        ``assignments`` and ``cause`` are the reconcile path: an exact split the
+        caller has already decided on (possibly a degraded one) and why, so the state
+        still explains itself after a restart.
+        """
         if not self.model_path:
             return self._record({"mode": "off", "reason": "no model path"})
         if not self.binary:
             from android_inference import find_llama_server  # noqa: WPS433
             self.binary = find_llama_server()
         plan = self.plan()
-        if self._should_wait_for_peers(plan):
-            # A node that just booted has an election verdict before it has peers,
-            # so planning immediately reports "no peripheral" and the hive hosts
-            # the model locally for ever. Wait for the mesh to say something --
-            # the same trap --say hit.
-            deadline = time.monotonic() + max(0.0, self.settle_timeout)
-            while time.monotonic() < deadline and not self.live_peers():
-                self._sleep(2.0)
-            plan = self.plan()
-        assignments = {str(k): int(v)
-                       for k, v in (plan.get("assignments") or {}).items()}
+        if assignments is None:
+            if self._should_wait_for_peers(plan):
+                # A booting node has an election verdict before it has peers: a solo
+                # node must start straight away, while a hive waits a bounded time
+                # for the rest of it to check in.
+                deadline = self._clock() + max(0.0, self.settle_timeout)
+                while self._clock() < deadline and not self.live_peers():
+                    self._sleep(2.0)
+                plan = self.plan()
+            assignments = {str(k): int(v)
+                           for k, v in (plan.get("assignments") or {}).items()}
+        else:
+            # A reconcile: the caller's verdict is the fleet's, and re-planning here
+            # would quietly undo a deliberate degrade.
+            assignments = {str(k): int(v) for k, v in (assignments or {}).items()}
         endpoints = self.endpoints()
         started: List[Dict[str, Any]] = []
         unreachable: List[Dict[str, Any]] = []
@@ -369,21 +459,23 @@ class MeshModelHost:
             "reserve_bytes": plan.get("reserve_bytes"),
             "host_port": self.port, "rpc_port": self.rpc_port,
             "launcher": type(self._launcher).__name__ if self._launcher else "",
-            "reason": state_reason, "launched": False, "health": False,
+            "reason": state_reason or str(cause or ""),
+            "relaunches": self._relaunches,
+            "launched": False, "health": False,
             "probe": False}
         if remote and not extra:
-            state["reason"] = "no usable peripheral endpoints"
-        if health_ok(f"http://127.0.0.1:{self.port}"):
+            self._note(state, "no usable peripheral endpoints")
+        if self._port_serving(f"http://127.0.0.1:{self.port}"):
             # Something already answers on our port -- usually a host model left
             # behind by an earlier run. Launching anyway means the verification
             # below talks to *that* server, and the split gets reported as verified
             # by a model that is not ours.
-            state["reason"] = (f"port {self.port} is already serving another "
-                               "process")
+            self._note(state, f"port {self.port} is already serving another "
+                              "process")
             return self._record(state)
         state["launched"] = self._launch(extra)
         if not state["launched"]:
-            state["reason"] = state["reason"] or "host model did not start"
+            self._note(state, "host model did not start")
             return self._record(state)
         state.update(self._verify())
         if remote and not state["health"]:
@@ -391,9 +483,9 @@ class MeshModelHost:
             # what it is, not as a working split.
             state["mode"] = "split-unhealthy"
         if not state["health"]:
-            state["reason"] = state["reason"] or "host model did not answer /health"
+            self._note(state, "host model did not answer /health")
         elif not state["probe"]:
-            state["reason"] = "host model answered /health but failed its probe"
+            self._note(state, "host model answered /health but failed its probe")
         return self._record(state)
 
     def stop(self) -> Dict[str, Any]:
@@ -407,6 +499,10 @@ class MeshModelHost:
                 logger.warning("mesh model host stop failed: %s", exc)
         for entry in state.get("started") or []:
             self._ask_peripheral(str((entry or {}).get("device_id")), "stop")
+        # Pins survive a stop on purpose: a device that just went critical must not
+        # be handed layers by the next start either.
+        self._pending_sig, self._pending_runs = None, 0
+        self._failures = 0
         self._state = {"mode": "off", "reason": "stopped"}
         return dict(self._state)
 
@@ -422,13 +518,203 @@ class MeshModelHost:
                                sorted((state.get("assignments") or {}).items()))
             verified = "" if state.get("health") and state.get("probe") \
                 else ",unverified"
+            restarts = int(state.get("relaunches") or 0)
+            relaunched = f",relaunch={restarts}" if restarts else ""
             return (f"split(layers={state.get('remote_layers')}/"
-                    f"{self.total_layers} dev={devices}{verified})")
+                    f"{self.total_layers} dev={devices}{verified}{relaunched})")
         if mode == "local":
             return f"local({state.get('reason') or 'no peripherals'})"
         return f"{mode}({state.get('reason') or 'not started'})"
 
+    def reconcile(self, *, force: bool = False) -> Dict[str, Any]:
+        """Re-plan against the live hive: the watchdog first, then the rebalance.
+
+        A plan made before a device arrives is stale the moment it does -- the first
+        live cross-device run missed a phone by one second and then hosted the model
+        locally for the rest of the process's life. So on every check: make sure the
+        host model is still serving what it was given, then re-plan and re-launch only
+        when the fleet's verdict has *stayed* different (a phone that blips must not
+        cost a restart) and the cooldown has passed.
+
+        Returns ``{"action": "hold"|"deferred"|"restart"|"gave_up", ...}``.
+        """
+        state = dict(self._state)
+        mode = state.get("mode")
+        if not mode or mode in ("off", "stopped"):
+            return {"action": "hold", "reason": "not started"}
+        if mode == "failed":
+            return {"action": "hold", "reason": "gave up restarting"}
+        watchdog = self._watchdog_plan(state)
+        if watchdog.get("action") == "gave_up":
+            return self._give_up(str(watchdog.get("reason") or "unable to serve"))
+        if watchdog.get("action") == "restart":
+            return self._relaunch(watchdog.get("assignments") or {},
+                                  cause=str(watchdog.get("reason") or "watchdog"))
+        plan = self.plan()
+        desired = {str(k): int(v)
+                   for k, v in (plan.get("assignments") or {}).items()}
+        current = {str(k): int(v)
+                   for k, v in (state.get("assignments") or {}).items()}
+        difference = split_difference(current, desired)
+        if not difference["changed"]:
+            self._pending_sig, self._pending_runs = None, 0
+            return {"action": "hold", "difference": difference}
+        self._note_thermal_detaches(difference, plan)
+        signature = tuple(sorted(desired.items()))
+        self._pending_runs = (self._pending_runs + 1
+                              if signature == self._pending_sig else 1)
+        self._pending_sig = signature
+        if not force and self._pending_runs < self.stable_runs:
+            return {"action": "deferred", "difference": difference,
+                    "reason": f"change seen {self._pending_runs}/"
+                              f"{self.stable_runs} time(s)"}
+        waited = self._clock() - self._last_restart
+        if not force and waited < self.cooldown_s:
+            return {"action": "deferred", "difference": difference,
+                    "reason": f"cooldown ({waited:.0f}s of {self.cooldown_s:.0f}s)"}
+        return self._relaunch(desired, cause=self._difference_reason(difference, plan))
+
+    def _watchdog_plan(self, state) -> Dict[str, Any]:
+        """Is the host model still serving, and what should be tried next?
+
+        A model that died, or that cannot serve the split it was given, is restarted.
+        Each further failure gives up one device's layers -- weakest first -- until the
+        model runs locally rather than not at all.
+        """
+        launcher = self._launcher
+        alive = bool(launcher is not None and launcher.running())
+        base = f"http://127.0.0.1:{self.port}"
+        # Ask rather than trust the verdict recorded at launch: a peripheral that dies
+        # mid-session takes the model's ability to serve with it, and a stopped process
+        # says nothing about it.
+        serving = alive and bool(self._health(base))
+        if serving and not state.get("probe"):
+            # The launch-time generation failed, so ask again before calling it dead.
+            serving = bool(self._probe(base))
+        if serving:
+            self._failures = 0
+            return {"action": "hold"}
+        what = "died" if not alive else "cannot serve this split"
+        current = {str(k): int(v)
+                   for k, v in (state.get("assignments") or {}).items()}
+        if self._failures >= self.max_restarts:
+            return {"action": "gave_up",
+                    "reason": f"host model {what} and restarting did not help"}
+        if self._failures == 0:
+            return {"action": "restart", "assignments": current,
+                    "reason": f"host model {what}"}
+        degraded = degrade_split(current, state.get("headroom") or {})
+        return {"action": "restart", "assignments": degraded["assignments"],
+                "reason": f"host model {what}; {degraded['reason']}"}
+
+    def _relaunch(self, assignments, *, cause: str) -> Dict[str, Any]:
+        """Stop what is running, run this exact split, and report what happened.
+
+        Only the dropped devices are released: the peripherals we keep are re-asked by
+        ``start()``, which costs one round trip and keeps the release path honest --
+        a device that loses its layers must actually stop serving them.
+        """
+        previous = {str(k): int(v)
+                    for k, v in (self._state.get("assignments") or {}).items()}
+        keep = {str(device) for device in (assignments or {})}
+        launcher, self._launcher = self._launcher, None
+        if launcher is not None:
+            try:
+                launcher.stop()
+            except Exception as exc:
+                logger.warning("mesh model host stop before relaunch failed: %s", exc)
+        for device in sorted(set(previous) - keep):
+            self._ask_peripheral(device, "stop")
+        self._relaunches += 1
+        self._last_restart = self._clock()
+        state = self.start(assignments=dict(assignments or {}), cause=cause)
+        if state.get("health"):
+            self._failures = 0
+        else:
+            self._failures += 1
+        logger.info("mesh model host relaunched (%s): %s", cause, self.summary_line())
+        return {"action": "restart", "cause": cause, "failures": self._failures,
+                "difference": split_difference(previous, assignments),
+                "state": state}
+
+    def _give_up(self, reason: str) -> Dict[str, Any]:
+        """Stop trying, keeping the reason the last attempt actually failed for."""
+        state = dict(self._state)
+        state["mode"] = "failed"
+        state["reason"] = "; ".join(
+            part for part in (reason, str(self._state.get("reason") or "")) if part)
+        return {"action": "gave_up", "reason": state["reason"],
+                "state": self._record(state)}
+
     # -- internals ------------------------------------------------------------
+    def _note_thermal_detaches(self, difference, plan) -> None:
+        """Remember a device the plan dropped for heat, so it is not re-offered.
+
+        ``THERMAL_REFUSE_STATUS`` used to be only a planning rule. A device that goes
+        critical *while holding layers* has to give them up, and one that has just
+        shed them must not be handed them straight back because its next
+        advertisement still looks cool.
+        """
+        reasons = self._plan_reasons(plan)
+        for device in difference.get("detach") or []:
+            why = str(reasons.get(str(device)) or "")
+            if why.startswith("thermal_status="):
+                self._pin(str(device), why)
+
+    def _pin(self, device: str, reason: str) -> None:
+        if not device:
+            return
+        self._refused[device] = {
+            "reason": reason,
+            "until": self._clock() + max(0.0, self.thermal_pin_s)}
+        logger.info("mesh model host: detached %s for %gs (%s)", device,
+                    self.thermal_pin_s, reason)
+
+    def _apply_pins(self, plan) -> Dict[str, Any]:
+        """Hold pinned devices out of a plan, with the reason they are being held."""
+        now = self._clock()
+        for device in [d for d, info in self._refused.items()
+                       if float(info.get("until") or 0) <= now]:
+            self._refused.pop(device, None)
+        if not self._refused:
+            return plan
+        assignments = dict(plan.get("assignments") or {})
+        for device in sorted(set(assignments) & set(self._refused)):
+            assignments.pop(device, None)
+            held = str(self._refused[device].get("reason") or "thermal")
+            plan.setdefault("skipped", []).append(
+                {"device_id": device, "reason": f"detached: {held}"})
+        plan["assignments"] = assignments
+        plan["remote_layers"] = sum(assignments.values())
+        total = int(plan.get("total_layers") or self.total_layers)
+        plan["local_layers"] = total - plan["remote_layers"]
+        return plan
+
+    def _difference_reason(self, difference, plan) -> str:
+        """Why this rebalance, naming the devices and the plan's own reason."""
+        reasons = self._plan_reasons(plan)
+        parts = [f"detached {device} ({reasons.get(str(device)) or 'gone'})"
+                 for device in difference.get("detach") or []]
+        parts += [f"attached {device}" for device in difference.get("attach") or []]
+        parts += [f"resized {device}" for device in difference.get("resize") or []]
+        return "; ".join(parts) or "rebalance"
+
+    @staticmethod
+    def _plan_reasons(plan) -> Dict[str, str]:
+        """A plan's own explanation, by device."""
+        return {str(item.get("device_id")): str(item.get("reason"))
+                for item in (plan.get("skipped") or []) if isinstance(item, dict)}
+
+    @staticmethod
+    def _note(state: Dict[str, Any], text: str) -> None:
+        """Append to a state's reason rather than replacing it.
+
+        The first reason is usually the true one -- a device was detached, or the port
+        was already taken -- and a later failure must not erase it.
+        """
+        existing = str(state.get("reason") or "")
+        state["reason"] = "; ".join(part for part in (existing, text) if part)
+
     def _should_wait_for_peers(self, plan) -> bool:
         """Wait for a hive to finish arriving; a solo node starts straight away.
 
@@ -481,11 +767,11 @@ class MeshModelHost:
 
     def _wait_reachable(self, endpoint: str) -> bool:
         """Poll the peripheral's socket until it accepts, or the budget runs out."""
-        deadline = time.monotonic() + max(0.0, self.reach_timeout)
+        deadline = self._clock() + max(0.0, self.reach_timeout)
         while True:
             if endpoint_reachable(endpoint, connect=self._connect):
                 return True
-            if time.monotonic() >= deadline:
+            if self._clock() >= deadline:
                 return False
             self._sleep(2.0)
 
@@ -517,10 +803,10 @@ class MeshModelHost:
         generation is the only honest check that the split works.
         """
         base = f"http://127.0.0.1:{self.port}"
-        deadline = time.monotonic() + max(0.0, self.health_timeout)
+        deadline = self._clock() + max(0.0, self.health_timeout)
         healthy = False
-        while not healthy and time.monotonic() < deadline:
-            healthy = health_ok(base)
+        while not healthy and self._clock() < deadline:
+            healthy = self._health(base)
             if not healthy:
                 self._sleep(1.0)
         return {"health": healthy,
@@ -536,7 +822,8 @@ class MeshModelHost:
                              {key: state.get(key) for key in
                               ("mode", "remote_layers", "local_layers",
                                "assignments", "started", "skipped",
-                               "unreachable", "reason", "health", "probe")})
+                               "unreachable", "reason", "health", "probe",
+                               "relaunches")})
             except Exception:
                 pass
         return dict(self._state)

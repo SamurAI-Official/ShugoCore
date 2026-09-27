@@ -176,6 +176,12 @@ def parse_args(argv=None) -> argparse.Namespace:
                     metavar="DEVICE",
                     help="never offload to this device (repeatable) -- e.g. the "
                          "machine you are working on")
+    ap.add_argument("--model-host-reconcile", type=float, default=60.0,
+                    metavar="SECONDS",
+                    help="how often to check the split: restart the host model if it "
+                         "stopped serving, and re-plan when a device joins or leaves "
+                         "(0 disables; a change must persist across two checks and "
+                         "rebalances are at most 5 minutes apart)")
     ap.add_argument("--deploy-target", action="append", default=[],
                     metavar="SERIAL",
                     help="allow ADB deployment to this device serial "
@@ -431,7 +437,6 @@ def _startup_model_host(agent, args) -> None:
         log.info("point the agent at it with --api-url http://127.0.0.1:%s",
                  state.get("host_port"))
 
-
 def _startup_say(agent, args) -> None:
     """Speak once through the hive: routed, or forced to a named device.
 
@@ -600,6 +605,13 @@ def main(argv=None) -> int:
                         "continuous sync disabled", args.sync_interval)
     next_sync = (time.monotonic() + args.sync_interval
                  if sync_peers else None)
+    # The host model is watched on a cadence of its own: a model that stopped serving
+    # has to come back, and a fleet that has changed shape has to be re-planned rather
+    # than staying as it was when the node booted.
+    host = getattr(agent, "_model_host", None)
+    reconcile_every = float(getattr(args, "model_host_reconcile", 0) or 0)
+    next_reconcile = (time.monotonic() + reconcile_every
+                      if host is not None and reconcile_every > 0 else None)
     try:
         while not _STOP:
             agent.tick()
@@ -610,6 +622,20 @@ def main(argv=None) -> int:
                 # calls and a sync never contend for the same backend.
                 _sync_once(runtime, sync_peers, "periodic")
                 next_sync = time.monotonic() + args.sync_interval
+            if next_reconcile is not None and time.monotonic() >= next_reconcile:
+                # On the agent thread, like the sync: a relaunch stops and starts the
+                # model, so it must not overlap a model call.
+                try:
+                    result = host.reconcile()
+                    if result.get("action") not in (None, "hold", "deferred"):
+                        log.info("model host %s: %s", result.get("action"),
+                                 host.summary_line())
+                    elif result.get("action") == "deferred":
+                        log.debug("model host reconcile deferred: %s",
+                                  result.get("reason"))
+                except Exception as exc:
+                    log.warning("model host reconcile failed: %s", exc)
+                next_reconcile = time.monotonic() + reconcile_every
             if next_status is not None and time.monotonic() >= next_status:
                 log.info("%s", _status_line(agent, runtime, ticks))
                 next_status = time.monotonic() + args.status_every
@@ -620,7 +646,8 @@ def main(argv=None) -> int:
     finally:
         log.info("shutting down (%s ticks): %s", ticks,
                  _status_line(agent, runtime, ticks))
-        for step, fn in (("mesh stop", getattr(runtime, "stop", None)),
+        for step, fn in (("model host stop", getattr(host, "stop", None)),
+                         ("mesh stop", getattr(runtime, "stop", None)),
                          ("agent cleanup", getattr(agent, "cleanup", None))):
             if not callable(fn):
                 continue

@@ -24,6 +24,12 @@ PEER_PHONE = {"node_id": "shugo-tab", "mem_available_bytes": 400 * MIB,
               "thermal_status": 0}
 PEER_HOT = {"node_id": "shugo-a51", "mem_available_bytes": 900 * MIB,
             "thermal_status": 4}
+# Two devices small enough that the layer budget spreads across both: the plan fills
+# the largest headroom first, so a device with room for every layer is used alone.
+PEER_SMALL = {"node_id": "shugo-a51", "mem_available_bytes": 300 * MIB,
+              "thermal_status": 0}
+PEER_MEDIUM = {"node_id": "shugo-a16", "mem_available_bytes": 500 * MIB,
+               "thermal_status": 0}
 
 
 class PlanTestCase(unittest.TestCase):
@@ -94,12 +100,14 @@ class SettleTestCase(unittest.TestCase):
 
     def _host(self, **kwargs):
         kwargs.setdefault("peers", [("shugo-tab", "127.0.0.1", 9000)])
-        # A port nothing can be listening on: the pre-launch guard asks whether the
-        # host port is already serving another process, and on a machine with a
-        # stray llama-server a shared default port makes this class order-dependent.
+        # A port nothing can be listening on, and a port probe that is never called:
+        # the pre-launch guard asks whether something already answers on our port, and
+        # a unit test must not open a socket (urlopen to a dead port is seconds each
+        # when a proxy is configured).
         kwargs.setdefault("port", 1)
-        # Never wait on a socket in a unit test: with an injected no-op sleep this
-        # loop spins against real time, so the 120 s default is a busy wait.
+        kwargs.setdefault("port_serving", lambda _base: False)
+        # Never wait on a socket in a unit test either: with an injected no-op sleep
+        # this loop spins against real time, so the 120 s default is a busy wait.
         kwargs.setdefault("health_timeout", 0)
         return mmh.MeshModelHost(
             "model.gguf", binary="llama-server",
@@ -136,35 +144,31 @@ class SettleTestCase(unittest.TestCase):
         tiny = {"node_id": "shugo-a51", "mem_available_bytes": 10 * 1024 * 1024,
                 "thermal_status": 0}
         host = self._host(live_peers=[tiny])
-        # Patch the probe rather than let a unit test open a socket: on a machine
-        # with a proxy configured, urlopen to a dead port is several seconds each.
-        with mock.patch.object(mmh, "health_ok", return_value=False):
-            state = host.start()
+        state = host.start()
         self.assertEqual(state["mode"], "local")
         self.assertIn("insufficient_headroom", state["reason"])
 
-    def _splitting_host(self, **kwargs):
+    def _splitting_host(self, healthy=True, **kwargs):
         peer = {"node_id": "shugo-a16", "mem_available_bytes": 2000 * 1024 * 1024,
                 "thermal_status": 0}
         # The peer map must name the same device the plan assigned, or the layers
         # are dropped for having no dialable endpoint.
         kwargs.setdefault("peers", [("shugo-a16", "127.0.0.1", 9000)])
+        kwargs.setdefault("health", lambda _base: healthy)
         return self._host(live_peers=[peer], health_timeout=0, **kwargs)
 
     def test_a_launched_split_that_never_answers_is_not_reported_as_a_split(self):
         """Intent is not a mode: verify it, or say what really happened."""
-        host = self._splitting_host()
-        with mock.patch.object(mmh, "health_ok", return_value=False):
-            state = host.start()
+        host = self._splitting_host(healthy=False)
+        state = host.start()
         self.assertEqual(state["mode"], "split-unhealthy")
         self.assertFalse(state["health"])
         self.assertIn("did not answer /health", state["reason"])
 
     def test_a_port_owned_by_a_stale_host_is_caught_before_launching(self):
         """Otherwise the health check answers from a model that is not ours."""
-        host = self._splitting_host()
-        with mock.patch.object(mmh, "health_ok", return_value=True):
-            state = host.start()
+        host = self._splitting_host(port_serving=lambda _base: True)
+        state = host.start()
         self.assertFalse(state["launched"])
         self.assertIn("already serving another process", state["reason"])
 
@@ -223,6 +227,189 @@ class EndpointTestCase(unittest.TestCase):
                                                 connect=_refuse))
         self.assertFalse(mmh.endpoint_reachable("not-an-endpoint",
                                                 connect=_refuse))
+
+
+class DifferenceTestCase(unittest.TestCase):
+    """The diff that decides whether a running split has to change."""
+
+    def test_a_device_that_lost_its_layers_is_a_detach(self):
+        diff = mmh.split_difference({"shugo-a51": 5}, {"shugo-tab": 5})
+        self.assertTrue(diff["changed"])
+        self.assertEqual(diff["detach"], ["shugo-a51"])
+        self.assertEqual(diff["attach"], ["shugo-tab"])
+
+    def test_a_layer_count_change_is_a_resize(self):
+        diff = mmh.split_difference({"shugo-tab": 5}, {"shugo-tab": 8})
+        self.assertEqual((diff["detach"], diff["attach"]), ([], []))
+        self.assertEqual(diff["resize"], ["shugo-tab"])
+        self.assertEqual(diff["remote_delta"], 3)
+
+    def test_the_same_split_is_not_a_change(self):
+        diff = mmh.split_difference({"shugo-tab": 5}, {"shugo-tab": 5})
+        self.assertFalse(diff["changed"])
+
+
+class DegradeTestCase(unittest.TestCase):
+    """Restarting with fewer layers rather than not at all."""
+
+    def test_the_weakest_device_gives_up_its_layers_first(self):
+        step = mmh.degrade_split({"shugo-mac": 10, "shugo-a16": 3},
+                                 {"shugo-mac": 1900 * MIB, "shugo-a16": 100 * MIB})
+        self.assertEqual(step["dropped"], "shugo-a16")
+        self.assertEqual(step["assignments"], {"shugo-mac": 10})
+
+    def test_with_nothing_remote_left_it_says_so(self):
+        step = mmh.degrade_split({}, {})
+        self.assertEqual(step["assignments"], {})
+        self.assertIsNone(step["dropped"])
+        self.assertIn("nothing remote", step["reason"])
+
+
+class _Fleet:
+    """A launcher the test can kill, and a clock the test can advance."""
+
+    def __init__(self):
+        self.now = 1000.0
+        self.healthy = True
+        self.launchers = []
+
+    def clock(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
+
+    def launcher(self, *_args, **_kwargs):
+        instance = _FakeLauncher()
+        self.launchers.append(instance)
+        return instance
+
+    @property
+    def current(self):
+        return self.launchers[-1] if self.launchers else None
+
+    def die(self):
+        """The host model process goes away, as one did on the bench."""
+        if self.current is not None:
+            self.current.started = False
+
+
+class ReconcileTestCase(unittest.TestCase):
+    """A plan is not a one-off: the fleet changes while the model is running.
+
+    The first live cross-device run missed a phone by one second and then hosted the
+    model locally for the rest of the process's life; a device that goes critical has
+    to give its layers up; and a host model that stops serving has to come back.
+    """
+
+    def setUp(self):
+        self.fleet = _Fleet()
+        self.peers = []
+
+    def _start(self, peers, **kwargs):
+        self.peers = [dict(peer) for peer in peers]
+        host = mmh.MeshModelHost(
+            "model.gguf", binary="llama-server",
+            port=1, health_timeout=1.0, settle_timeout=0,
+            launcher=self.fleet.launcher,
+            connect=lambda *_a, **_k: _Conn(),
+            prober=lambda *_a, **_k: True,
+            sleep=self.fleet.advance,
+            clock=self.fleet.clock,
+            health=lambda _base: self.fleet.healthy,
+            port_serving=lambda _base: False,
+            live_peers=lambda: [dict(peer) for peer in self.peers],
+            peers=lambda: [(peer["node_id"], "127.0.0.1", 9000)
+                           for peer in self.peers],
+            **kwargs)
+        # A 20 MiB layer without a 480 MiB file on disk: the plan only needs the size.
+        host.bytes_per_layer = lambda: 20 * MIB
+        return host
+
+    def test_a_device_that_arrives_late_is_given_layers(self):
+        """The failure that started P1.2: the phone heartbeated one second too late."""
+        host = self._start([PEER_PHONE])
+        first = host.start()
+        self.assertEqual(first["mode"], "split")
+        self.assertTrue(first["assignments"])
+        self.peers.append(PEER_AMPLE)
+        self.assertEqual(host.reconcile()["action"], "deferred")  # must stick
+        self.fleet.advance(host.cooldown_s + 1)
+        self.assertEqual(host.reconcile()["action"], "restart")
+        self.assertIn("shugo-mac", host.status()["assignments"])
+        self.assertEqual(host.status()["relaunches"], 1)
+
+    def test_a_healthy_split_is_left_alone(self):
+        host = self._start([PEER_PHONE])
+        host.start()
+        self.assertEqual(host.reconcile()["action"], "hold")
+        self.assertEqual(len(self.fleet.launchers), 1)      # no restart, no reload
+
+    def test_a_device_that_goes_critical_gives_up_its_layers(self):
+        hot = dict(PEER_PHONE, node_id="shugo-a51")
+        host = self._start([hot])
+        self.assertTrue(host.start()["assignments"])
+        self.peers[0] = dict(hot, thermal_status=4)
+        host.reconcile()
+        self.fleet.advance(host.cooldown_s + 1)
+        self.assertEqual(host.reconcile()["action"], "restart")
+        state = host.status()
+        self.assertEqual(state["assignments"], {})
+        self.assertEqual(state["mode"], "local")
+        self.assertIn("thermal_status=4", state["reason"])
+
+    def test_a_detached_device_is_not_given_layers_straight_back(self):
+        """THERMAL_REFUSE_STATUS is a runtime detach, not only a planning rule."""
+        hot = dict(PEER_PHONE, node_id="shugo-a51")
+        host = self._start([hot])
+        host.start()
+        self.peers[0] = dict(hot, thermal_status=4)
+        host.reconcile()
+        self.fleet.advance(host.cooldown_s + 1)
+        host.reconcile()
+        self.assertEqual(host.status()["assignments"], {})
+        # It advertises itself cool again: the pin must still hold it out, so the plan
+        # is unchanged and there is nothing to do.
+        self.peers[0] = dict(hot, thermal_status=0)
+        self.assertEqual(host.reconcile()["action"], "hold")
+        self.assertEqual(host.status()["assignments"], {})
+        # ... and once the pin has expired it is usable again.
+        self.fleet.advance(host.thermal_pin_s + 1)
+        self.assertEqual(host.reconcile()["action"], "deferred")
+        self.fleet.advance(host.cooldown_s + 1)
+        self.assertEqual(host.reconcile()["action"], "restart")
+        self.assertIn("shugo-a51", host.status()["assignments"])
+
+    def test_a_host_model_that_died_is_restarted(self):
+        host = self._start([PEER_PHONE])
+        host.start()
+        self.fleet.die()
+        result = host.reconcile()
+        self.assertEqual(result["action"], "restart")
+        self.assertIn("died", result["cause"])
+        self.assertTrue(host.status()["health"])
+        self.assertEqual(host.status()["relaunches"], 1)
+
+    def test_restarts_give_up_layers_until_the_model_runs_locally(self):
+        """Keep trying somewhere: fewer remote layers beat no model at all."""
+        host = self._start([PEER_SMALL, PEER_MEDIUM])
+        first = host.start()
+        self.assertEqual(len(first["assignments"]), 2)
+        self.fleet.healthy = False
+        counts = [sum(first["assignments"].values())]
+        actions = []
+        for _ in range(4):
+            self.fleet.advance(host.cooldown_s + 1)
+            actions.append(host.reconcile()["action"])
+            counts.append(sum(host.status()["assignments"].values()))
+        self.assertEqual(counts, sorted(counts, reverse=True))   # never grows
+        self.assertEqual(counts[-1], 0)                          # ends up local
+        # "failed" is the honest end: it gave up only after trying with no remote
+        # layers at all, so there is no model running to describe as local.
+        self.assertEqual(host.status()["mode"], "failed")
+        self.assertIn("gave_up", actions)
+        # ... and giving up is final: it stops trying instead of looping.
+        self.assertEqual(host.reconcile()["action"], "hold")
 
 
 class HostArgsTestCase(unittest.TestCase):

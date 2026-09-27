@@ -215,6 +215,10 @@ explicit, audited operator choice -- without it the peripheral stays on loopback
 only a same-machine peripheral can be used. Over Wi-Fi, keep the hive on a trusted
 link.
 
+A Mac is normally the device worth offloading to (measured ~1.5 GiB free against the
+phones' ~150-200 MB); `docs/mac_node.md` covers what is Mac-specific and how to check
+that node.
+
 
 One command, end to end (starts the app's peripheral itself, prints the table
 above, stops the peripheral afterwards):

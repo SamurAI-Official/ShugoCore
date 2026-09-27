@@ -6,6 +6,35 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### Consolidation: the Mac line and this line are one history (v1.30.18)
+
+The Mac's three commits (`ac05b78` desktop host launcher, `5d57648` the 18-commit
+merge, `e0863fd` the network bridge's 1.30 spatial/NRR seam) are preserved, and this
+tree sits on top of them. Verified rather than assumed: `git diff --name-status
+e0863fd HEAD` is exactly this work's ten files, and the diff of
+`scripts/desktop_agent.py` contains **only additions** -- no Mac hunk was dropped by
+the hand-merge that recovered from the interrupted rebase.
+
+One real defect came out of it. `shugonet_bridge` advertises five types policy does
+not define (the spatial/NRR seam) and merges them into `policy`'s sets **in place**
+at registration -- deliberately, because `execution_layer` holds a reference to that
+very set. The test asserting an exact snapshot of those globals was therefore
+order-dependent: it passed when run alone and failed in a full-suite run. It now
+asserts the contract (the core types are always present, the bridge's seam sits on
+top, and registration teaches policy every bridge action), and `policy.py` documents
+that its network sets grow at runtime so nobody freezes them again.
+
+`docs/mac_node.md` marks the Mac-specific portions -- the desktop control plane, the
+`vm_stat` free-memory branch, and host-launcher behaviour -- with the runbook and the
+rule that shared code must not assume Mac paths, Homebrew prefixes or a
+case-insensitive filesystem. A node that cannot measure its memory advertises none,
+which makes it ineligible in the election and skipped by the layer planner; that is
+what `mem=0` was doing to the Mac.
+
+Known pre-existing failures, unrelated and unchanged: the Windows
+`PermissionError` file-lock class, and tests that call the model backend while it is
+down (`Model shugocore-local call failed: HTTPError`).
+
 ### P1.1: the layer split runs from the runtime (v1.30.18)
 
 `plan_layer_split()` had existed since the layer-split work and was called by

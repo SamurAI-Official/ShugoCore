@@ -34,23 +34,31 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL_HOST_PORT = 8099
 HEALTH_TIMEOUT_S = 120.0
 ENDPOINT_TIMEOUT_S = 45.0
+SETTLE_TIMEOUT_S = 60.0
 
 
 def plan_for_fleet(live_peers, total_layers: int, bytes_per_layer: int, *,
                    local_layers_min: int = 1,
-                   reserve_bytes: int = DEFAULT_RESERVE_BYTES) -> Dict[str, Any]:
+                   reserve_bytes: int = DEFAULT_RESERVE_BYTES,
+                   exclude=()) -> Dict[str, Any]:
     """Layer assignment for the live hive.
 
     ``live_peers`` is whatever the election considers live: a peer that has
     stopped heartbeating is not offered layers, so a plan cannot include a device
-    that is already gone.
+    that is already gone. ``exclude`` is the operator's own list -- the machine you
+    are working on should not be asked to hold layers just because it has memory.
     """
+    skip = {str(name).strip() for name in (exclude or ()) if str(name).strip()}
     nodes: List[Dict[str, Any]] = []
+    excluded: List[Dict[str, Any]] = []
     for peer in live_peers or []:
         if not isinstance(peer, dict):
             continue
         device_id = str(peer.get("node_id") or peer.get("device_id") or "").strip()
         if not device_id:
+            continue
+        if device_id in skip:
+            excluded.append({"device_id": device_id, "reason": "excluded by operator"})
             continue
         entry = {"device_id": device_id,
                  "mem_available_bytes": peer.get("mem_available_bytes"),
@@ -63,25 +71,31 @@ def plan_for_fleet(live_peers, total_layers: int, bytes_per_layer: int, *,
     # The reserve is a property of the peripheral, not of the plan, so report the
     # headroom the same way the planner measured it.
     plan["reserve_bytes"] = int(reserve_bytes)
+    if excluded:
+        plan["skipped"] = list(plan.get("skipped") or []) + excluded
     return plan
 
 
-def endpoint_map(peers=None, env=None) -> Dict[str, str]:
+def endpoint_map(peers=None, env=None, port=None) -> Dict[str, str]:
     """``device_id -> "host:port"`` for the mesh peers.
 
     ``peers`` is the agent's own form (``[(id, host, port), ...]``), which is what
     the transport actually dials; ``SHUGOCORE_MESH_PEERS`` is the fallback the
-    runtime itself uses. Both are accepted because a wrong endpoint here looks
-    exactly like a peripheral that refused to start.
+    runtime itself uses.
+
+    ``port`` overrides the peer's own port, keeping the peer map's host. A mesh
+    model host dials each device's *RPC* port on the host the transport uses, and
+    mixing the two is invisible: the transport port is open as well, so a
+    reachability check passes and then the model cannot offload.
     """
     out: Dict[str, str] = {}
     for entry in peers or []:
         try:
-            device_id, host, port = entry[0], entry[1], int(entry[2])
+            device_id, host, peer_port = entry[0], entry[1], int(entry[2])
         except Exception:
             continue
-        if device_id and host and 0 < port < 65536:
-            out[str(device_id)] = f"{host}:{port}"
+        if device_id and host and 0 < peer_port < 65536:
+            out[str(device_id)] = f"{host}:{int(port or peer_port)}"
     if out:
         return out
     raw = (env if env is not None else os.environ).get("SHUGOCORE_MESH_PEERS", "")
@@ -90,9 +104,9 @@ def endpoint_map(peers=None, env=None) -> Dict[str, str]:
         name, address = name.strip(), address.strip()
         if not name or ":" not in address:
             continue
-        host, _, port = address.rpartition(":")
-        if host and port.isdigit():
-            out[name] = f"{host}:{port}"
+        host, _, peer_port = address.rpartition(":")
+        if host and peer_port.isdigit():
+            out[name] = f"{host}:{int(port or peer_port)}"
     return out
 
 
@@ -196,8 +210,10 @@ class MeshModelHost:
                  reserve_bytes=DEFAULT_RESERVE_BYTES, local_layers_min=1,
                  allow_lan=False, mmap=None, launcher=None, connect=None,
                  prober=None, live_peers=None, peers=None, sleep=None,
+                 exclude=(),
                  reach_timeout=ENDPOINT_TIMEOUT_S,
-                 health_timeout=HEALTH_TIMEOUT_S):
+                 health_timeout=HEALTH_TIMEOUT_S,
+                 settle_timeout=SETTLE_TIMEOUT_S):
         self.model_path = str(model_path or "").strip()
         self.agent = agent
         self.binary = binary
@@ -209,13 +225,18 @@ class MeshModelHost:
         self.reserve_bytes = int(reserve_bytes)
         self.local_layers_min = max(0, int(local_layers_min))
         self.allow_lan = bool(allow_lan)
+        self.exclude = {str(name).strip() for name in (exclude or ())
+                        if str(name).strip()}
         self.mmap = mmap
         self.reach_timeout = float(reach_timeout)
         self.health_timeout = float(health_timeout)
+        self.settle_timeout = float(settle_timeout)
         self._make_launcher = launcher or _default_launcher
         self._connect = connect
         self._probe = prober or probe_completion
         self._live = live_peers
+        # A static list is an answer; a callable is a live query, like the election.
+        self._live_is_explicit = live_peers is not None and not callable(live_peers)
         self._peers = peers
         self._sleep = sleep or time.sleep
         self._launcher = None
@@ -246,8 +267,8 @@ class MeshModelHost:
             return []
 
     def endpoints(self) -> Dict[str, str]:
-        """Where each peer's model port would be, by device id."""
-        return endpoint_map(self.fleet_peers())
+        """Where each peer's *model* port is: the transport host, the RPC port."""
+        return endpoint_map(self.fleet_peers(), port=self.rpc_port)
 
     def live_peers(self) -> List[Dict[str, Any]]:
         """The election's live set: a peer that stopped beating takes no layers."""
@@ -266,7 +287,8 @@ class MeshModelHost:
         return plan_for_fleet(self.live_peers(), self.total_layers,
                               self.bytes_per_layer(),
                               local_layers_min=self.local_layers_min,
-                              reserve_bytes=self.reserve_bytes)
+                              reserve_bytes=self.reserve_bytes,
+                              exclude=self.exclude)
 
     # -- lifecycle ------------------------------------------------------------
     def start(self) -> Dict[str, Any]:
@@ -277,6 +299,15 @@ class MeshModelHost:
             from android_inference import find_llama_server  # noqa: WPS433
             self.binary = find_llama_server()
         plan = self.plan()
+        if self._should_wait_for_peers(plan):
+            # A node that just booted has an election verdict before it has peers,
+            # so planning immediately reports "no peripheral" and the hive hosts
+            # the model locally for ever. Wait for the mesh to say something --
+            # the same trap --say hit.
+            deadline = time.monotonic() + max(0.0, self.settle_timeout)
+            while time.monotonic() < deadline and not self.live_peers():
+                self._sleep(2.0)
+            plan = self.plan()
         assignments = {str(k): int(v)
                        for k, v in (plan.get("assignments") or {}).items()}
         endpoints = self.endpoints()
@@ -368,6 +399,22 @@ class MeshModelHost:
         return f"{mode}({state.get('reason') or 'not started'})"
 
     # -- internals ------------------------------------------------------------
+    def _should_wait_for_peers(self, plan) -> bool:
+        """Wait while the known fleet has not all checked in.
+
+        A booting node plans against whoever has heartbeated so far, and on a fresh
+        start that can be a single desktop-class peer -- so the plan looks
+        definitive while the phones are still quiet, and the hive hosts the model
+        locally for ever. Wait until the live set covers the peer map, or the budget
+        runs out. A *static* ``live_peers`` list means the caller already answered
+        the question; a callable is a live query, like the real election.
+        """
+        if self._live_is_explicit or self.settle_timeout <= 0:
+            return False
+        if plan.get("assignments"):
+            return False
+        return len(self.live_peers()) < len(self.fleet_peers())
+
     def _effective_mmap(self, remote: int) -> bool:
         """Auto: mmap locally, release the host's copy when offloading.
 

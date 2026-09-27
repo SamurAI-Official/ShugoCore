@@ -273,10 +273,24 @@ class AgentHeartbeatWiringTestCase(unittest.TestCase):
     def test_payload_is_empty_without_an_election(self):
         self.assertEqual(self._dummy(None)._mesh_heartbeat_payload(), {})
 
-    def test_telemetry_memory_wins_over_the_host_measurement(self):
+    def test_a_fresh_measurement_wins_over_stale_telemetry(self):
+        """Telemetry can be minutes old.
+
+        A Tab advertised ~161 MB while ``MemAvailable`` was 769 MB, which made the
+        layer planner skip the device with the most room in the fleet.
+        """
+        obj = self._dummy(MeshElection("shugo-desktop", priority=10))
+        obj.telemetry = {"mem_available_bytes": 161 * 1024 * 1024}
+        with mock.patch("shugocore_agent.available_memory_bytes",
+                        return_value=769 * 1024 * 1024):
+            self.assertEqual(obj._mesh_mem_headroom(), 769 * 1024 * 1024)
+
+    def test_telemetry_is_the_fallback_when_memory_cannot_be_measured(self):
+        """A node that cannot measure its own memory must not advertise zero."""
         obj = self._dummy(MeshElection("shugo-desktop", priority=10))
         obj.telemetry = {"mem_available_bytes": 12345}
-        self.assertEqual(obj._mesh_mem_headroom(), 12345)
+        with mock.patch("shugocore_agent.available_memory_bytes", return_value=0):
+            self.assertEqual(obj._mesh_mem_headroom(), 12345)
 
     def test_received_peer_is_merged_deduped_and_bounded(self):
         obj = self._dummy(MeshElection("shugo-desktop", priority=10))

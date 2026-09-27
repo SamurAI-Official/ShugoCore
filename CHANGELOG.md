@@ -6,6 +6,31 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### Layer-split planning: fresh headroom, a fleet-sized settle, and the RPC port (v1.30.19)
+
+The first live cross-device attempt exposed three defects that would each have read
+as "the hive has no room" rather than as bugs:
+
+- **The plan waited for one peer, not the fleet.** A booting hub planned against
+  whoever had heartbeated first -- on a fresh start that was the Mac alone, which was
+  then excluded for being in use, so the model ran locally while three phones were
+  still quiet. It now waits until the live set covers the peer map (bounded by
+  `--model-host-settle`, and a caller passing a static peer list still never waits).
+- **A phone advertised stale memory.** Telemetry is minutes old on a busy node: the
+  Tab advertised ~161 MB while `MemAvailable` was 769 MB, so the planner skipped the
+  device with the most room in the fleet. The advertisement now measures fresh and
+  falls back to telemetry, instead of the reverse.
+- **The peer map's port is not the model port.** Endpoints came straight from the
+  transport map (port 9000), but llama.cpp must dial the peripheral's RPC port
+  (50052). The transport port is open too, so the reachability check passed and the
+  offload then failed. Endpoints now keep the transport *host* and substitute the
+  RPC port.
+
+`--model-host-exclude` is new too: an operator can keep a device out of the pool (the
+machine you are working on should not hold layers merely because it has memory), and
+the reason is reported -- `local(skipped shugo-mac:excluded by operator)` -- instead
+of being silently skipped.
+
 ### Consolidation: the Mac line and this line are one history (v1.30.18)
 
 The Mac's three commits (`ac05b78` desktop host launcher, `5d57648` the 18-commit

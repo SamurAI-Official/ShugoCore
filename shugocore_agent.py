@@ -1800,24 +1800,27 @@ class AndroidAgent:
         return _json.dumps(result)
 
     def _mesh_mem_headroom(self) -> int:
-        """Free memory to advertise: telemetry first, host measurement second.
+        """Free memory to advertise: a fresh measurement first, telemetry second.
 
-        ``MeshElection`` marks any node reporting no headroom ineligible, so a
-        host with no telemetry must not advertise zero -- that would exclude
-        every desktop from the election and hand the lease to a phone instead.
+        ``MeshElection`` marks any node reporting no headroom ineligible, so a host
+        with no telemetry must not advertise zero. The order matters for the layer
+        planner as well: telemetry can be minutes old, and a phone advertising a
+        stale 161 MB while 769 MB was free made the planner skip the very device
+        that had room.
         """
+        try:
+            measured = int(available_memory_bytes() or 0)
+        except Exception:
+            measured = 0
+        if measured > 0:
+            return measured
         telemetry = self.telemetry if isinstance(self.telemetry, dict) else {}
         try:
             mem = int(telemetry.get(
                 "mem_available_bytes", telemetry.get("mem_available", 0)) or 0)
         except (TypeError, ValueError):
             mem = 0
-        if mem > 0:
-            return mem
-        try:
-            return int(available_memory_bytes() or 0)
-        except Exception:
-            return 0
+        return mem if mem > 0 else 0
 
     def _mesh_perception_facts(self) -> Dict[str, Any]:
         """The perception facts this node contributes to its advertisement.

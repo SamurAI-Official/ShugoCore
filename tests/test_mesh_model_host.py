@@ -51,10 +51,108 @@ class PlanTestCase(unittest.TestCase):
         self.assertEqual(plan["assignments"], {})
 
 
+    def test_an_excluded_device_is_left_out_with_a_reason(self):
+        """The machine you are working on should not be asked to hold layers."""
+        plan = mmh.plan_for_fleet([PEER_AMPLE, PEER_PHONE], 24, 20 * MIB,
+                                  exclude=["shugo-mac"])
+        self.assertNotIn("shugo-mac", plan["assignments"])
+        reasons = " ".join(item["reason"] for item in plan["skipped"])
+        self.assertIn("excluded by operator", reasons)
+
+
+class _FakeLauncher:
+    def __init__(self):
+        self.started = False
+
+    def start(self):
+        self.started = True
+        return True
+
+    def running(self):
+        return self.started
+
+    def stop(self):
+        self.started = False
+
+
+class _Conn:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+class SettleTestCase(unittest.TestCase):
+    """A node that just booted has a verdict before it has peers.
+
+    Without a bounded wait, planning reports "no peripheral" and the hive hosts the
+    model locally for ever -- the same trap the operator --say hit.
+    """
+
+    def _host(self, **kwargs):
+        kwargs.setdefault("peers", [("shugo-tab", "127.0.0.1", 9000)])
+        return mmh.MeshModelHost(
+            "model.gguf", binary="llama-server",
+            launcher=lambda *_a, **_k: _FakeLauncher(),
+            connect=lambda *_a, **_k: _Conn(),
+            prober=lambda *_a, **_k: True, sleep=lambda _s: None, **kwargs)
+
+    def test_an_explicit_peer_list_is_never_made_to_wait(self):
+        self.assertFalse(self._host(live_peers=[])._should_wait_for_peers({}))
+
+    def test_no_peers_and_no_explicit_list_waits_for_the_mesh(self):
+        self.assertTrue(self._host()._should_wait_for_peers({}))
+
+    def test_a_plan_that_skipped_peers_is_an_answer_not_an_absence(self):
+        """A decision is a decision: only an incomplete hive keeps us waiting."""
+        host = self._host(live_peers=lambda: [], peers=[("shugo-tab", "h", 9000)])
+        self.assertTrue(host._should_wait_for_peers({}))
+        self.assertTrue(host._should_wait_for_peers({"skipped": [{"device_id": "a"}]}))
+        self.assertFalse(host._should_wait_for_peers({"assignments": {"tab": 2}}))
+
+    def test_it_stops_waiting_once_the_whole_peer_map_is_live(self):
+        live = [{"node_id": "shugo-tab"}, {"node_id": "shugo-mac"}]
+        host = self._host(live_peers=lambda: live,
+                          peers=[("shugo-tab", "h", 9000),
+                                 ("shugo-mac", "h2", 9000)])
+        self.assertFalse(host._should_wait_for_peers({}))
+        # ... and waits again while one of them is quiet.
+        host._live = lambda: live[:1]
+        self.assertTrue(host._should_wait_for_peers({}))
+
+    def test_a_zero_settle_timeout_disables_the_wait(self):
+        self.assertFalse(
+            self._host(settle_timeout=0)._should_wait_for_peers({}))
+
+    def test_start_fails_closed_to_local_when_nobody_can_take_layers(self):
+        tiny = {"node_id": "shugo-a51", "mem_available_bytes": 10 * 1024 * 1024,
+                "thermal_status": 0}
+        host = self._host(live_peers=[tiny])
+        state = host.start()
+        self.assertEqual(state["mode"], "local")
+        self.assertIn("insufficient_headroom", state["reason"])
+
+
 class EndpointTestCase(unittest.TestCase):
     def test_peers_give_ids_to_host_port(self):
         mapping = mmh.endpoint_map([("shugo-tab", "192.168.1.164", 9000)])
         self.assertEqual(mapping, {"shugo-tab": "192.168.1.164:9000"})
+
+    def test_the_rpc_port_overrides_the_transport_port_on_the_same_host(self):
+        """The peer map carries the transport port; the model dials the RPC port.
+
+        Mixing them up is invisible -- the transport port is open too, so a
+        reachability check passes and then the model cannot offload.
+        """
+        mapping = mmh.endpoint_map([("shugo-tab", "192.168.1.164", 9000)],
+                                   port=50052)
+        self.assertEqual(mapping, {"shugo-tab": "192.168.1.164:50052"})
+
+    def test_the_override_applies_to_the_env_fallback_too(self):
+        mapping = mmh.endpoint_map(None, env={
+            "SHUGOCORE_MESH_PEERS": "shugo-mac=192.168.1.162:9000"}, port=50052)
+        self.assertEqual(mapping, {"shugo-mac": "192.168.1.162:50052"})
 
     def test_the_operator_env_is_the_fallback(self):
         mapping = mmh.endpoint_map(None, env={

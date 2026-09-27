@@ -172,6 +172,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--model-host-lan", action="store_true",
                     help="let peripherals bind their (unauthenticated) RPC "
                          "socket on the network instead of loopback; audited")
+    ap.add_argument("--model-host-exclude", action="append", default=[],
+                    metavar="DEVICE",
+                    help="never offload to this device (repeatable) -- e.g. the "
+                         "machine you are working on")
     ap.add_argument("--deploy-target", action="append", default=[],
                     metavar="SERIAL",
                     help="allow ADB deployment to this device serial "
@@ -418,6 +422,7 @@ def _startup_model_host(agent, args) -> None:
         context=args.model_host_context, threads=args.model_host_threads,
         reserve_bytes=int(args.model_host_reserve_mb) * 1024 * 1024,
         allow_lan=bool(args.model_host_lan),
+        exclude=args.model_host_exclude,
         peers=lambda: agent.mesh_peer_endpoints())
     agent._model_host = host
     state = host.start()

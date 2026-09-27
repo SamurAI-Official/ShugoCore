@@ -306,14 +306,17 @@ class MeshElection:
         think otherwise. Naming it once per (peer, claim, winner) turns that into a line
         an operator can find, and an audited one rather than a guess.
 
-        A peer that claims *us* is one heartbeat behind, not disagreeing.
+        A peer that claims *us* while we lead is one heartbeat behind, not disagreeing.
         """
         if not winner:
             return
         for entry in candidates or []:
             node_id = str(entry.get("node_id", ""))
             claim = str(entry.get("primary") or "")
-            if not claim or node_id == self.node_id or self.node_id == claim:
+            if not claim or node_id == self.node_id:
+                continue
+            if claim == self.node_id and winner == self.node_id:
+                # It named us and we agree -- it is simply less recent.
                 continue
             if claim == winner:
                 continue

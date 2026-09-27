@@ -145,6 +145,24 @@ class IncumbencyTestCase(unittest.TestCase):
         self.assertEqual(disagreements[0]["peer_primary"], "shugo-mac")
         self.assertEqual(disagreements[0]["our_primary"], "shugo-desktop")
 
+    def test_a_peer_claiming_us_when_we_do_not_lead_is_still_a_disagreement(self):
+        """Naming us is only agreement when we are the leader."""
+        events, audit = self._audit_log()
+        e = MeshElection(node_id="shugo-a16", priority=500, audit=audit)
+        e.local_heartbeat(thermal_status=0, mem_available_bytes=DESKTOP_MEM)
+        e.observe_heartbeat({"node_id": "shugo-desktop", "priority": 1,
+                             "mem_available_bytes": DESKTOP_MEM,
+                             "primary": "shugo-desktop"})
+        e.observe_heartbeat({"node_id": "shugo-tab", "priority": 500,
+                             "primary": "shugo-a16",
+                             "mem_available_bytes": DESKTOP_MEM})
+        result = e.tick()
+        self.assertEqual(result["primary"], "shugo-desktop")
+        disagreements = [p for kind, p in events
+                         if kind == "mesh_lease_disagreement"]
+        self.assertEqual(len(disagreements), 1)
+        self.assertEqual(disagreements[0]["peer_primary"], "shugo-a16")
+
     def test_a_peer_that_is_one_heartbeat_behind_is_not_a_disagreement(self):
         """It claims us, which means it agrees -- just less recently."""
         events, audit = self._audit_log()

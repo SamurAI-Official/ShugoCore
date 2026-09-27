@@ -205,7 +205,9 @@ def process_rss_mb(pid) -> float:
 def plan_layer_split(nodes: List[Dict[str, Any]], total_layers: int,
                      bytes_per_layer: int,
                      local_layers_min: int = 1,
-                     reserve_bytes: int = DEFAULT_RESERVE_BYTES) -> Dict[str, Any]:
+                     reserve_bytes: int = DEFAULT_RESERVE_BYTES,
+                     cache_bytes_per_layer: int = 0,
+                     slots: int = 1) -> Dict[str, Any]:
     """Assign layers to peripherals by measured headroom (fail-closed).
 
     Each node dict may carry ``device_id``, ``mem_available_bytes``,
@@ -218,11 +220,25 @@ def plan_layer_split(nodes: List[Dict[str, Any]], total_layers: int,
     caller's budget with the module default, so an operator asking for a 96 MB
     reserve was judged against 192 MB and told the device had no room.
 
+    ``cache_bytes_per_layer`` is the attention cache *one layer* needs for one slot, so
+    a device's real cost for the layers it holds is weights plus cache -- and ``slots``
+    (llama.cpp's ``--parallel``) multiplies the cache, not the weights. It is folded
+    into the per-layer cost rather than subtracted afterwards because a device holding
+    fewer layers also holds less cache: the two are proportional, and solving them
+    together is what stops a phone being told it has room for layers whose cache it
+    cannot hold.
+
     Returns ``{"assignments", "remote_layers", "local_layers", "skipped",
-    "headroom"}``.
+    "headroom", "cost_per_layer_bytes", "cache_bytes_per_layer", "slots"}``.
     """
     total = max(0, int(total_layers))
     per_layer = max(1, int(bytes_per_layer))
+    try:
+        cache_per_layer = max(0, int(cache_bytes_per_layer or 0)) \
+            * max(1, int(slots or 1))
+    except (TypeError, ValueError):
+        cache_per_layer = 0
+    cost_per_layer = per_layer + cache_per_layer
     keep_local = max(0, min(int(local_layers_min), total))
     budget_layers = max(0, total - keep_local)
 
@@ -249,7 +265,7 @@ def plan_layer_split(nodes: List[Dict[str, Any]], total_layers: int,
                                node.get("advertised_bytes"),
                                reserve_bytes=reserve_bytes)
         headroom[device_id] = room
-        layers = room // per_layer
+        layers = room // cost_per_layer
         if layers <= 0:
             skipped.append({"device_id": device_id,
                             "reason": "insufficient_headroom"})
@@ -274,7 +290,8 @@ def plan_layer_split(nodes: List[Dict[str, Any]], total_layers: int,
     remote = sum(assignments.values())
     return {"assignments": assignments, "remote_layers": remote,
             "local_layers": total - remote, "skipped": skipped,
-            "headroom": headroom}
+            "headroom": headroom, "cost_per_layer_bytes": cost_per_layer,
+            "cache_bytes_per_layer": cache_per_layer, "slots": max(1, int(slots or 1))}
 
 
 

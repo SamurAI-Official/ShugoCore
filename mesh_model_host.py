@@ -38,6 +38,8 @@ from typing import Any, Callable, Dict, List, Optional
 from mesh_rpc import (DEFAULT_RESERVE_BYTES, DEFAULT_RPC_PORT,
                       plan_layer_split)
 
+import gguf_meta
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL_HOST_PORT = 8099
@@ -54,6 +56,64 @@ UNREACHABLE_PIN_S = 300.0
 REBALANCE_COOLDOWN_S = 300.0
 REBALANCE_STABLE_RUNS = 2
 MAX_RESTARTS = 3
+
+
+DEFAULT_TOTAL_LAYERS = 24
+# Cache element widths for the types an operator can name with -ctk/-ctv. Quantised
+# types are rounded up to a whole byte: over-estimating a device's cache is safe,
+# under-estimating it is how a peripheral gets OOM-killed mid-generation.
+CACHE_DTYPE_BYTES = {"f16": 2, "fp16": 2, "bf16": 2, "f32": 4, "fp32": 4,
+                     "q8_0": 1, "q5_0": 1, "q5_1": 1, "q4_0": 1, "q4_1": 1}
+
+
+def _flag_value(items, index, inline: str):
+    """The value for a flag: inline after ``=``, else the following token."""
+    if inline:
+        return inline, index
+    if index < len(items):
+        return str(items[index]), index + 1
+    return "", index
+
+
+def parse_llama_args(args) -> Dict[str, Any]:
+    """The few llama.cpp flags the orchestration must understand, not forward blindly.
+
+    ``--parallel`` multiplies the cache each device pays, ``-nkvo`` decides whether the
+    cache follows the layers at all, ``-ctk``/``-ctv`` change the cache element width,
+    and ``-c`` changes how many tokens each of those caches holds. They stay
+    operator-supplied arguments -- this only reads them, so the budget and the report
+    describe what will actually run rather than what the host assumed.
+    """
+    out: Dict[str, Any] = {"slots": 1, "no_kv_offload": False,
+                           "cache_dtype_bytes": 2, "context": 0, "read": []}
+    items = [str(a) for a in (args or [])]
+    widths = []
+    index = 0
+    while index < len(items):
+        name, _, inline = items[index].partition("=")
+        index += 1
+        if name in ("-nkvo", "--no-kv-offload"):
+            out["no_kv_offload"] = True
+        elif name in ("--parallel", "-np"):
+            value, index = _flag_value(items, index, inline)
+            if value.isdigit() and int(value) > 0:
+                out["slots"] = int(value)
+                out["read"].append(name)
+        elif name in ("-c", "--ctx-size"):
+            value, index = _flag_value(items, index, inline)
+            if value.isdigit() and int(value) > 0:
+                out["context"] = int(value)
+                out["read"].append(name)
+        elif name in ("-ctk", "-ctv", "--cache-type-k", "--cache-type-v"):
+            value, index = _flag_value(items, index, inline)
+            width = CACHE_DTYPE_BYTES.get(value.strip().lower())
+            if width:
+                widths.append(width)
+                out["read"].append(name)
+    if widths:
+        # Both halves of the cache are accounted at the wider of the two.
+        out["cache_dtype_bytes"] = max(widths)
+    return out
 
 
 def exclusion_reasons(exclude) -> Dict[str, str]:
@@ -73,6 +133,8 @@ def exclusion_reasons(exclude) -> Dict[str, str]:
 def plan_for_fleet(live_peers, total_layers: int, bytes_per_layer: int, *,
                    local_layers_min: int = 1,
                    reserve_bytes: int = DEFAULT_RESERVE_BYTES,
+                   cache_bytes_per_layer: int = 0,
+                   slots: int = 1,
                    exclude=()) -> Dict[str, Any]:
     """Layer assignment for the live hive.
 
@@ -103,7 +165,9 @@ def plan_for_fleet(live_peers, total_layers: int, bytes_per_layer: int, *,
         nodes.append(entry)
     plan = plan_layer_split(nodes, total_layers, bytes_per_layer,
                             local_layers_min=local_layers_min,
-                            reserve_bytes=int(reserve_bytes))
+                            reserve_bytes=int(reserve_bytes),
+                            cache_bytes_per_layer=int(cache_bytes_per_layer or 0),
+                            slots=int(slots or 1))
     # The reserve is a property of the peripheral, not of the plan, so report the
     # headroom the same way the planner measured it.
     plan["reserve_bytes"] = int(reserve_bytes)
@@ -290,11 +354,11 @@ class MeshModelHost:
 
     def __init__(self, model_path, *, agent=None, binary=None,
                  port=DEFAULT_MODEL_HOST_PORT, rpc_port=DEFAULT_RPC_PORT,
-                 total_layers=24, context=2048, threads=0,
+                 total_layers=0, context=2048, threads=0,
                  reserve_bytes=DEFAULT_RESERVE_BYTES, local_layers_min=1,
                  allow_lan=False, mmap=None, launcher=None, connect=None,
                  prober=None, live_peers=None, peers=None, sleep=None,
-                 exclude=(),
+                 exclude=(), extra_args=(),
                  reach_timeout=ENDPOINT_TIMEOUT_S,
                  health_timeout=HEALTH_TIMEOUT_S,
                  settle_timeout=SETTLE_TIMEOUT_S,
@@ -309,8 +373,19 @@ class MeshModelHost:
         self.binary = binary
         self.port = max(1, min(65535, int(port)))
         self.rpc_port = max(1, min(65535, int(rpc_port)))
-        self.total_layers = max(1, int(total_layers))
+        # Operator-supplied llama.cpp arguments, appended after the derived ones so they
+        # win, and kept so every relaunch reproduces them exactly.
+        self.extra_args = [str(item) for item in (extra_args or [])]
+        llama = parse_llama_args(self.extra_args)
+        self.slots = max(1, int(llama["slots"]))
+        self.no_kv_offload = bool(llama["no_kv_offload"])
+        self.cache_dtype_bytes = int(llama["cache_dtype_bytes"])
+        self._meta_cache: Optional[Dict[str, Any]] = None
+        self.total_layers = self._resolve_total_layers(total_layers)
         self.context = max(0, int(context))
+        if int(llama["context"] or 0) > 0:
+            # The operator decided the context, so the cache accounting follows it.
+            self.context = int(llama["context"])
         self.threads = max(0, int(threads))
         self.reserve_bytes = int(reserve_bytes)
         self.local_layers_min = max(0, int(local_layers_min))
@@ -351,6 +426,37 @@ class MeshModelHost:
         self._state: Dict[str, Any] = {"mode": "off", "reason": "not started"}
 
     # -- inputs ---------------------------------------------------------------
+    def meta(self) -> Dict[str, Any]:
+        """The model's own geometry, read once from the header (``{}`` if unreadable)."""
+        if self._meta_cache is None:
+            self._meta_cache = gguf_meta.read_metadata(self.model_path)
+            if self._meta_cache:
+                logger.info(
+                    "mesh model host: %s states %s layers, %s B of cache per token "
+                    "per layer", os.path.basename(self.model_path),
+                    gguf_meta.layer_count(self._meta_cache),
+                    gguf_meta.kv_bytes_per_token(self._meta_cache))
+        return self._meta_cache
+
+    def cache_bytes_per_layer(self) -> int:
+        """Attention cache one layer needs for one slot, from that geometry."""
+        return gguf_meta.kv_bytes_per_token(self.meta(),
+                                           dtype_bytes=self.cache_dtype_bytes)
+
+    def _resolve_total_layers(self, given) -> int:
+        """The layers the model has: the operator's answer, else the model's own.
+
+        This used to be a hard 24 for every model -- right for the file on this bench
+        and quietly wrong for anything else.
+        """
+        try:
+            requested = int(given or 0)
+        except (TypeError, ValueError):
+            requested = 0
+        if requested > 0:
+            return requested
+        return gguf_meta.layer_count(self.meta()) or DEFAULT_TOTAL_LAYERS
+
     def bytes_per_layer(self) -> int:
         """The model's size spread evenly over its layers (1 when unmeasurable)."""
         try:
@@ -404,6 +510,8 @@ class MeshModelHost:
                               self.bytes_per_layer(),
                               local_layers_min=self.local_layers_min,
                               reserve_bytes=self.reserve_bytes,
+                              cache_bytes_per_layer=self.cache_bytes_per_layer(),
+                              slots=self.slots,
                               exclude=exclude)
         return self._apply_pins(plan)
 
@@ -462,6 +570,11 @@ class MeshModelHost:
                 self._pin(device, self._refusal_reason(reply),
                           seconds=self.unreachable_pin_s)
         remote = sum(assignments.values())
+        if self.no_kv_offload and remote:
+            # Worth saying out loud: the split still saves weights, but the cache stays
+            # on this host, so the memory the phones gave up is not the memory saved.
+            logger.warning("mesh model host: -nkvo with %s layer(s) remote: the cache "
+                           "stays on the host, so the split saves weights only", remote)
         if not remote:
             # Say why the hive is hosting this locally. A device the plan *did* choose
             # that then never answered is a different problem from a fleet with no
@@ -486,6 +599,9 @@ class MeshModelHost:
         extra = host_extra_args(assignments, endpoints, context=self.context,
                                 threads=self.threads,
                                 mmap=self._effective_mmap(remote))
+        # Operator arguments go last, so they win where llama.cpp takes the last word.
+        extra = extra + list(self.extra_args)
+        cache_per_layer = self.cache_bytes_per_layer()
         state: Dict[str, Any] = {
             "mode": "split" if remote else "local",
             "remote_layers": remote, "local_layers": self.total_layers - remote,
@@ -499,6 +615,10 @@ class MeshModelHost:
             "launcher": type(self._launcher).__name__ if self._launcher else "",
             "reason": state_reason or str(cause or ""),
             "relaunches": self._relaunches,
+            "operator_args": list(self.extra_args),
+            "kv_cache": ("host" if (self.no_kv_offload and remote)
+                         else "follows-layers"),
+            "slots": self.slots, "cache_bytes_per_layer": cache_per_layer,
             "launched": False, "health": False,
             "probe": False}
         if remote and not extra:
@@ -571,8 +691,12 @@ class MeshModelHost:
                 else ",unverified"
             restarts = int(state.get("relaunches") or 0)
             relaunched = f",relaunch={restarts}" if restarts else ""
+            # Say when the cache did not follow the layers: it changes what the split
+            # actually bought, so it belongs in the line rather than in a log.
+            kv = ",kv=host" if state.get("kv_cache") == "host" else ""
             return (f"split(layers={state.get('remote_layers')}/"
-                    f"{self.total_layers} dev={devices}{verified}{relaunched}{checked})")
+                    f"{self.total_layers} dev={devices}{verified}{relaunched}{kv}"
+                    f"{checked})")
         if mode == "local":
             return f"local({state.get('reason') or 'no peripherals'}{checked})"
         return f"{mode}({state.get('reason') or 'not started'}{checked})"
@@ -973,7 +1097,8 @@ class MeshModelHost:
                               ("mode", "remote_layers", "local_layers",
                                "assignments", "started", "skipped",
                                "unreachable", "reason", "health", "probe",
-                               "relaunches")})
+                               "relaunches", "operator_args", "kv_cache",
+                               "slots")})
             except Exception:
                 pass
         return dict(self._state)

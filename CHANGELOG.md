@@ -6,6 +6,31 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### Parallelism and the KV cache survive the split (v1.30.20)
+
+An operator's own llama.cpp flags had no way in, so anything beyond the derived arguments
+was lost -- and `--parallel N` in particular changes what a split *costs*: llama.cpp keeps
+a layer's cache with the layer, and a second slot doubles that cache. Four things now hold:
+
+- **`--model-host-arg`** (repeatable) passes extra llama.cpp arguments, appended after the
+  derived ones so they win, recorded in the audit, and replayed verbatim on every
+  rebalance. The flags that decide the budget (`--parallel`/`-np`, `-nkvo`, `-ctk`/`-ctv`,
+  `-c`) are *read*, not merely forwarded, so a plan describes what will actually run.
+- **A cache-aware budget.** `plan_layer_split` charges each device weights *plus* the cache
+  for the layers it holds, folded into a single per-layer cost -- a device holding fewer
+  layers also holds less cache, so the two are proportional and solving them together is
+  what stops a phone being told it has room for layers whose cache it cannot hold.
+  `--parallel 4` now costs four times the cache rather than four times nothing.
+- **The model states its own geometry.** `gguf_meta` reads `block_count`,
+  `attention.head_count_kv` and `embedding_length` from the GGUF header -- a few hundred
+  bytes of I/O, because the point of the split is that this node may not have room to load
+  the file. `--model-host-layers 0` (the new default) means "ask the model", so the
+  hard-coded 24 is gone. Validated against the real model on this bench: 24 layers, 2 KV
+  heads against 14 query heads, 512 B of cache per token per layer.
+- **`-nkvo` is named, not silently absorbed.** With layers remote it means the cache stays
+  on the host, so the split saves weights only: that is logged, audited, and shown in the
+  status line as `kv=host`.
+
 ### P1.2: the split is re-planned, the hot device detaches, the model is watched (v1.30.19)
 
 P1.1 decided the split once, at boot, and lived with that decision for the life of the

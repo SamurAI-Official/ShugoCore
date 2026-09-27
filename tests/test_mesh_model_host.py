@@ -291,6 +291,9 @@ class _Fleet:
 
     def launcher(self, *_args, **_kwargs):
         instance = _FakeLauncher()
+        # Record how it was launched: the argv is the contract with llama.cpp.
+        instance.launch_args = _args
+        instance.launch_kwargs = _kwargs
         self.launchers.append(instance)
         return instance
 
@@ -504,6 +507,38 @@ class ReconcileTestCase(unittest.TestCase):
         # ... and it is held out, so the next check does not re-ask it.
         self.assertEqual(host.reconcile()["action"], "hold")
 
+    def test_operator_arguments_are_kept_and_replayed_on_a_relaunch(self):
+        """The flags an operator chose must survive a rebalance, verbatim."""
+        host = self._start([PEER_PHONE], extra_args=["--parallel", "4", "-fa"])
+        host.start()
+        argv = list(self.fleet.current.launch_kwargs["extra_args"])
+        self.assertEqual(argv[-3:], ["--parallel", "4", "-fa"])   # after the derived
+        self.assertEqual(host.slots, 4)
+        self.assertEqual(host.status()["operator_args"],
+                         ["--parallel", "4", "-fa"])
+        # A detach forces a relaunch: the flags must come back unchanged.
+        self.peers[0] = dict(PEER_PHONE, thermal_status=4)
+        host.reconcile()
+        self.fleet.advance(host.cooldown_s + 1)
+        host.reconcile()
+        self.assertEqual(len(self.fleet.launchers), 2)
+        self.assertEqual(self.fleet.current.launch_kwargs["extra_args"][-3:],
+                         ["--parallel", "4", "-fa"])
+
+    def test_nkvo_with_remote_layers_is_named_in_the_line(self):
+        """The cache staying home changes what the split bought, so it says so."""
+        host = self._start([PEER_PHONE], extra_args=["-nkvo"])
+        state = host.start()
+        self.assertTrue(state["remote_layers"])
+        self.assertEqual(state["kv_cache"], "host")
+        self.assertIn("kv=host", host.summary_line())
+
+    def test_nkvo_locally_is_not_worth_a_warning(self):
+        host = self._start([], extra_args=["-nkvo"])
+        state = host.start()
+        self.assertEqual(state["kv_cache"], "follows-layers")
+        self.assertNotIn("kv=host", host.summary_line())
+
     def test_a_refusal_is_reported_in_the_peer_s_own_words(self):
         """A device that refused the ask is not the same as one that failed to start.
 
@@ -561,6 +596,51 @@ class ReconcileTestCase(unittest.TestCase):
         self.assertEqual([item["device_id"] for item in merged],
                          ["shugo-a16", "shugo-tab"])
         self.assertEqual(merged[1]["reason"], "no endpoint")
+
+
+class LlamaArgsTestCase(unittest.TestCase):
+    """The flags the orchestration reads rather than only forwarding."""
+
+    def test_parallel_is_read_in_every_spelling(self):
+        for args in (["--parallel", "4"], ["--parallel=4"], ["-np", "4"]):
+            self.assertEqual(mmh.parse_llama_args(args)["slots"], 4, args)
+        self.assertEqual(mmh.parse_llama_args([])["slots"], 1)
+        self.assertEqual(mmh.parse_llama_args(["--parallel", "lots"])["slots"], 1)
+
+    def test_the_kv_flags_are_read(self):
+        self.assertTrue(mmh.parse_llama_args(["-nkvo"])["no_kv_offload"])
+        self.assertTrue(
+            mmh.parse_llama_args(["--no-kv-offload"])["no_kv_offload"])
+        self.assertFalse(mmh.parse_llama_args([])["no_kv_offload"])
+
+    def test_a_narrower_cache_type_is_charged_as_narrower(self):
+        self.assertEqual(
+            mmh.parse_llama_args(["-ctk", "q8_0"])["cache_dtype_bytes"], 1)
+        # Only one half named: the other stays f16, and the wider one is charged.
+        self.assertEqual(
+            mmh.parse_llama_args(["-ctk", "q8_0", "-ctv", "f32"])
+            ["cache_dtype_bytes"], 4)
+        self.assertEqual(
+            mmh.parse_llama_args(["-ctk", "nonsense"])["cache_dtype_bytes"], 2)
+
+    def test_the_context_override_is_read(self):
+        self.assertEqual(mmh.parse_llama_args(["-c", "4096"])["context"], 4096)
+        self.assertEqual(mmh.parse_llama_args(["--ctx-size=512"])["context"], 512)
+        self.assertEqual(mmh.parse_llama_args(["-c", "lots"])["context"], 0)
+
+    def test_a_missing_value_does_not_become_a_flag(self):
+        parsed = mmh.parse_llama_args(["--parallel"])
+        self.assertEqual(parsed["slots"], 1)
+        self.assertEqual(parsed["read"], [])
+
+    def test_the_model_states_its_own_layer_count(self):
+        """This used to be a hard 24 for every model."""
+        fallback = mmh.MeshModelHost("no-such-model.gguf", binary="llama-server",
+                                     port=1, health_timeout=0)
+        self.assertEqual(fallback.total_layers, 24)     # falls back, does not fail
+        stated = mmh.MeshModelHost("no-such-model.gguf", binary="llama-server",
+                                   port=1, health_timeout=0, total_layers=12)
+        self.assertEqual(stated.total_layers, 12)       # the operator's answer wins
 
 
 class HostArgsTestCase(unittest.TestCase):

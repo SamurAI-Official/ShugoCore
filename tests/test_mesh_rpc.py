@@ -443,6 +443,49 @@ class ReserveTestCase(unittest.TestCase):
         self.assertEqual(plan["assignments"], {"shugo-tab": 1})
 
 
+class CacheBudgetTestCase(unittest.TestCase):
+    """A layer's cache lives with the layer, and --parallel multiplies it.
+
+    A device's real cost is weights plus cache, and the two are proportional -- it holds
+    fewer layers, so it holds less cache. Charging them together is what stops a phone
+    being told it has room for layers whose cache it cannot hold.
+    """
+
+    MIB = 1024 * 1024
+
+    def _node(self):
+        return {"device_id": "shugo-tab", "mem_available_bytes": 400 * self.MIB,
+                "thermal_status": 0}
+
+    def test_a_parallel_cache_share_shrinks_what_a_device_can_hold(self):
+        plain = plan_layer_split([self._node()], 24, 20 * self.MIB,
+                                 reserve_bytes=192 * self.MIB)
+        self.assertEqual(plain["assignments"], {"shugo-tab": 10})
+        self.assertEqual(plain["cost_per_layer_bytes"], 20 * self.MIB)
+        shared = plan_layer_split([self._node()], 24, 20 * self.MIB,
+                                  reserve_bytes=192 * self.MIB,
+                                  cache_bytes_per_layer=5 * self.MIB, slots=2)
+        # 208 MiB of room / (20 MiB weights + 2 x 5 MiB cache) = 6 layers, not 10.
+        self.assertEqual(shared["assignments"], {"shugo-tab": 6})
+        self.assertEqual(shared["cost_per_layer_bytes"], 30 * self.MIB)
+        self.assertEqual(shared["cache_bytes_per_layer"], 10 * self.MIB)
+        self.assertEqual(shared["slots"], 2)
+
+    def test_without_a_cache_figure_nothing_changes(self):
+        plan = plan_layer_split([self._node()], 24, 20 * self.MIB,
+                                reserve_bytes=192 * self.MIB)
+        self.assertEqual(plan["cache_bytes_per_layer"], 0)
+        self.assertEqual(plan["slots"], 1)
+
+    def test_a_cache_larger_than_the_room_means_no_layers_not_a_negative(self):
+        plan = plan_layer_split([self._node()], 24, 20 * self.MIB,
+                                reserve_bytes=192 * self.MIB,
+                                cache_bytes_per_layer=300 * self.MIB)
+        self.assertEqual(plan["assignments"], {})
+        self.assertIn("insufficient_headroom",
+                      " ".join(item["reason"] for item in plan["skipped"]))
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -163,7 +163,7 @@ def parse_args(argv=None) -> argparse.Namespace:
                     help="llama-server built with -DGGML_RPC=ON")
     ap.add_argument("--model-host-port", type=int, default=8099,
                     help="port the host model listens on (loopback)")
-    ap.add_argument("--model-host-layers", type=int, default=24,
+    ap.add_argument("--model-host-layers", type=int, default=0,
                     help="total layers to divide between host and hive")
     ap.add_argument("--model-host-context", type=int, default=2048)
     ap.add_argument("--model-host-threads", type=int, default=0)
@@ -176,6 +176,11 @@ def parse_args(argv=None) -> argparse.Namespace:
                     metavar="DEVICE",
                     help="never offload to this device (repeatable) -- e.g. the "
                          "machine you are working on")
+    ap.add_argument("--model-host-arg", action="append", default=[],
+                    metavar="ARG",
+                    help="extra llama.cpp argument for the host model (repeatable), "
+                         "e.g. --parallel 4; kept for every relaunch, and read (not "
+                         "just forwarded) so the cache each device pays is accounted")
     ap.add_argument("--model-host-reconcile", type=float, default=60.0,
                     metavar="SECONDS",
                     help="how often to check the split: restart the host model if it "
@@ -429,6 +434,7 @@ def _startup_model_host(agent, args) -> None:
         reserve_bytes=int(args.model_host_reserve_mb) * 1024 * 1024,
         allow_lan=bool(args.model_host_lan),
         exclude=args.model_host_exclude,
+        extra_args=args.model_host_arg,
         peers=lambda: agent.mesh_peer_endpoints())
     agent._model_host = host
     state = host.start()

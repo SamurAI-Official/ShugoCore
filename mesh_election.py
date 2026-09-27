@@ -16,6 +16,7 @@ Also owns the split-layer command-line builder used by
 
 import logging
 import os
+import sys
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -70,6 +71,32 @@ def available_memory_bytes() -> int:
             return int(status.ullAvailPhys)
     except Exception:
         pass
+    # macOS has no SC_AVPHYS_PAGES (the first branch raises ValueError there),
+    # so the two paths above both miss and every macOS host reported zero
+    # headroom. The election reads <= 0 as "no-headroom" and refuses the node,
+    # which is why a Mac could never win the lease it was the best candidate
+    # for. vm_stat is the supported way to ask; its counters are page counts,
+    # not bytes.
+    if sys.platform == "darwin":
+        try:
+            import re
+            import subprocess
+
+            out = subprocess.run(["vm_stat"], capture_output=True, text=True,
+                                 timeout=5).stdout
+            page_match = re.search(r"page size of (\d+)", out)
+            if page_match:
+                page = int(page_match.group(1))
+                free = re.search(r"Pages free:\s+(\d+)", out)
+                # Speculative pages are already-reserved cache the kernel can
+                # reclaim instantly, so they count as available headroom.
+                spec = re.search(r"Pages speculative:\s+(\d+)", out)
+                pages = (int(free.group(1)) if free else 0) + \
+                        (int(spec.group(1)) if spec else 0)
+                if pages > 0 and page > 0:
+                    return pages * page
+        except Exception:
+            pass
     return 0
 
 

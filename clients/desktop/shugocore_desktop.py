@@ -175,8 +175,13 @@ class AgentController:
     thread never touches the agent directly.
     """
 
-    def __init__(self, interval: float = 2.0):
+    def __init__(self, interval: float = 2.0, sync_interval: float = 0.0):
         self.interval = max(0.5, float(interval))
+        # 0 = no periodic mesh sync. The mesh only moves memory when a node
+        # asks, so without this the node sees its peers' facts exactly once at
+        # boot and every mesh number here goes stale for the life of the
+        # process.
+        self.sync_interval = max(0.0, float(sync_interval))
         self.agent = None
         self._thread = None
         self._stop = threading.Event()
@@ -185,6 +190,9 @@ class AgentController:
         self.log_seq = 0
         self._logs = []
         self.applied = {}
+        self.mesh = {}
+        self.sync_state = {"rounds": 0, "imported": 0, "failed": 0,
+                           "last": ""}
 
     def start(self, spec: dict, url: str, model: str, api_key: str = "",
               data_dir: str = "runtime/desktop_ui", device_caps: str = "desktop",
@@ -218,6 +226,8 @@ class AgentController:
             return self.last_error
         self.applied = self._apply_backend(agent, spec, url, model)
         self.agent = agent
+        self.mesh = dict(mesh)
+        self.sync_state = {"rounds": 0, "imported": 0, "failed": 0, "last": ""}
         self.last_error = ""
         self.started_at = time.time()
         self._stop.clear()
@@ -246,6 +256,8 @@ class AgentController:
 
     # -- run loop ---------------------------------------------------------
     def _loop(self) -> None:
+        next_sync = time.monotonic() + self.sync_interval \
+            if self.sync_interval > 0 else None
         while not self._stop.is_set():
             agent = self.agent
             if agent is None:
@@ -255,7 +267,50 @@ class AgentController:
                 agent.tick()
             except Exception as exc:                  # keep cycling, surface it
                 self.last_error = f"tick failed: {exc}"
+            if next_sync is not None and time.monotonic() >= next_sync:
+                self._sync_peers()
+                next_sync = time.monotonic() + self.sync_interval
             self._stop.wait(self.interval)
+
+    def _sync_peers(self) -> None:
+        """One periodic pull from every configured peer, on the tick thread.
+
+        Serialized with tick() on purpose: the mesh only moves memory when a
+        node asks, and doing it here keeps a sync from racing the model
+        backend. A peer that is down is counted, not raised — one bad peer
+        must not stop the loop. ``imported: 0`` is a healthy sync on a
+        converged fleet, so only failures are reported as such.
+        """
+        runtime = getattr(self.agent, "shugonet_runtime", None)
+        peers = list((getattr(runtime, "_outbound", {}) or {}))
+        if runtime is None or not peers:
+            return
+        imported = failed = 0
+        for peer_id in peers:
+            try:
+                result = runtime.sync(peer_id) or {}
+            except Exception as exc:
+                failed += 1
+                self.sync_state["last"] = f"{peer_id}: {type(exc).__name__}"
+                continue
+            if str(result.get("status", "")) == "success":
+                try:
+                    imported += int(result.get("imported", 0) or 0)
+                except (TypeError, ValueError):
+                    pass
+            else:
+                failed += 1
+                self.sync_state["last"] = f"{peer_id}: {result.get('message', 'error')}"
+        self.sync_state["rounds"] += 1
+        self.sync_state["imported"] += imported
+        self.sync_state["failed"] += failed
+        if imported or failed:
+            self._logs.append({
+                "seq": self.log_seq + 1, "category": "MESH",
+                "message": f"sync: +{imported} fact(s) from {len(peers)} peer(s)"
+                           + (f", {failed} failed" if failed else ""),
+            })
+            self.log_seq += 1
 
     def stop(self) -> None:
         self._stop.set()
@@ -278,6 +333,52 @@ class AgentController:
         return self.agent is not None and thread is not None \
             and thread.is_alive()
 
+    def _mesh_snapshot(self) -> dict:
+        """The live mesh transport state, read from the Shugonet runtime.
+
+        ``get_status()`` alone cannot describe the mesh on a host node: its
+        ``mesh_peers`` field is populated from the Android shell's telemetry,
+        which no host ever sends, so it stays empty and the UI reports a
+        lone node while three peers are connected. The runtime holds the truth
+        (``connected_peers``, heartbeat counters, frame stats) — this reads it
+        rather than inferring anything, and returns {} when the mesh is off.
+        """
+        agent = self.agent
+        runtime = getattr(agent, "shugonet_runtime", None) if agent else None
+        if runtime is None:
+            return {}
+        try:
+            status = runtime.status() or {}
+        except Exception as exc:
+            return {"error": f"{type(exc).__name__}: {exc}"}
+        if not isinstance(status, dict):
+            return {}
+        stats = status.get("stats") or {}
+        beat = status.get("heartbeat") or {}
+        connected = list(status.get("connected_peers") or [])
+        configured = list(status.get("peers") or [])
+        return {
+            "node_id": status.get("agent_id"),
+            "port": status.get("port"),
+            "running": bool(status.get("running")),
+            "configured_peers": configured,
+            "connected_peers": connected,
+            "connected_count": len(connected),
+            "heartbeat": {
+                "interval_s": beat.get("interval_s"),
+                "advertising": bool(beat.get("advertising")),
+                "handler": bool(beat.get("handler")),
+                "heard": beat.get("heard"),
+                "rx": stats.get("heartbeats_received"),
+                "tx": stats.get("heartbeats_sent"),
+            },
+            "stats": {
+                "sent": stats.get("sent"), "received": stats.get("received"),
+                "errors": stats.get("errors"), "imported": stats.get("imported"),
+            },
+            "sync_watermarks": status.get("sync_watermarks") or {},
+        }
+
     def snapshot(self) -> dict:
         """Everything the UI needs, captured safely for the main thread."""
         agent = self.agent
@@ -297,6 +398,7 @@ class AgentController:
         return {"status": status, "logs": new_logs,
                 "log_history": list(self._logs), "error": error,
                 "running": self.running(), "applied": dict(self.applied),
+                "mesh": self._mesh_snapshot(),
                 "uptime": (round(time.time() - self.started_at, 1)
                            if self.started_at else 0.0)}
 
@@ -661,9 +763,21 @@ class DesktopUI(tk.Tk):
                 a=status.get("tier0_entries", 0),
                 b=status.get("tier1_entries", 0),
                 c=status.get("tier2_facts", 0)))
-        mesh = f"{status.get('mesh_role') or 'none'}"
-        if status.get("mesh_primary"):
-            mesh += f" (primary {status['mesh_primary']})"
+        mesh_state = snap.get("mesh") or {}
+        role = str(status.get("mesh_role") or "none")
+        primary = status.get("mesh_primary")
+        connected = mesh_state.get("connected_count")
+        if mesh_state.get("error"):
+            mesh = f"{role} (mesh unavailable: {mesh_state['error']})"
+        elif connected is None:
+            # No runtime: say so rather than implying a lone node.
+            mesh = f"{role}" + (f" (primary {primary})" if primary else "") \
+                   + " - mesh off"
+        else:
+            mesh = f"{role.upper()}" if role == "primary" else role
+            if primary:
+                mesh += f" of {primary}"
+            mesh += f" - {connected}/{len(mesh_state['configured_peers'] or [])} peers"
         self._hdr["mesh"].config(text=mesh)
         self._hdr["uptime"].config(text=f"{uptime:g}s")
         self._hdr["ticks"].config(text=str(status.get("tick_count", 0)))
@@ -798,10 +912,12 @@ class DesktopUI(tk.Tk):
     def _build_sensors(self, parent) -> None:
         note = self._section(parent, "Local sensors")
         ttk.Label(note, foreground="#555", wraplength=900, justify="left",
-                  text="A desktop node has no camera/IMU/GPS of its own: "
-                       "sensors live on the Android nodes and arrive over the "
-                       "mesh. The rows below report only what this node "
-                       "actually declared or received - nothing is invented."
+                  text="Host sensors are declared, never assumed: a row appears "
+                       "only after the agent has ACKed a capability "
+                       "declaration. Desktop hosts (macOS/Windows/Linux) can "
+                       "offer camera and microphone, but no host-side provider "
+                       "is wired yet, so they read 'none declared' until one "
+                       "is added. Remote sensors arrive from mesh peers."
                   ).pack(anchor="w")
         rows = self._section(parent, "Declared capabilities")
         self.sensor_rows = {}
@@ -809,13 +925,26 @@ class DesktopUI(tk.Tk):
                                               ("telemetry", "Telemetry seen"),
                                               ("peers", "Mesh peers"))):
             self._kv(rows, label, self.sensor_rows, key, index)
+        mesh = self._section(parent, "Mesh membership")
+        for index, (key, label) in enumerate((
+                ("mesh_node", "This node"),
+                ("mesh_role", "Role"),
+                ("mesh_primary", "Primary lease"),
+                ("mesh_conn", "Connected peers"),
+                ("mesh_beat", "Heartbeat"),
+                ("mesh_frames", "Frames sent / received"),
+                ("mesh_imported", "Facts imported from mesh"),
+                ("mesh_sync", "Sync schedule"),
+                ("mesh_errors", "Transport errors"))):
+            self._kv(mesh, label, self.sensor_rows, key, index)
 
     def _update_sensors(self, snap: dict) -> None:
         status = snap["status"]
         caps = status.get("capabilities") or {}
         declared = [key for key, value in caps.items()
                     if isinstance(value, dict)
-                    and (value.get("granted") or value.get("declared"))]
+                    and (value.get("granted") or value.get("declared")
+                         or value.get("agent_ack"))]
         self.sensor_rows["declared"].config(
             text=", ".join(declared[:10]) or "none declared")
         self.sensor_rows["telemetry"].config(
@@ -824,6 +953,52 @@ class DesktopUI(tk.Tk):
         names = [str(p.get("device_id", p.get("id", p)))
                  if isinstance(p, dict) else str(p) for p in peers[:8]]
         self.sensor_rows["peers"].config(text=", ".join(names) or "none")
+        # Mesh membership: connected peers come from the runtime, because
+        # get_status().mesh_peers is fed by the Android shell and is always
+        # empty on a host.
+        mesh = snap.get("mesh") or {}
+        if not mesh or mesh.get("error"):
+            detail = ("mesh off" if not mesh
+                      else f"unavailable: {mesh.get('error')}")
+            for key in ("mesh_node", "mesh_role", "mesh_primary", "mesh_conn",
+                        "mesh_beat", "mesh_frames", "mesh_imported",
+                        "mesh_sync", "mesh_errors"):
+                self.sensor_rows[key].config(text=detail)
+            return
+        beat = mesh.get("heartbeat") or {}
+        stats = mesh.get("stats") or {}
+        self.sensor_rows["mesh_node"].config(
+            text=f"{mesh.get('node_id')} (port {mesh.get('port')})")
+        role = str(status.get("mesh_role") or "unknown")
+        self.sensor_rows["mesh_role"].config(
+            text=role.upper() if role == "primary" else role)
+        self.sensor_rows["mesh_primary"].config(
+            text=str(status.get("mesh_primary") or "none"))
+        connected = mesh.get("connected_peers") or []
+        self.sensor_rows["mesh_conn"].config(
+            text=", ".join(connected) or "none")
+        advert = "advertising" if beat.get("advertising") else "idle"
+        self.sensor_rows["mesh_beat"].config(
+            text=f"{advert} every {beat.get('interval_s')}s "
+                 f"(heard {beat.get('heard')}, rx {beat.get('rx')}, "
+                 f"tx {beat.get('tx')})")
+        self.sensor_rows["mesh_frames"].config(
+            text=f"{stats.get('sent')} / {stats.get('received')}")
+        self.sensor_rows["mesh_imported"].config(
+            text=str(stats.get("imported")))
+        errors = stats.get("errors")
+        self.sensor_rows["mesh_errors"].config(
+            text=str(errors), foreground="#137333" if not errors else "#b3261e")
+        sync = getattr(self.controller, "sync_state", None) or {}
+        interval = getattr(self.controller, "sync_interval", 0.0)
+        if interval > 0:
+            self.sensor_rows["mesh_sync"].config(
+                text=f"every {interval:g}s, {sync.get('rounds', 0)} round(s), "
+                     f"+{sync.get('imported', 0)} fact(s), "
+                     f"{sync.get('failed', 0)} failed")
+        else:
+            self.sensor_rows["mesh_sync"].config(
+                text="off - peer facts are pulled once at boot only")
 
     # -- SECURITY pane ----------------------------------------------------
     def _build_security(self, parent) -> None:
@@ -1048,6 +1223,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--peers", default="", help="id=host:port,...")
     parser.add_argument("--interval", type=float, default=2.0,
                         help="seconds between node ticks")
+    parser.add_argument("--sync-interval", type=float, default=0.0,
+                        help="seconds between mesh syncs; 0 disables (the mesh "
+                             "only moves memory when a node asks, so without "
+                             "this the node sees a peer's facts once at boot "
+                             "and every mesh figure goes stale)")
     parser.add_argument("--autostart", action="store_true",
                         help="start the node immediately on launch")
     parser.add_argument("--selftest", action="store_true",
@@ -1107,7 +1287,8 @@ def main(argv=None) -> int:
     os.environ.setdefault("PYTHONUTF8", "1")
     if args.selftest:
         return selftest(args)
-    controller = AgentController(interval=args.interval)
+    controller = AgentController(interval=args.interval,
+                                 sync_interval=args.sync_interval)
     ui = DesktopUI(controller, args)
     try:
         ui.mainloop()

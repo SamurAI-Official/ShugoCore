@@ -118,7 +118,15 @@ class AndroidBackend(BaseBackend):
                 # no_viable_action). No newline stop: single-line JSON is
                 # preferred but a preamble + newline must NOT halt generation
                 # before the JSON appears.
-                "num_predict": kwargs.get("max_tokens", 128),
+                #
+                # 128 was measured against an early one-line proposal. A model
+                # that opens a nested structure (multi_step_process) is still
+                # mid-object at 128 and the truncation is silent: the backend
+                # returns no error, the engine just reports "no viable action"
+                # and the cycle falls back to the rule-based path. 512 covers
+                # the observed worst case with room to spare, and callers can
+                # still override per call via max_tokens.
+                "num_predict": kwargs.get("max_tokens", 512),
                 "temperature": kwargs.get("temperature", 0.7),
                 "top_p": kwargs.get("top_p", 0.9),
                 "top_k": kwargs.get("top_k", 40),

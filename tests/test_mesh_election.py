@@ -13,7 +13,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from mesh_election import MeshElection  # noqa: E402
+from mesh_election import MeshElection, available_memory_bytes  # noqa: E402
 from shugocore_agent import create_agent  # noqa: E402
 
 DESKTOP_MEM = 8_000_000_000  # healthy desktop headroom
@@ -235,6 +235,43 @@ class TestAgentGuardrail(unittest.TestCase):
         self.assertEqual(e.tick()["primary"], "macbook")
         self.assertEqual(self.agent._mesh_role_label(), "follower")
         self.agent.telemetry = {}
+
+
+class TestAvailableMemoryBytes(unittest.TestCase):
+    """A host that cannot measure memory must not report zero.
+
+    The election reads ``<= 0`` as "no-headroom" and refuses the node. macOS
+    has no ``SC_AVPHYS_PAGES`` — ``os.sysconf`` raises ``ValueError`` for that
+    name — so before the vm_stat fallback every Mac advertised zero headroom
+    and disqualified itself from an election it was the best candidate for.
+    Live symptom: ``mesh election: no eligible peer yet:
+    shugo-MacBook=no-headroom`` against real, healthy peers.
+    """
+
+    def test_reports_a_positive_figure(self):
+        self.assertGreater(available_memory_bytes(), 0)
+
+    def test_never_negative(self):
+        self.assertGreaterEqual(available_memory_bytes(), 0)
+
+    def test_below_physical_memory(self):
+        try:
+            total = (int(os.sysconf("SC_PHYS_PAGES"))
+                     * int(os.sysconf("SC_PAGE_SIZE")))
+        except (AttributeError, ValueError, OSError):
+            self.skipTest("no SC_PHYS_PAGES on this platform")
+        self.assertLessEqual(available_memory_bytes(), total)
+
+    def test_a_node_reporting_it_is_eligible(self):
+        """The regression end to end: a positive figure elects the node."""
+        election = MeshElection("shugo-macbook", priority=10)
+        election.observe_heartbeat({
+            "node_id": "shugo-macbook", "priority": 10, "thermal_status": 0,
+            "mem_available_bytes": available_memory_bytes()})
+        self.assertIsNone(MeshElection._eligible(
+            {"paired": True, "thermal_status": 0,
+             "mem_available_bytes": available_memory_bytes()}))
+        self.assertEqual(election.tick()["primary"], "shugo-macbook")
 
 
 if __name__ == "__main__":

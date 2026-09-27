@@ -55,6 +55,7 @@ import socket
 import sys
 import time
 from pathlib import Path
+from typing import Dict, List
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -91,6 +92,13 @@ def parse_args(argv=None) -> argparse.Namespace:
                          "(default: runtime/host)")
     ap.add_argument("--api-url", default="http://127.0.0.1:11434",
                     help="model backend base URL (default: local Ollama)")
+    ap.add_argument("--model", default=None,
+                    help="model id to reason with (default: the engine's "
+                         "built-in 'shugocore-local'). Host backends must "
+                         "name a model they actually serve: the built-in id "
+                         "is an on-device placeholder, and a backend that "
+                         "does not know it answers 404, which surfaced only "
+                         "as a rule_fallback decision every cycle")
     ap.add_argument("--port", type=int, default=None,
                     help="mesh listen port (default: 9000 or "
                          "SHUGOCORE_MESH_PORT)")
@@ -108,8 +116,16 @@ def parse_args(argv=None) -> argparse.Namespace:
                     metavar="TEXT",
                     help="write a Tier 2 fact before serving (repeatable)")
     ap.add_argument("--sync", action="append", default=[], metavar="PEER",
-                    help="pull the named peer's Tier 2 once at startup "
-                         "(repeatable; 'all' = every configured peer)")
+                    help="pull the named peer's Tier 2 (repeatable; 'all' = "
+                         "every configured peer). With --sync-interval, also "
+                         "keeps pulling on that interval instead of once at "
+                         "startup")
+    ap.add_argument("--sync-interval", type=float, default=0.0,
+                    help="seconds between mesh syncs; 0 = only the one-shot "
+                         "startup pull (default: 0). A node that only syncs "
+                         "at boot never sees a peer's later facts, so its "
+                         "shared-fact counts and the UI's mesh numbers go "
+                         "stale for the life of the process")
     ap.add_argument("--mesh-priority", type=int, default=10,
                     help="election priority: LOWER wins the primary lease "
                          "(Android custodians default to 500, so a host's 10 "
@@ -156,6 +172,77 @@ def _install_signals() -> None:
             signal.signal(sig, _handle)
         except (ValueError, OSError, AttributeError):
             pass
+
+
+def _apply_model(agent, model: str) -> str:
+    """Point the engine's model registry at ``model``; returns the id in use.
+
+    The engine bootstraps with a hardcoded ``shugocore-local`` id — correct
+    on-device, where the local inference server serves that name. On a host
+    the backend is Ollama (or an OpenAI-compatible server), which does not
+    know that id and answers 404; the agent then reported the same rule-based
+    fallback every cycle, so the backend looked healthy while the model was
+    never consulted. Re-pointing the registry is the same override the
+    desktop UI's ``AgentController._apply_backend`` performs.
+
+    Returns the id actually in force so the caller can log it honestly
+    (including when the engine exposes no registry to override).
+    """
+    model = (model or "").strip()
+    if not model:
+        return "shugocore-local"
+    engine = getattr(agent, "engine", None)
+    models = getattr(engine, "models", None) if engine is not None else None
+    if not isinstance(models, list) or not models:
+        log.warning("engine has no model registry; --model %r not applied",
+                    model)
+        return model
+    models[0]["id"] = model
+    backend = models[0].get("backend")
+    if isinstance(backend, dict):
+        # The android backend client carries its own model name; leaving it
+        # stale would send the placeholder over the wire even after the
+        # registry id changed.
+        backend["model_name"] = model
+    cache = getattr(engine, "_backend_cache", None)
+    if isinstance(cache, dict):
+        cache.clear()
+    return model
+
+
+def _sync_once(runtime, targets, reason: str) -> Dict[str, int]:
+    """Pull Tier 2 from each target peer; returns a small outcome tally.
+
+    The mesh only moves memory when a node *asks*, so this is the whole of
+    the data path. Per-peer failures are logged and counted rather than
+    raised: one unresponsive peer must not abort the others, and the agent
+    loop must keep running. ``imported: 0`` is a successful pull that found
+    nothing new, which is the common case on a converged fleet and must not
+    be reported as an error.
+    """
+    tally = {"ok": 0, "imported": 0, "failed": 0}
+    for peer_id in targets:
+        try:
+            result = runtime.sync(peer_id) or {}
+        except Exception as exc:
+            tally["failed"] += 1
+            log.warning("sync %s failed (%s): %s", peer_id, reason,
+                        f"{type(exc).__name__}: {exc}")
+            continue
+        status = str(result.get("status", "unknown"))
+        if status == "success":
+            tally["ok"] += 1
+            try:
+                tally["imported"] += int(result.get("imported", 0) or 0)
+            except (TypeError, ValueError):
+                pass
+            # Only the interesting half: a pull that changed nothing is noise.
+            if int(result.get("imported", 0) or 0) > 0:
+                log.info("sync %s -> %s", peer_id, result)
+        else:
+            tally["failed"] += 1
+            log.warning("sync %s -> %s (%s)", peer_id, result, reason)
+    return tally
 
 
 def _status_line(agent, runtime, ticks) -> str:
@@ -312,6 +399,10 @@ def main(argv=None) -> int:
     if getattr(agent, "engine", None) is None:
         log.info("factory did not bootstrap the agent; bootstrapping now")
         agent._bootstrap()
+    # Must run before the tick loop: the engine is already built here, and
+    # every cycle until this lands asks the backend for 'shugocore-local'.
+    model_in_use = _apply_model(agent, args.model)
+    log.info("reasoning model: %s (backend %s)", model_in_use, args.api_url)
 
     runtime = getattr(agent, "shugonet_runtime", None)
     if runtime is None:
@@ -349,12 +440,8 @@ def main(argv=None) -> int:
         targets = peers if "all" in args.sync else [p for p in args.sync
                                                     if p != "all"]
         time.sleep(2.0)                     # let the peer dials settle
-        for peer_id in targets:
-            try:
-                result = runtime.sync(peer_id)
-                log.info("sync %s -> %s", peer_id, result)
-            except Exception as exc:
-                log.warning("sync %s failed: %s", peer_id, exc)
+        log.info("startup sync: %d peer(s)", len(targets))
+        _sync_once(runtime, targets, "startup")
 
     _enable_fleet_deploy(agent, args)
     _startup_artifacts(runtime, args)
@@ -362,10 +449,32 @@ def main(argv=None) -> int:
     ticks = 0
     next_status = (time.monotonic() + args.status_every
                    if args.status_every and args.status_every > 0 else None)
+    # Continuous sync: resolved once, from the same peer set the startup pull
+    # used. Re-reading the peers each round would pick up a dial that has not
+    # connected yet and spam a not-yet-listening peer with timeouts.
+    sync_peers = []
+    if args.sync_interval and args.sync_interval > 0:
+        configured = list(getattr(runtime, "_outbound", {}) or {})
+        sync_peers = configured if "all" in args.sync else [
+            p for p in args.sync if p != "all"]
+        if sync_peers:
+            log.info("continuous mesh sync every %gs across %d peer(s): %s",
+                     args.sync_interval, len(sync_peers), ", ".join(sync_peers))
+        else:
+            log.warning("--sync-interval %gs set but no --sync peers selected; "
+                        "continuous sync disabled", args.sync_interval)
+    next_sync = (time.monotonic() + args.sync_interval
+                 if sync_peers else None)
     try:
         while not _STOP:
             agent.tick()
             ticks += 1
+            if next_sync is not None and time.monotonic() >= next_sync:
+                # On the agent thread: a sync is a short request/response, and
+                # blocking here keeps it serialized with tick() so two model
+                # calls and a sync never contend for the same backend.
+                _sync_once(runtime, sync_peers, "periodic")
+                next_sync = time.monotonic() + args.sync_interval
             if next_status is not None and time.monotonic() >= next_status:
                 log.info("%s", _status_line(agent, runtime, ticks))
                 next_status = time.monotonic() + args.status_every

@@ -63,6 +63,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from shugocore_agent import create_agent  # noqa: E402
 from node_identity import load_or_create as _load_identity  # noqa: E402
+from persona import PersonaShaper  # noqa: E402
 from fleet_deploy import (  # noqa: E402
     FleetDeployHandler,
     SubprocessAdbRunner,
@@ -176,6 +177,15 @@ def parse_args(argv=None) -> argparse.Namespace:
                     metavar="DEVICE",
                     help="never offload to this device (repeatable) -- e.g. the "
                          "machine you are working on")
+    ap.add_argument("--persona-url", default="", metavar="URL",
+                    help="OpenAI-compatible endpoint of the model that phrases what this "
+                         "node says (the Mac in this fleet): host:port or a base URL. "
+                         "Unset means the node speaks its own draft")
+    ap.add_argument("--persona-model", default="persona", metavar="NAME",
+                    help="model name to ask the persona endpoint for")
+    ap.add_argument("--persona-timeout", type=float, default=8.0, metavar="SECONDS",
+                    help="how long to wait for the persona model before speaking the "
+                         "draft instead (style is never worth losing the line)")
     ap.add_argument("--model-host-arg", action="append", default=[],
                     metavar="ARG",
                     help="extra llama.cpp argument for the host model (repeatable), "
@@ -334,6 +344,12 @@ def _status_line(agent, runtime, ticks) -> str:
     # belongs on the line that describes the fleet.
     followers = len([peer for peer in live_peers
                      if str(peer.get("role") or "") == "follower"])
+    # Who phrases this node's speech: off, or the model and the node it lives on.
+    shaper = getattr(getattr(agent, "engine", None), "persona_shaper", None)
+    try:
+        persona = str(shaper.label()) if shaper is not None else "off"
+    except Exception:
+        persona = "configured"
     model_host = getattr(agent, "_model_host", None)
     host_line = (model_host.summary_line() if model_host is not None else "off")
     return (f"tick {ticks} | cycles={loop.get('cycles')} "
@@ -345,7 +361,7 @@ def _status_line(agent, runtime, ticks) -> str:
             f"rx={rx} tx={tx} "
             f"say_to={routing.get('device')} deleg_sent={delegated.get('sent')} "
             f"artifacts={shared} art_in={art_in} art_out={art_out} "
-            f"imported={stats.get('imported')} model_host={host_line}")
+            f"imported={stats.get('imported')} persona={persona} model_host={host_line}")
 
 
 def _enable_fleet_deploy(agent, args) -> None:
@@ -540,9 +556,24 @@ def main(argv=None) -> int:
     mesh_id = args.mesh_node_id or _load_identity(str(data_dir), caps=caps)
     log.info("booting node: mesh id '%s' (election prio %s), data dir %s",
              mesh_id, args.mesh_priority, data_dir)
+    # Phrasing is a hive service (persona.py): the primary owns the words *and* the gate,
+    # a model on another node owns the wording. Unset by default, so a node without one
+    # behaves exactly as it did.
+    shaper = PersonaShaper(args.persona_url, args.persona_model,
+                           timeout=args.persona_timeout)
     agent = create_agent(device_caps=caps, api_url=args.api_url,
                          data_dir=str(data_dir), mesh_node_id=mesh_id,
-                         mesh_priority=args.mesh_priority)
+                         mesh_priority=args.mesh_priority,
+                         persona_shaper=shaper if shaper.enabled else None)
+    if shaper.enabled:
+        try:
+            # The personality text stays the primary's: the phrasing node is handed what
+            # to sound like, never the authority to decide what is said.
+            from personality.prompt import personality_system_prompt
+            shaper.instructions = personality_system_prompt(agent.personality)
+        except Exception as exc:
+            log.warning("persona instructions unavailable: %s", exc)
+        log.info("persona: %s (timeout %ss)", shaper.label(), shaper.timeout)
     # AndroidAgent.__init__ already bootstraps, so it has already started the
     # mesh using the environment set above. Bootstrapping again would re-enter
     # _start_shugonet(), which nulls shugonet_runtime before its "already

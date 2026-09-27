@@ -6,6 +6,30 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### The persona model phrases; the PC decides and gates (v1.30.21)
+
+The two-stage description this system already carried -- *the primary decides what to say,
+the nearest device says it* -- is now three-stage: the primary decides **what**, a model on
+another node decides **how**, and the gate still runs on the words that will actually be
+spoken.
+
+- **`persona.py`** shapes a line of speech through an OpenAI-compatible endpoint, handed
+  only what it needs: the primary's personality text and the governor's verdict, never the
+  reasoning trace. `--persona-url` / `--persona-model` / `--persona-timeout` configure it;
+  unset, nothing changes.
+- **It runs before the gate, and only on speech.** `_apply_persona` sits at the end of the
+  personality pass in `decision_engine`, where the codebase already states that *"the
+  safety gate runs on the returned decision afterward -- personality never pre-approves"*.
+  Tool actions and the advisory tool path are never shaped, so a second model cannot reach
+  anything but a spoken line.
+- **Fail-open on style, never on safety.** No endpoint, a timeout, an empty completion, a
+  shaper that raises -- every one returns the primary's own draft with the reason recorded.
+  A hive that cannot reach the node that phrases still speaks.
+- **Both drafts are kept**: the decision carries `persona: {source, label, draft, reason}`
+  and the event is journalled, so "what the persona changed" is answerable afterwards.
+- The status line reports `persona=<model>@<host>` or `persona=off`, and the trait vector
+  stays on the node that owns the agent: the phrasing node is replaceable.
+
 ### Parallelism and the KV cache survive the split (v1.30.20)
 
 An operator's own llama.cpp flags had no way in, so anything beyond the derived arguments

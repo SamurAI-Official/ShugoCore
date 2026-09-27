@@ -244,6 +244,14 @@ _CONSENT_GATED_ACTION_TYPES = (SIDE_EFFECTING_ACTION_TYPES
                                | _FLEET_CONSENT_GATED)
 
 
+def _persona_label(shaper) -> str:
+    """The shaper's short label for logs and status -- guarded, since it is cosmetic."""
+    try:
+        return str(shaper.label())
+    except Exception:
+        return "configured"
+
+
 def _governor_trigger_kind(exc: GovernorError) -> str:
     """Map a governor interlock to the fallback controller's trigger kind."""
     message = str(exc).lower()
@@ -273,6 +281,7 @@ class DecisionEngine:
                  subconscious_backend: Optional[Any] = None,
                  governor: Optional[ExecutionGovernor] = None,
                  personality_governor: Optional[Any] = None,
+                 persona_shaper: Optional[Any] = None,
                  fallbacks: Optional[FallbackController] = None,
                  step_budget: int = 50,
                  # On-device CPU inference (e.g. 0.5B Q4 on Exynos 1380) has a
@@ -330,6 +339,9 @@ class DecisionEngine:
         # never replaces it — personality can only restrict/modify, never
         # authorize.  Optional; when absent the engine behaves as before.
         self.personality_governor = personality_governor
+        # Optional: a model elsewhere in the hive that decides the *wording* of what this
+        # node says (persona.py). It shapes, never approves -- see _apply_persona.
+        self.persona_shaper = persona_shaper
         self.fallbacks = fallbacks if fallbacks is not None else FallbackController(
             governor=self.governor,
             audit=self.audit,
@@ -724,7 +736,7 @@ class DecisionEngine:
         unchanged with no verdict attached.
         """
         if self.personality_governor is None:
-            return decision
+            return self._apply_persona(decision, task, advisory_only)
         try:
             context = {
                 "self_initiated": bool(task.get("self_initiated")),
@@ -749,6 +761,54 @@ class DecisionEngine:
             decision["personality_verdict"] = {
                 "verdict": "pass",
                 "reason": f"governor failure (ignored): {exc}"}
+        return self._apply_persona(decision, task, advisory_only)
+
+    def _apply_persona(self, decision: dict, task: dict,
+                       advisory_only: bool = False) -> dict:
+        """Phrase the words with the persona model, before the safety gate.
+
+        Runs at the end of the personality pass -- so it can hand the governor's verdict
+        to the persona model as its instructions -- and *before* the gate, so the gate
+        checks the words that will actually be spoken. A persona model therefore cannot
+        approve anything, and it cannot cost the hive its voice either: an endpoint that
+        is down leaves the draft in place with the reason recorded.
+        """
+        shaper = getattr(self, "persona_shaper", None)
+        if shaper is None or advisory_only or not getattr(shaper, "enabled", False):
+            return decision
+        if str(decision.get("action_type") or "") not in ("speak", "ask_user"):
+            return decision
+        params = decision.get("params") if isinstance(decision.get("params"), dict) else {}
+        draft = str(params.get("text") or "").strip()
+        if not draft:
+            return decision
+        label = _persona_label(shaper)
+        try:
+            result = shaper.shape(draft, verdict=decision.get("personality_verdict"))
+        except Exception as exc:
+            # A shaper that raises is style-only: the draft stays.
+            result = {"text": draft, "source": "unavailable", "draft": draft,
+                      "reason": f"{type(exc).__name__}: {exc}"}
+        spoken = str(result.get("text") or "").strip() or draft
+        if spoken != draft:
+            params = dict(params)
+            params["text"] = spoken
+            decision["params"] = params
+        decision["persona"] = {
+            "source": result.get("source"), "label": label,
+            "draft": draft, "reason": str(result.get("reason") or "")[:200],
+        }
+        if result.get("source") == "persona":
+            logger.info("persona %s phrased the line", label)
+        elif result.get("source") == "unavailable":
+            logger.info("persona %s unavailable, speaking the draft: %s",
+                        label, decision["persona"]["reason"])
+        try:
+            self.memory.record_event("persona_phrasing", {
+                "source": decision["persona"]["source"], "label": label,
+                "action_type": decision.get("action_type")})
+        except Exception:
+            pass
         return decision
 
     def _default_model_id(self) -> str:

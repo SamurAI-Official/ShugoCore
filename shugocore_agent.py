@@ -135,7 +135,8 @@ class AndroidAgent:
                  mesh_node_id: Optional[str] = None,
                  mesh_priority: int = 500,
                  node_role: str = "primary-capable",
-                 local_model: bool = True):
+                 local_model: bool = True,
+                 persona_shaper: Optional[Any] = None):
         self.device_caps = device_caps or "Unknown"
         # What this node is configured to be (follower or primary-capable), and whether
         # it may load a model of its own. The follower posture is the test configuration
@@ -144,6 +145,9 @@ class AndroidAgent:
                           if str(node_role or "").strip().lower() == "follower"
                           else "primary-capable")
         self.local_model = bool(local_model)
+        # Optional phrasing model elsewhere in the hive (persona.py). Off unless an
+        # operator names an endpoint: a node that cannot reach it still speaks.
+        self.persona_shaper = persona_shaper
         self.api_url = api_url or "http://127.0.0.1:11434"
         # Writable app-private dir injected by the Kotlin shell. Android apps
         # cannot rely on the process cwd (root "/" is read-only) — without
@@ -1000,6 +1004,10 @@ class AndroidAgent:
             # safety governor.
             if getattr(self, "personality_governor", None) is not None:
                 kwargs["personality_governor"] = self.personality_governor
+            # Persona shaper: the wording model, which may live on another node. It
+            # shapes speech before the gate and never approves anything.
+            if getattr(self, "persona_shaper", None) is not None:
+                kwargs["persona_shaper"] = self.persona_shaper
             return DecisionEngine(**kwargs)
         except Exception as exc:
             logger.error("Failed to initialize engine: %s", exc, exc_info=True)
@@ -3855,7 +3863,8 @@ def create_agent(device_caps: Optional[str] = None,
                  mesh_node_id: Optional[str] = None,
                  mesh_priority: int = 500,
                  node_role: str = "primary-capable",
-                 local_model: bool = True) -> AndroidAgent:
+                 local_model: bool = True,
+                 persona_shaper: Optional[Any] = None) -> AndroidAgent:
     """Build an AndroidAgent. The bearer token is forwarded to the
     AndroidBackend so token-protected desktop servers can be paired
     without --allow-unauthenticated. mesh_node_id / mesh_priority feed the
@@ -3871,4 +3880,5 @@ def create_agent(device_caps: Optional[str] = None,
                         data_dir=data_dir, auth_token=auth_token,
                         mesh_node_id=mesh_node_id,
                         mesh_priority=mesh_priority,
-                        node_role=node_role, local_model=local_model)
+                        node_role=node_role, local_model=local_model,
+                        persona_shaper=persona_shaper)

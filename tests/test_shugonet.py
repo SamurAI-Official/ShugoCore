@@ -21,6 +21,14 @@ from shugonet_bridge import (
     register_network_handlers,
 )
 
+# The bridge's own action sets. Distinct from policy's: the bridge advertises
+# the 1.30 spatial/NRR seam on top of the five types policy knows about, and
+# registration must cover everything the bridge handles.
+from shugonet_bridge import (
+    NETWORK_ACTION_TYPES as BRIDGE_NETWORK_ACTION_TYPES,
+    NETWORK_READ_ACTION_TYPES as BRIDGE_NETWORK_READ_ACTION_TYPES,
+)
+
 
 class MockShugonetAgent:
     """Mock Shogunet agent runtime for testing."""
@@ -191,14 +199,21 @@ class TestRegisterNetworkHandlers(unittest.TestCase):
     """Test handler registration with execution layer."""
 
     def test_register_handlers(self):
-        """Should register all network action types."""
+        """Should register every action type the bridge advertises."""
         execution_layer = MagicMock()
         agent = MockShugonetAgent()
 
-        register_network_handlers(execution_layer, agent)
+        registered = register_network_handlers(execution_layer, agent)
 
-        # Should register 5 handlers (3 action + 2 read)
-        self.assertEqual(execution_layer.register_handler.call_count, 5)
+        # Assert against the bridge's own sets, not a hardcoded count: the
+        # bridge advertises 10 types (the 5 policy-level ones plus the 1.30
+        # spatial/NRR seam), and a literal here silently rots the moment
+        # either side gains an action type.
+        expected = sorted(BRIDGE_NETWORK_ACTION_TYPES
+                          | BRIDGE_NETWORK_READ_ACTION_TYPES)
+        self.assertEqual(sorted(registered), expected)
+        self.assertEqual(execution_layer.register_handler.call_count,
+                         len(expected))
 
     def test_register_handlers_with_policy(self):
         """Should update policy.KNOWN_ACTION_TYPES when policy provided."""

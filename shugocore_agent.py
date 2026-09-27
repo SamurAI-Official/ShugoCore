@@ -133,8 +133,17 @@ class AndroidAgent:
                  data_dir: Optional[str] = None,
                  auth_token: Optional[str] = None,
                  mesh_node_id: Optional[str] = None,
-                 mesh_priority: int = 500):
+                 mesh_priority: int = 500,
+                 node_role: str = "primary-capable",
+                 local_model: bool = True):
         self.device_caps = device_caps or "Unknown"
+        # What this node is configured to be (follower or primary-capable), and whether
+        # it may load a model of its own. The follower posture is the test configuration
+        # for phones: perception, memory and capacity, no local weights.
+        self.node_role = ("follower"
+                          if str(node_role or "").strip().lower() == "follower"
+                          else "primary-capable")
+        self.local_model = bool(local_model)
         self.api_url = api_url or "http://127.0.0.1:11434"
         # Writable app-private dir injected by the Kotlin shell. Android apps
         # cannot rely on the process cwd (root "/" is read-only) — without
@@ -206,7 +215,12 @@ class AndroidAgent:
             try:
                 self.mesh_election = MeshElection(
                     node_id=self.node_id,
-                    priority=mesh_priority)
+                    priority=mesh_priority,
+                    # A follower does not lead while a primary-capable node is live. The
+                    # rule lives in the election's ranking, so every node computes the
+                    # same answer instead of each depending on a priority number someone
+                    # remembered to set.
+                    role=node_role)
             except Exception:
                 self.mesh_election = None
         # Last-tick decision source for cycle-truth observability.
@@ -929,6 +943,20 @@ class AndroidAgent:
             print(f"SHUGONET: start failed: {exc}", file=_sys.stderr, flush=True)
             pass
 
+    def model_registry(self, backend_kwargs: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """The models this node will actually load.
+
+        Empty when the node runs without a local model -- the follower posture. A phone
+        then contributes perception, memory and capacity (it holds layers for the
+        *host's* model over the RPC peripheral) and loads no weights of its own, so a
+        task it cannot answer locally falls to the primary instead of pulling a
+        multi-gigabyte file into a device with 100 MB free.
+        """
+        if not self.local_model:
+            return []
+        return [{"id": "shugocore-local", "type": "text", "weight": 1.0,
+                 "backend": backend_kwargs}]
+
     def _initialize_engine(self) -> Optional[Any]:
         try:
             # Lazy import: the full engine stack is optional on-device. If
@@ -949,8 +977,7 @@ class AndroidAgent:
             if self.auth_token:
                 backend_kwargs["auth_token"] = self.auth_token
             kwargs: Dict[str, Any] = {
-                "models": [{"id": "shugocore-local", "type": "text", "weight": 1.0,
-                            "backend": backend_kwargs}],
+                "models": self.model_registry(backend_kwargs),
                 "vector_db_config": {"type": "chroma"},
                 "memory_db_path": self.memory_db_path or "semantic_memory.db",
             }
@@ -3826,13 +3853,22 @@ def create_agent(device_caps: Optional[str] = None,
                  data_dir: Optional[str] = None,
                  auth_token: Optional[str] = None,
                  mesh_node_id: Optional[str] = None,
-                 mesh_priority: int = 500) -> AndroidAgent:
+                 mesh_priority: int = 500,
+                 node_role: str = "primary-capable",
+                 local_model: bool = True) -> AndroidAgent:
     """Build an AndroidAgent. The bearer token is forwarded to the
     AndroidBackend so token-protected desktop servers can be paired
     without --allow-unauthenticated. mesh_node_id / mesh_priority feed the
     Track 1 mesh primary election (Android defaults: high priority number,
-    so a paired desktop wins the lease)."""
+    so a paired desktop wins the lease).
+
+    ``node_role="follower"`` makes this node refuse the lease while any
+    primary-capable node is live, and ``local_model=False`` keeps it from loading
+    weights of its own -- the mobile posture: perception, memory and capacity
+    (layers held for the *host's* model), never a second copy of the model on a
+    device with ~100 MB free."""
     return AndroidAgent(device_caps=device_caps, api_url=api_url,
                         data_dir=data_dir, auth_token=auth_token,
                         mesh_node_id=mesh_node_id,
-                        mesh_priority=mesh_priority)
+                        mesh_priority=mesh_priority,
+                        node_role=node_role, local_model=local_model)

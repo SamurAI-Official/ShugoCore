@@ -7,6 +7,7 @@ heartbeat partition + re-merge) and the AndroidAgent primary-only
 guardrail wiring (_mesh_may_act, side-effect refusals, status surface).
 """
 import os
+import shutil
 import sys
 import tempfile
 import types
@@ -172,6 +173,107 @@ class IncumbencyTestCase(unittest.TestCase):
                              "mem_available_bytes": DESKTOP_MEM})
         e.tick()
         self.assertEqual([k for k, _ in events if "disagreement" in k], [])
+
+
+class RoleTestCase(unittest.TestCase):
+    """Phones are followers: they do not lead while a primary-capable node is live.
+
+    The posture is a ranking rule rather than a special case, so every node computes the
+    same answer without anyone having to remember the right priority number -- and a
+    follower still leads when nothing better is live, which is how a phone alone on a
+    desk keeps working.
+    """
+
+    def _follower(self, node_id="shugo-tab", priority=500):
+        e = MeshElection(node_id=node_id, priority=priority, role="follower")
+        e.local_heartbeat(thermal_status=0, mem_available_bytes=DESKTOP_MEM)
+        return e
+
+    def _pc(self, **kwargs):
+        payload = {"node_id": "shugo-desktop", "priority": 1,
+                   "role": "primary-capable", "mem_available_bytes": DESKTOP_MEM}
+        payload.update(kwargs)
+        return payload
+
+    def test_a_follower_does_not_lead_even_when_it_ranks_better_on_paper(self):
+        e = self._follower(priority=0)              # a lower number than the PC's
+        e.observe_heartbeat(self._pc())
+        self.assertEqual(e.tick()["primary"], "shugo-desktop")
+        self.assertFalse(e.is_primary())
+
+    def test_the_pc_takes_the_lease_back_from_a_follower_that_was_leading(self):
+        """The interesting case: the phone runs alone, the PC boots, the PC leads."""
+        e = self._follower()
+        self.assertEqual(e.tick()["primary"], "shugo-tab")
+        self.assertTrue(e.is_primary())
+        e.observe_heartbeat(self._pc())
+        self.assertEqual(e.tick()["primary"], "shugo-desktop")
+        self.assertFalse(e.is_primary())
+
+    def test_a_follower_leads_when_only_followers_are_live(self):
+        e = self._follower(node_id="shugo-tab", priority=500)
+        e.observe_heartbeat({"node_id": "shugo-zzz", "priority": 500,
+                             "role": "follower", "mem_available_bytes": DESKTOP_MEM})
+        self.assertEqual(e.tick()["primary"], "shugo-tab")
+        self.assertTrue(e.is_primary())
+
+    def test_a_peer_that_says_nothing_about_its_role_is_primary_capable(self):
+        """A peer running older code must not be silently demoted by its silence."""
+        e = self._follower()
+        e.observe_heartbeat({"node_id": "shugo-desktop", "priority": 1,
+                             "mem_available_bytes": DESKTOP_MEM})
+        self.assertEqual(e.tick()["primary"], "shugo-desktop")
+
+    def test_the_heartbeat_carries_the_role_and_a_nonsense_one_is_ignored(self):
+        self.assertEqual(
+            MeshElection("shugo-tab", role="follower").local_heartbeat()["role"],
+            "follower")
+        self.assertEqual(MeshElection("shugo-tab", role="nonsense").node_role,
+                         "primary-capable")
+        self.assertEqual(MeshElection("shugo-tab").node_role, "primary-capable")
+
+    def test_what_each_peer_says_it_is_is_visible(self):
+        e = self._follower()
+        e.observe_heartbeat(self._pc())
+        e.observe_heartbeat({"node_id": "shugo-a16", "priority": 500,
+                             "role": "follower", "mem_available_bytes": DESKTOP_MEM})
+        self.assertEqual(e.peers_role(),
+                         {"shugo-desktop": "primary-capable",
+                          "shugo-a16": "follower"})
+
+
+class FollowerPostureTestCase(unittest.TestCase):
+    """The phone posture: a follower that loads no model of its own.
+
+    Checked on the agent rather than the election alone, because "no model" is a
+    property of how the node is built: an empty registry means the engine has nothing
+    to call locally, so a task it cannot answer falls to the primary instead of pulling
+    weights into a device with ~100 MB free.
+    """
+
+    def _agent(self, **kwargs):
+        tmp = tempfile.mkdtemp(prefix="shugo-role-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        return create_agent(data_dir=tmp, **kwargs)
+
+    def test_a_follower_reports_its_role_and_refuses_a_local_model(self):
+        agent = self._agent(node_role="follower", local_model=False)
+        self.assertEqual(agent.node_role, "follower")
+        self.assertEqual(agent.mesh_election.node_role, "follower")
+        self.assertEqual(agent.model_registry({"type": "android"}), [])
+
+    def test_the_default_posture_is_unchanged(self):
+        """Other callers (the desktop agent among them) keep what they had."""
+        agent = self._agent()
+        self.assertEqual(agent.node_role, "primary-capable")
+        self.assertEqual(agent.mesh_election.node_role, "primary-capable")
+        registry = agent.model_registry({"type": "android"})
+        self.assertEqual(len(registry), 1)
+        self.assertEqual(registry[0]["id"], "shugocore-local")
+
+    def test_a_nonsense_role_is_primary_capable(self):
+        agent = self._agent(node_role="leader-ish")
+        self.assertEqual(agent.node_role, "primary-capable")
 
 
 class TestElectionRules(unittest.TestCase):

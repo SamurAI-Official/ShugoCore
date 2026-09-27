@@ -140,9 +140,19 @@ class MeshElection:
     def __init__(self, node_id: str, priority: int = 100,
                  lease_s: float = LEASE_S,
                  heartbeat_timeout_s: float = HEARTBEAT_TIMEOUT_S,
-                 audit: Optional[Any] = None):
+                 audit: Optional[Any] = None,
+                 role: str = "primary-capable"):
         self.node_id = str(node_id or "").strip() or "node-unknown"
         self.priority = int(priority)
+        # A follower is outranked by any live primary-capable node, whatever its
+        # priority says: that is how "the phones do not lead while the PC is up" becomes
+        # a rule every node computes identically, instead of a convention that depends on
+        # remembering to give the phones a worse number. Named `node_role` because
+        # `role()` already means something else here: what this node *is* in the current
+        # election (primary or follower), not what it is configured to be.
+        self.node_role = ("follower"
+                          if str(role or "").strip().lower() == "follower"
+                          else "primary-capable")
         self.lease_s = max(1.0, float(lease_s))
         self.heartbeat_timeout_s = max(1.0, float(heartbeat_timeout_s))
         self.audit = audit
@@ -173,6 +183,7 @@ class MeshElection:
             # about the lease and look healthy from every node at once: each answers
             # for itself, and only the *refused* sender ever learns otherwise.
             "primary": claim,
+            "role": self.node_role,
             "seq": self._seq,
         }
         self.observe_heartbeat(payload)
@@ -208,6 +219,12 @@ class MeshElection:
             "rpc_endpoint": str(payload.get("rpc_endpoint", "") or "")[:256],
             "paired": bool(payload.get("paired", True)),
             "primary": str(payload.get("primary", "") or "")[:64],
+            # An advertisement that says nothing about role is treated as
+            # primary-capable: a peer running older code must not be silently demoted to
+            # a follower by its own silence.
+            "role": ("follower"
+                     if str(payload.get("role", "") or "").strip().lower()
+                     == "follower" else "primary-capable"),
             "seq": payload.get("seq", 0), "last_seen": ts,
         }
         with self._lock:
@@ -281,7 +298,7 @@ class MeshElection:
 
     @staticmethod
     def _rank(entry) -> tuple:
-        """The full ranking key: priority first, then node_id.
+        """The full ranking key: role, then priority, then node_id.
 
         Comparing priority *alone* makes the outcome depend on arrival order. Two nodes
         at the same priority are then mutually non-deposable, so whichever one won first
@@ -291,12 +308,18 @@ class MeshElection:
         desktop held to itself, so every delegated action was refused by the very peers
         the desktop was asking. Rank is a total order (node_id is unique), so the winner
         is unique and fixed and the fleet converges on it.
+
+        Leading with the *role* is what makes a follower's priority irrelevant while a
+        primary-capable node is live, without taking the follower's ability to lead away:
+        with only followers left, the best-ranked follower leads, which is how a phone
+        alone on a desk keeps working.
         """
         try:
             priority = int(entry.get("priority", 100))
         except (TypeError, ValueError):
             priority = 100
-        return (priority, str(entry.get("node_id", "")))
+        role = 1 if str(entry.get("role", "") or "") == "follower" else 0
+        return (role, priority, str(entry.get("node_id", "")))
 
     def _note_disagreement(self, winner, candidates) -> None:
         """Report the first time a live peer claims a different primary.
@@ -397,6 +420,11 @@ class MeshElection:
             return "unknown"
         return "primary" if primary == self.node_id else "follower"
 
+    def peers_role(self) -> Dict[str, str]:
+        """What each live peer says it is, so a status line can show the posture."""
+        return {str(entry.get("node_id")): str(entry.get("role") or "")
+                for entry in self.live_peers()}
+
     def live_peers(self, now=None):
         ts = _now() if now is None else float(now)
         with self._lock:
@@ -426,6 +454,7 @@ class MeshElection:
                 ineligible[node_id] = reason
         return {"node_id": self.node_id, "priority": self.priority,
                 "primary": primary, "is_primary": primary == self.node_id,
+                "node_role": self.node_role,
                 "role": self.role(), "nodes": nodes,
                 "ineligible": ineligible, "lease_s": self.lease_s,
                 "heartbeat_timeout_s": self.heartbeat_timeout_s}

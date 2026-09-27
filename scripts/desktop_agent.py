@@ -326,9 +326,14 @@ def _status_line(agent, runtime, ticks) -> str:
     # holds the lease. Without this, "the hive has a primary" and "this node sees
     # one" are indistinguishable from the status line.
     try:
-        live = len(election.live_peers()) if election is not None else 0
+        live_peers = list(election.live_peers()) if election is not None else []
     except Exception:
-        live = -1
+        live_peers = []
+    live = len(live_peers)
+    # How many live peers say they are followers: the posture is a fleet property, so it
+    # belongs on the line that describes the fleet.
+    followers = len([peer for peer in live_peers
+                     if str(peer.get("role") or "") == "follower"])
     model_host = getattr(agent, "_model_host", None)
     host_line = (model_host.summary_line() if model_host is not None else "off")
     return (f"tick {ticks} | cycles={loop.get('cycles')} "
@@ -336,6 +341,7 @@ def _status_line(agent, runtime, ticks) -> str:
             f"prio={lease.get('priority', '?')} role={status.get('mesh_role', '?')} "
             f"primary={status.get('mesh_primary')} connected={len(connected)} "
             f"mesh_peers={len(declared or [])} beats={heard} live={live} "
+            f"followers={followers} "
             f"rx={rx} tx={tx} "
             f"say_to={routing.get('device')} deleg_sent={delegated.get('sent')} "
             f"artifacts={shared} art_in={art_in} art_out={art_out} "

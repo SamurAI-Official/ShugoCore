@@ -373,11 +373,23 @@ class MeshModelHost:
             "probe": False}
         if remote and not extra:
             state["reason"] = "no usable peripheral endpoints"
+        if health_ok(f"http://127.0.0.1:{self.port}"):
+            # Something already answers on our port -- usually a host model left
+            # behind by an earlier run. Launching anyway means the verification
+            # below talks to *that* server, and the split gets reported as verified
+            # by a model that is not ours.
+            state["reason"] = (f"port {self.port} is already serving another "
+                               "process")
+            return self._record(state)
         state["launched"] = self._launch(extra)
         if not state["launched"]:
             state["reason"] = state["reason"] or "host model did not start"
             return self._record(state)
         state.update(self._verify())
+        if remote and not state["health"]:
+            # Intent is not a mode: a launch that never answered is reported as
+            # what it is, not as a working split.
+            state["mode"] = "split-unhealthy"
         if not state["health"]:
             state["reason"] = state["reason"] or "host model did not answer /health"
         elif not state["probe"]:

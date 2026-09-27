@@ -13,6 +13,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from unittest import mock
+
 import mesh_model_host as mmh  # noqa: E402
 
 MIB = 1024 * 1024
@@ -92,6 +94,10 @@ class SettleTestCase(unittest.TestCase):
 
     def _host(self, **kwargs):
         kwargs.setdefault("peers", [("shugo-tab", "127.0.0.1", 9000)])
+        # A port nothing can be listening on: the pre-launch guard asks whether the
+        # host port is already serving another process, and on a machine with a
+        # stray llama-server a shared default port makes this class order-dependent.
+        kwargs.setdefault("port", 1)
         return mmh.MeshModelHost(
             "model.gguf", binary="llama-server",
             launcher=lambda *_a, **_k: _FakeLauncher(),
@@ -130,6 +136,31 @@ class SettleTestCase(unittest.TestCase):
         state = host.start()
         self.assertEqual(state["mode"], "local")
         self.assertIn("insufficient_headroom", state["reason"])
+
+    def _splitting_host(self, **kwargs):
+        peer = {"node_id": "shugo-a16", "mem_available_bytes": 2000 * 1024 * 1024,
+                "thermal_status": 0}
+        # The peer map must name the same device the plan assigned, or the layers
+        # are dropped for having no dialable endpoint.
+        kwargs.setdefault("peers", [("shugo-a16", "127.0.0.1", 9000)])
+        return self._host(live_peers=[peer], health_timeout=0, **kwargs)
+
+    def test_a_launched_split_that_never_answers_is_not_reported_as_a_split(self):
+        """Intent is not a mode: verify it, or say what really happened."""
+        host = self._splitting_host()
+        with mock.patch.object(mmh, "health_ok", return_value=False):
+            state = host.start()
+        self.assertEqual(state["mode"], "split-unhealthy")
+        self.assertFalse(state["health"])
+        self.assertIn("did not answer /health", state["reason"])
+
+    def test_a_port_owned_by_a_stale_host_is_caught_before_launching(self):
+        """Otherwise the health check answers from a model that is not ours."""
+        host = self._splitting_host()
+        with mock.patch.object(mmh, "health_ok", return_value=True):
+            state = host.start()
+        self.assertFalse(state["launched"])
+        self.assertIn("already serving another process", state["reason"])
 
 
     def test_the_plan_reports_what_the_planner_was_given(self):

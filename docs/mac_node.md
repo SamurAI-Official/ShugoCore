@@ -46,6 +46,30 @@ From the hub's side the same facts show up as
 `mesh heartbeat: peer shugo-mac merged (prio=10 thermal=0 mem=<non-zero>)`, and the
 Mac appears in the election's `candidates` list. With `mem=0` it never did.
 
+### Priorities are the intent, and they must be unambiguous
+
+Ranking is `(priority, node_id)`, and the leader is the best-ranked *eligible* live
+node. Two nodes at the same priority used to be mutually non-deposable -- the rules
+compared priority alone -- so whichever was heard first kept the lease for ever and
+the fleet settled into camps that never merged. Measured here on 2026-09-27: the
+desktop and the Mac both at priority 10, with the phones and the Mac holding to
+`shugo-mac` while the desktop held to itself, so *every* delegated action the desktop
+sent was refused with `sender is not the primary` by the peers it was asking -- and
+each node's own status looked healthy while that happened.
+
+Equal priorities now converge (a strictly better rank wins, `mesh_election._rank`),
+but state the intent anyway so a joiner cannot cause a re-home:
+
+| node | priority | why |
+|---|---|---|
+| PC (hub) | `--mesh-priority 1` | it runs the reasoning model and holds the gate |
+| Mac | `--mesh-priority 10` | persona host plus the fleet's strongest peripheral |
+| phones | `--mesh-priority 500` (default) | followers: sensors, capacity, journal |
+
+A node that disagrees with a peer about the lease is now named -- in the log and in
+the audit chain as `mesh_lease_disagreement` -- instead of only being visible to the
+sender that got refused.
+
 ## Hosting layers on a Mac
 
 With `--model-host`, the hub plans layers from each peer's *measured* headroom,

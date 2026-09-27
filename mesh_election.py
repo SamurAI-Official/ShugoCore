@@ -151,12 +151,17 @@ class MeshElection:
         self._primary_id: Optional[str] = None
         self._lease_since: float = 0.0
         self._seq = 0
+        # (peer, its claim, our winner) already reported, so a disagreement is named
+        # once instead of on every heartbeat.
+        self._disagreement_seen: set = set()
 
     def local_heartbeat(self, thermal_status: int = 0,
                         mem_available_bytes: int = 0,
                         rpc_endpoint: str = "",
                         paired: bool = True) -> Dict[str, Any]:
         self._seq += 1
+        with self._lock:
+            claim = self._primary_id or ""
         payload = {
             "node_id": self.node_id,
             "priority": self.priority,
@@ -164,6 +169,10 @@ class MeshElection:
             "mem_available_bytes": int(mem_available_bytes or 0),
             "rpc_endpoint": str(rpc_endpoint or ""),
             "paired": bool(paired),
+            # Who this node believes holds the lease. Without it a fleet can disagree
+            # about the lease and look healthy from every node at once: each answers
+            # for itself, and only the *refused* sender ever learns otherwise.
+            "primary": claim,
             "seq": self._seq,
         }
         self.observe_heartbeat(payload)
@@ -198,6 +207,7 @@ class MeshElection:
             "thermal_status": thermal, "mem_available_bytes": mem,
             "rpc_endpoint": str(payload.get("rpc_endpoint", "") or "")[:256],
             "paired": bool(payload.get("paired", True)),
+            "primary": str(payload.get("primary", "") or "")[:64],
             "seq": payload.get("seq", 0), "last_seen": ts,
         }
         with self._lock:
@@ -269,6 +279,54 @@ class MeshElection:
                 reasons[nid] = reason
         return reasons
 
+    @staticmethod
+    def _rank(entry) -> tuple:
+        """The full ranking key: priority first, then node_id.
+
+        Comparing priority *alone* makes the outcome depend on arrival order. Two nodes
+        at the same priority are then mutually non-deposable, so whichever one won first
+        keeps the lease for ever and a live fleet settles into camps that never agree on
+        who leads -- observed on this bench: the desktop and the Mac both advertising
+        priority 10, with the phones and the Mac holding to `shugo-mac` while the
+        desktop held to itself, so every delegated action was refused by the very peers
+        the desktop was asking. Rank is a total order (node_id is unique), so the winner
+        is unique and fixed and the fleet converges on it.
+        """
+        try:
+            priority = int(entry.get("priority", 100))
+        except (TypeError, ValueError):
+            priority = 100
+        return (priority, str(entry.get("node_id", "")))
+
+    def _note_disagreement(self, winner, candidates) -> None:
+        """Report the first time a live peer claims a different primary.
+
+        A fleet can disagree about the lease and look healthy from every node at once:
+        each node answers for itself, and only the *refused* sender learns that its peers
+        think otherwise. Naming it once per (peer, claim, winner) turns that into a line
+        an operator can find, and an audited one rather than a guess.
+
+        A peer that claims *us* is one heartbeat behind, not disagreeing.
+        """
+        if not winner:
+            return
+        for entry in candidates or []:
+            node_id = str(entry.get("node_id", ""))
+            claim = str(entry.get("primary") or "")
+            if not claim or node_id == self.node_id or self.node_id == claim:
+                continue
+            if claim == winner:
+                continue
+            key = (node_id, claim, winner)
+            if key in self._disagreement_seen:
+                continue
+            self._disagreement_seen.add(key)
+            logger.warning("mesh election: %s claims %s, but %s leads here",
+                           node_id, claim, winner)
+            self._audit("mesh_lease_disagreement",
+                        {"node_id": self.node_id, "peer": node_id,
+                         "peer_primary": claim, "our_primary": winner})
+
     def _live_candidates(self, now):
         with self._lock:
             nodes = list(self._nodes.values())
@@ -283,19 +341,17 @@ class MeshElection:
             if self._eligible(entry) is not None:
                 continue
             out.append(entry)
-        out.sort(key=lambda e: (int(e.get("priority", 100)),
-                                str(e.get("node_id", ""))))
+        out.sort(key=self._rank)
         return out
 
     def tick(self, now=None):
         ts = _now() if now is None else float(now)
         candidates = self._live_candidates(ts)
         winner = candidates[0]["node_id"] if candidates else None
-        # Incumbency: an equal-ranked challenger does not depose the holder. The
-        # ranking is (priority, node_id), so a node joining with the same
-        # priority could take the lease from a healthy holder on the alphabet
-        # alone -- the fleet re-homed for no reason and a new primary had to take
-        # over mid-flight. A strictly *better* candidate still wins.
+        # Incumbency: a holder that is *not worse* than the best candidate keeps the
+        # lease. This is about the full rank, not priority alone -- priority alone makes
+        # the fleet's leader depend on who was heard first, which is how two camps form
+        # and never merge (see `_rank`). A strictly better candidate still wins.
         if winner and candidates:
             with self._lock:
                 holder = self._primary_id
@@ -303,9 +359,9 @@ class MeshElection:
                 incumbent = next((e for e in candidates
                                   if e.get("node_id") == holder), None)
                 if incumbent is not None and (
-                        int(incumbent.get("priority", 100))
-                        <= int(candidates[0].get("priority", 100))):
+                        self._rank(incumbent) <= self._rank(candidates[0])):
                     winner = holder
+        self._note_disagreement(winner, candidates)
         with self._lock:
             previous = self._primary_id
             if winner != previous:

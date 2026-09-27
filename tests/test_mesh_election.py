@@ -65,6 +65,97 @@ class MacosMemoryTestCase(unittest.TestCase):
         self.assertEqual(me.macos_available_memory(run=_run), 0)
 
 
+class IncumbencyTestCase(unittest.TestCase):
+    """Who leads must not depend on who was heard first.
+
+    Observed live: the desktop and the Mac both advertised priority 10; the phones
+    elected the Mac, the Mac elected itself, and the desktop elected itself -- so every
+    delegated action the desktop sent was refused with "sender is not the primary" by
+    the very peers it was asking, while each node's own status looked healthy. The
+    incumbency rule compared priority alone, which makes two equal-priority nodes
+    mutually non-deposable: whichever won first kept the lease for ever and the camps
+    never merged.
+    """
+
+    def _observer(self, node_id, priority=10, audit=None):
+        e = MeshElection(node_id=node_id, priority=priority, audit=audit)
+        e.local_heartbeat(thermal_status=0, mem_available_bytes=DESKTOP_MEM)
+        return e
+
+    def _audit_log(self):
+        events = []
+
+        class _Audit:
+            @staticmethod
+            def append(event_type, payload):
+                events.append((event_type, payload))
+
+        return events, _Audit()
+
+    def test_a_better_ranked_challenger_deposes_whatever_the_arrival_order(self):
+        # The Mac was heard first; the desktop (same priority, earlier id) must still win.
+        mac_first = self._observer("shugo-tab", priority=500)
+        mac_first.observe_heartbeat({"node_id": "shugo-mac", "priority": 10,
+                                     "mem_available_bytes": DESKTOP_MEM})
+        self.assertEqual(mac_first.tick()["primary"], "shugo-mac")
+        mac_first.observe_heartbeat({"node_id": "shugo-desktop", "priority": 10,
+                                     "mem_available_bytes": DESKTOP_MEM})
+        self.assertEqual(mac_first.tick()["primary"], "shugo-desktop")
+        # ... and the other way round gives the same leader: the rank decides.
+        desktop_first = self._observer("shugo-a16", priority=500)
+        desktop_first.observe_heartbeat({"node_id": "shugo-desktop", "priority": 10,
+                                         "mem_available_bytes": DESKTOP_MEM})
+        self.assertEqual(desktop_first.tick()["primary"], "shugo-desktop")
+        desktop_first.observe_heartbeat({"node_id": "shugo-mac", "priority": 10,
+                                         "mem_available_bytes": DESKTOP_MEM})
+        self.assertEqual(desktop_first.tick()["primary"], "shugo-desktop")
+
+    def test_a_worse_ranked_challenger_still_does_not_depose_a_healthy_holder(self):
+        """Incumbency still holds: no re-homing for a node that ranks behind."""
+        e = self._observer("shugo-desktop", priority=10)
+        e.observe_heartbeat({"node_id": "shugo-mac", "priority": 10,
+                             "mem_available_bytes": DESKTOP_MEM})
+        self.assertEqual(e.tick()["primary"], "shugo-desktop")
+        e.observe_heartbeat({"node_id": "shugo-aaa", "priority": 20,
+                             "mem_available_bytes": DESKTOP_MEM})
+        self.assertEqual(e.tick()["primary"], "shugo-desktop")
+
+    def test_the_heartbeat_carries_what_this_node_thinks_leads(self):
+        e = self._observer("shugo-tab", priority=500)
+        e.observe_heartbeat({"node_id": "shugo-mac", "priority": 10,
+                             "mem_available_bytes": DESKTOP_MEM})
+        e.tick()
+        self.assertEqual(e.local_heartbeat()["primary"], "shugo-mac")
+        # A peer that says nothing about the lease is unknown, not disagreeing.
+        self.assertEqual(e.live_peers()[0].get("primary"), "")
+
+    def test_a_peer_claiming_another_primary_is_reported_once(self):
+        events, audit = self._audit_log()
+        e = self._observer("shugo-desktop", priority=10, audit=audit)
+        claim = {"node_id": "shugo-tab", "priority": 500, "primary": "shugo-mac",
+                 "mem_available_bytes": DESKTOP_MEM}
+        e.observe_heartbeat(claim)
+        e.tick()
+        e.observe_heartbeat(claim)
+        e.tick()
+        disagreements = [p for kind, p in events
+                         if kind == "mesh_lease_disagreement"]
+        self.assertEqual(len(disagreements), 1)
+        self.assertEqual(disagreements[0]["peer"], "shugo-tab")
+        self.assertEqual(disagreements[0]["peer_primary"], "shugo-mac")
+        self.assertEqual(disagreements[0]["our_primary"], "shugo-desktop")
+
+    def test_a_peer_that_is_one_heartbeat_behind_is_not_a_disagreement(self):
+        """It claims us, which means it agrees -- just less recently."""
+        events, audit = self._audit_log()
+        e = self._observer("shugo-desktop", priority=10, audit=audit)
+        e.observe_heartbeat({"node_id": "shugo-tab", "priority": 500,
+                             "primary": "shugo-desktop",
+                             "mem_available_bytes": DESKTOP_MEM})
+        e.tick()
+        self.assertEqual([k for k, _ in events if "disagreement" in k], [])
+
+
 class TestElectionRules(unittest.TestCase):
     def test_lowest_priority_wins(self):
         """Desktop (priority 10) beats the Android custodian (500)."""

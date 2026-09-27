@@ -74,19 +74,36 @@ class TestNetworkActionTypes(unittest.TestCase):
         for action_type in NETWORK_READ_ACTION_TYPES:
             self.assertIn(action_type, KNOWN_ACTION_TYPES)
 
-    def test_network_action_types_defined(self):
-        """Network action types should be properly defined."""
-        self.assertEqual(
-            NETWORK_ACTION_TYPES,
-            {"network_send", "network_query", "network_sync"},
-        )
+    # The bridge merges its 1.30 spatial/NRR seam into policy *in place* when it
+    # registers (shugonet_bridge._merge_into does current.update(values), on
+    # purpose: the execution layer holds a reference to that very set). Asserting
+    # an exact literal therefore made these tests order-dependent -- they passed
+    # when run alone and failed after any registration in the same process. Assert
+    # the contract instead: the core types are always there, the bridge's seam is
+    # on top of them, and registration teaches policy about all of it.
+    CORE_NETWORK_ACTIONS = {"network_send", "network_query", "network_sync"}
+    CORE_NETWORK_READ = {"network_list_agents", "network_status"}
+    SPATIAL_SEAM_ACTIONS = {"network_spatial_observe", "network_nrr_render",
+                            "network_nrr_scene"}
+    SPATIAL_SEAM_READ = {"network_spatial_query", "network_fleet_map"}
 
-    def test_network_read_action_types_defined(self):
-        """Network read action types should be properly defined."""
-        self.assertEqual(
-            NETWORK_READ_ACTION_TYPES,
-            {"network_list_agents", "network_status"},
-        )
+    def test_core_network_action_types_are_always_present(self):
+        """The five types policy owns, whatever a bridge has merged in."""
+        self.assertTrue(self.CORE_NETWORK_ACTIONS <= NETWORK_ACTION_TYPES)
+        self.assertTrue(self.CORE_NETWORK_READ <= NETWORK_READ_ACTION_TYPES)
+
+    def test_the_bridge_owns_the_spatial_seam_on_top_of_policy(self):
+        """The seam is the bridge's own advertisement, so it is described here."""
+        self.assertTrue(
+            self.SPATIAL_SEAM_ACTIONS <= BRIDGE_NETWORK_ACTION_TYPES)
+        self.assertTrue(
+            self.SPATIAL_SEAM_READ <= BRIDGE_NETWORK_READ_ACTION_TYPES)
+
+    def test_registration_teaches_policy_every_bridge_action(self):
+        registered = (BRIDGE_NETWORK_ACTION_TYPES
+                      | BRIDGE_NETWORK_READ_ACTION_TYPES)
+        for action_type in registered:
+            self.assertIn(action_type, KNOWN_ACTION_TYPES)
 
 
 class TestNetworkTopic(unittest.TestCase):

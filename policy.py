@@ -52,7 +52,11 @@ ROBOTICS_READ_ACTION_TYPES = {"robot_query_state", "robot_scan"}
 MOBILE_ACTION_TYPES = {"mobile_request_compute"}
 # Mobile fleet read-only actions.
 MOBILE_READ_ACTION_TYPES = {"mobile_list_nodes", "mobile_node_status"}
-# Network/Shogunet actions: multi-agent collaboration over 5G/4G/WiFi/LoRa/BT
+# Network/Shogunet actions: multi-agent collaboration over 5G/4G/WiFi/LoRa/BT.
+# A bridge may extend these *in place* at registration (shugonet_bridge merges its
+# 1.30 spatial/NRR seam this way, because the execution layer holds a reference to
+# this object and would otherwise validate a stale set), so this set grows during
+# a process. Assert membership, never an exact snapshot.
 NETWORK_ACTION_TYPES = {"network_send", "network_query", "network_sync"}
 # Network read-only actions: no consent required.
 NETWORK_READ_ACTION_TYPES = {"network_list_agents", "network_status"}

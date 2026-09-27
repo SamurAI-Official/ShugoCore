@@ -304,6 +304,16 @@ class _Fleet:
             self.current.started = False
 
 
+class _RefusingAgent:
+    """An agent whose delegations come back refused, as the Mac's did on the bench."""
+
+    def __init__(self, message="sender is not the primary"):
+        self.message = message
+
+    def _mesh_delegate(self, device, payload):
+        return {"status": "refused", "message": self.message, "delivered": None}
+
+
 class ReconcileTestCase(unittest.TestCase):
     """A plan is not a one-off: the fleet changes while the model is running.
 
@@ -493,6 +503,26 @@ class ReconcileTestCase(unittest.TestCase):
         self.assertIn("did not answer", state["reason"])
         # ... and it is held out, so the next check does not re-ask it.
         self.assertEqual(host.reconcile()["action"], "hold")
+
+    def test_a_refusal_is_reported_in_the_peer_s_own_words(self):
+        """A device that refused the ask is not the same as one that failed to start.
+
+        Observed live: the Mac refused every delegated action with "sender is not the
+        primary" because its own election believed it held the lease, and all the hub
+        said was "peripheral did not answer".
+        """
+        host = self._start([PEER_MEDIUM], agent=_RefusingAgent())
+        self.unreachable.add("shugo-a16")
+        state = host.start()
+        self.assertIn("refused", state["reason"])
+        self.assertIn("sender is not the primary", state["reason"])
+
+    def test_a_reply_that_says_nothing_useful_keeps_the_plain_reason(self):
+        reason = mmh.MeshModelHost._refusal_reason
+        self.assertEqual(reason(None), "peripheral did not answer")
+        self.assertEqual(reason({"status": "ok"}), "peripheral did not answer")
+        # An error with no message tells a human nothing they can act on.
+        self.assertEqual(reason({"status": "error"}), "peripheral did not answer")
 
     def test_the_unreachable_list_is_de_duplicated_by_device(self):
         merged = mmh.MeshModelHost._merge_unreachable(

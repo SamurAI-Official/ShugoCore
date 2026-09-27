@@ -447,17 +447,17 @@ class MeshModelHost:
                 assignments.pop(device, None)
                 unreachable.append({"device_id": device, "reason": "no endpoint"})
                 continue
-            self._ask_peripheral(device, "start")
+            reply = self._ask_peripheral(device, "start")
             if self._wait_reachable(endpoint):
                 started.append({"device_id": device, "endpoint": endpoint,
                                 "layers": assignments[device]})
             else:
                 assignments.pop(device, None)
                 unreachable.append({"device_id": device,
-                                    "reason": "peripheral did not answer"})
+                                    "reason": self._refusal_reason(reply)})
                 # Held out for a while, so the next check does not re-ask a device that
                 # has just been given its chance and stayed silent.
-                self._pin(device, "peripheral did not answer",
+                self._pin(device, self._refusal_reason(reply),
                           seconds=self.unreachable_pin_s)
         remote = sum(assignments.values())
         if not remote:
@@ -699,6 +699,22 @@ class MeshModelHost:
                 "state": self._record(state)}
 
     # -- internals ------------------------------------------------------------
+    @staticmethod
+    def _refusal_reason(reply) -> str:
+        """Why a device did not answer, in its own words when it refused.
+
+        "peripheral did not answer" is true but useless on its own: a peer that refused
+        the ask -- because it does not accept us as the lease holder, say -- is a
+        different problem from a peripheral that failed to start, and only the peer
+        knows which it is.
+        """
+        if isinstance(reply, dict):
+            status = str(reply.get("status") or "").strip().lower()
+            message = str(reply.get("message") or "").strip()
+            if status and status != "ok" and message:
+                return f"peripheral did not answer ({status}: {message[:100]})"
+        return "peripheral did not answer"
+
     def _preflight(self, devices) -> Dict[str, Any]:
         """Wake the candidates and keep only the devices that really answer.
 
@@ -715,12 +731,12 @@ class MeshModelHost:
             if not endpoint:
                 unreachable.append({"device_id": device, "reason": "no endpoint"})
                 continue
-            self._ask_peripheral(device, "start")
+            reply = self._ask_peripheral(device, "start")
             if self._wait_reachable(endpoint):
                 answered[device] = endpoint
             else:
                 unreachable.append({"device_id": device,
-                                    "reason": "peripheral did not answer"})
+                                    "reason": self._refusal_reason(reply)})
         return {"endpoints": answered, "unreachable": unreachable}
 
     @staticmethod

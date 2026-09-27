@@ -355,6 +355,7 @@ class ReconcileTestCase(unittest.TestCase):
         # answered" without also silencing the device that is working.
         for peer in self.peers:
             self._host_for(str(peer["node_id"]))
+        kwargs.setdefault("port_serving", lambda _base: False)
         host = mmh.MeshModelHost(
             "model.gguf", binary="llama-server",
             port=1, health_timeout=1.0, settle_timeout=0,
@@ -364,7 +365,6 @@ class ReconcileTestCase(unittest.TestCase):
             sleep=self.fleet.advance,
             clock=self.fleet.clock,
             health=lambda _base: self.fleet.healthy,
-            port_serving=lambda _base: False,
             live_peers=lambda: [dict(peer) for peer in self.peers],
             peers=lambda: [(peer["node_id"], self._host_for(str(peer["node_id"])), 9000)
                            for peer in self.peers],
@@ -523,6 +523,25 @@ class ReconcileTestCase(unittest.TestCase):
         self.assertEqual(reason({"status": "ok"}), "peripheral did not answer")
         # An error with no message tells a human nothing they can act on.
         self.assertEqual(reason({"status": "error"}), "peripheral did not answer")
+
+    def test_a_port_owned_by_another_process_never_costs_the_hive_its_layers(self):
+        """A stale host model from an earlier run is not a dead split.
+
+        Observed live: the guard refused to launch into a taken port, the watchdog read
+        that as "the host model died", and the degrade ladder then dropped the phone's
+        working layers one by one until the hive gave up.
+        """
+        host = self._start([PEER_MEDIUM], port_serving=lambda _base: True)
+        state = host.start()
+        self.assertFalse(state["launched"])
+        self.assertIn("already serving another process", state["reason"])
+        self.fleet.advance(host.cooldown_s + 1)
+        result = host.reconcile()
+        self.assertEqual(result["action"], "hold")
+        self.assertIn("port", result["reason"])
+        self.assertEqual(host.status()["assignments"], state["assignments"])
+        self.assertEqual(host.status()["mode"], state["mode"])
+        self.assertEqual(self.fleet.launchers, [])           # not even launched once
 
     def test_the_status_line_says_how_many_checks_ran(self):
         """A hold is silent, so the line must distinguish it from never checking."""

@@ -598,6 +598,10 @@ class MeshModelHost:
         watchdog = self._watchdog_plan(state)
         if watchdog.get("action") == "gave_up":
             return self._give_up(str(watchdog.get("reason") or "unable to serve"))
+        if watchdog.get("action") == "hold" and watchdog.get("port_conflict"):
+            # Owned by another process: an environment problem, so it is reported and
+            # nothing else happens -- no restart, no degrade.
+            return watchdog
         if watchdog.get("action") == "restart":
             return self._relaunch(watchdog.get("assignments") or {},
                                   cause=str(watchdog.get("reason") or "watchdog"))
@@ -651,6 +655,13 @@ class MeshModelHost:
         launcher = self._launcher
         alive = bool(launcher is not None and launcher.running())
         base = f"http://127.0.0.1:{self.port}"
+        if not alive and self._port_serving(base):
+            # Something else owns our port -- usually a host model left behind by an
+            # earlier run. That is an environment problem, not a dead split: restarting
+            # cannot fix it, and degrading would throw away layers that are working. Say
+            # so and wait, rather than calling the model dead and shrinking the hive.
+            return {"action": "hold", "port_conflict": True,
+                    "reason": f"port {self.port} is owned by another process"}
         # Ask rather than trust the verdict recorded at launch: a peripheral that dies
         # mid-session takes the model's ability to serve with it, and a stopped process
         # says nothing about it.

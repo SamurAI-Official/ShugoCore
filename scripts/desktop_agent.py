@@ -180,7 +180,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                     metavar="ARG",
                     help="extra llama.cpp argument for the host model (repeatable), "
                          "e.g. --parallel 4; kept for every relaunch, and read (not "
-                         "just forwarded) so the cache each device pays is accounted")
+                         "just forwarded) so the cache each device pays is accounted. "
+                         "Give it as --model-host-arg=--parallel when the value itself "
+                         "starts with a dash")
     ap.add_argument("--model-host-reconcile", type=float, default=60.0,
                     metavar="SECONDS",
                     help="how often to check the split: restart the host model if it "

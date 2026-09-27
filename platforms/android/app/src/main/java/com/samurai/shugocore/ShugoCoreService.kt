@@ -336,19 +336,21 @@ class ShugoCoreService : Service() {
                 val dataDir = filesDir.absolutePath
                 val apiUrlArg = desktopApiUrl ?: ""
                 val tokenArg = desktopApiToken ?: ""
-                val callArgs = arrayOf<Any>(caps?.soc ?: Build.MODEL,
-                                            apiUrlArg, dataDir, tokenArg)
                 val nodeRole = prefs.getString("node_role", "follower") ?: "follower"
                 val localModel = prefs.getBoolean("local_model", false)
+                // Always positional: v1.30.21 passed the posture as Chaquopy kwargs and
+                // it compiled, but bound to the `callAttr(String, Object...)` overload,
+                // so the whole array and the map arrived as positional arguments --
+                // device_caps became a Java array, and every get_status_json() on the
+                // phone then failed with "Object of type jarray is not JSON
+                // serializable". Positional is unambiguous.
+                // mesh_node_id "" means "resolve this node's persisted identity" (the id
+                // peers dial), and priority 500 keeps a paired desktop's lease.
+                val callArgs = arrayOf<Any>(caps?.soc ?: Build.MODEL,
+                                            apiUrlArg, dataDir, tokenArg,
+                                            "", 500, nodeRole, localModel)
                 pyAgent = py.getModule("shugocore_agent")
-                    .callAttr("create_agent", callArgs,
-                        // v1.30.21 phone posture: a follower that loads no model of its
-                        // own. It contributes perception, memory and capacity (layers
-                        // held for the *host's* model over the RPC peripheral) instead
-                        // of a second copy of the weights on a device with ~100 MB free.
-                        // Both are overridable in shugocore_prefs for a bench run.
-                        mapOf<String, Any>("node_role" to nodeRole,
-                                           "local_model" to localModel))
+                    .callAttr("create_agent", *callArgs)
                 agentRunning = true
                 lastCapsSignature = ""   // force a capability declaration push
                 pushPolicyToAgent()

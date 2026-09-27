@@ -362,6 +362,11 @@ class ShugoCoreService : Service() {
                 // short echo dead time after; the human still wins the
                 // channel once the utterance completes.
                 pyAgent?.callAttr("register_speak_listener", SpeakBridge())
+                // The peripheral binary lives in nativeLibraryDir and only the
+                // app can execute it, so the agent must know its own lib dir: a
+                // delegated `mesh_rpc` start (layer-split offload) uses it.
+                pyAgent?.callAttr("register_native_library_dir",
+                    applicationInfo.nativeLibraryDir ?: "")
                 // NRR native rendering: register the bridge with the Python
                 // agent (the same reverse-callback pattern as SpeakBridge) and
                 // attach it to the local API server, so /nrr/info and

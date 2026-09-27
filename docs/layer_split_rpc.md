@@ -168,10 +168,58 @@ pin is an explicit change: bump it, rebuild **both** ends, and re-measure, namin
 the commit. `git add -A` will move the pin for you if you are not watching -- that
 is how it moved once already.
 
-## Reproduce
+## Runtime: the mesh model host (P1.1)
+
+`plan_layer_split()` decides *what* to offload; `mesh_model_host.py` is the runtime
+that does it, and `scripts/desktop_agent.py --model-host <gguf>` turns it on:
+
+```powershell
+$env:SHUGOCORE_LLAMA_SERVER = "G:\Android\llama-rpc\host\bin\llama-server.exe"
+python scripts/desktop_agent.py --device-caps desktop --data-dir runtime/desktop `
+    --mesh-node-id shugo-desktop --mesh-priority 10 `
+    --model-host G:\Android\llama-rpc\models\qwen2.5-0.5b-instruct-q4_k_m.gguf `
+    --model-host-lan --model-host-reserve-mb 64 `
+    --api-url http://127.0.0.1:8099
+```
+
+The sequence, and why each step fails closed:
+
+1. **Plan** from the election's live peers (their *measured* headroom and thermal
+   state). A peer that is thermally critical, unpaired, has no usable headroom, or
+   has stopped heartbeating gets no layers and is reported with its reason.
+2. **Wake the peripherals** by delegating `mesh_rpc` (`start`, port, lan flag) over
+   the mesh. This is new in v1.30.18: only the app can execute its own
+   native-library binary, so the primary asks from inside the mesh instead of via
+   an adb debug broadcast. The device's own authority gate applies, and it returns
+   what it did.
+3. **Verify reachability directly** (TCP connect to the peripheral's port). A reply
+   would only say what the peer believed; the socket says what is true. A device
+   that does not answer is dropped and its layers stay local.
+4. **Launch** llama-server through the same launcher the agent already uses, with
+   `--rpc <endpoint>,... -dev RPC0,... -ngl <remote layers>` and `--tensor-split`
+   when more than one device contributes.
+5. **Verify the model, not just the port**: `/health` and then a one-token
+   completion, because llama.cpp answers health while a model is still loading.
+
+Reported as one status-line field: `model_host=split(layers=23/24 dev=shugo-mac:23)`
+or `model_host=local(skipped shugo-a51:thermal_status=4, ...)`, so "it chose not to
+use the fleet" and "it could not" are never confused.
+
+Measured locally (loopback peripheral, all layers remote): host RSS **183 MB**
+against **537 MB** local-only, with the probe answering. `mmap` defaults *off* when
+offloading and on when local: with mmap the host keeps the GGUF mapped and its RSS
+stays at the local-only figure, hiding exactly the win the split exists for.
+
+Security note: the RPC socket is unauthenticated. `--model-host-lan` is therefore an
+explicit, audited operator choice -- without it the peripheral stays on loopback and
+only a same-machine peripheral can be used. Over Wi-Fi, keep the hive on a trusted
+link.
+
 
 One command, end to end (starts the app's peripheral itself, prints the table
 above, stops the peripheral afterwards):
+
+## Reproduce
 
 ```bash
 python3 tests/mesh_rpc_bench.py --server /tmp/rpc-host/bin/llama-server \

@@ -14,8 +14,8 @@ android {
         applicationId "com.samurai.shugocore"
         minSdk 28
         targetSdk 34
-        versionCode 31
-        versionName "1.30.14"
+        versionCode 32
+        versionName "1.30.18"
 
         ndk {
             // arm64-v8a: 2020+ devices; x86_64: emulator testing

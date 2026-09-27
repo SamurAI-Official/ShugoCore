@@ -356,6 +356,64 @@ class PeripheralProcessTestCase(unittest.TestCase):
         self.assertEqual(process_rss_mb(None), 0.0)
 
 
+class DelegatedMeshRpcTestCase(unittest.TestCase):
+    """The primary asks a device to start its own peripheral, over the mesh.
+
+    Only the app can execute the peripheral binary inside a phone, so this action
+    is how the layer split reaches a device without an adb debug broadcast.
+    """
+
+    def _probe(self, node_id="shugo-mac", primary="shugo-desktop"):
+        from mesh_election import MeshElection
+        from shugocore_agent import AndroidAgent
+
+        agent = AndroidAgent.__new__(AndroidAgent)
+        agent.device_caps = "desktop"
+        agent.node_id = node_id
+        election = MeshElection(node_id, priority=500)
+        election.observe_heartbeat({"node_id": primary, "priority": 10,
+                                    "mem_available_bytes": 1 << 30})
+        agent.mesh_election = election
+        agent._delegated_from = None
+        agent._native_library_dir = "/data/app/lib/arm64"
+        agent.log = lambda *a, **k: None
+        return agent
+
+    def test_a_delegated_start_uses_the_registered_library_dir(self):
+        agent = self._probe()
+        seen = {}
+
+        def _fake(action="start", native_library_dir="", port=0, lan=0):
+            seen.update(action=action, lib=native_library_dir, port=port,
+                        lan=lan)
+            return '{"ok": true, "endpoint": "0.0.0.0:50052", "running": true}'
+
+        agent.debug_mesh_rpc = _fake
+        agent._delegated_from = "shugo-desktop"
+        result = agent._execute_mesh_rpc(
+            {"params": {"action": "start", "port": 50052, "lan": 1}})
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(seen["lib"], "/data/app/lib/arm64")
+        self.assertEqual(seen["port"], 50052)
+        self.assertEqual(seen["lan"], 1)
+        self.assertTrue(result["rpc"]["running"])
+
+    def test_a_failed_peripheral_reports_the_reason(self):
+        agent = self._probe()
+        agent.debug_mesh_rpc = lambda **_kw: '{"ok": false, "error": "no binary"}'
+        agent._delegated_from = "shugo-desktop"
+        result = agent._execute_mesh_rpc({"params": {"action": "start"}})
+        self.assertEqual(result["status"], "error")
+        self.assertIn("no binary", result["reason"])
+
+    def test_only_the_primary_may_ask_a_device_to_start(self):
+        agent = self._probe(primary="shugo-tab")
+        agent._delegated_from = "shugo-desktop"
+        result = agent._execute_mesh_rpc({"params": {"action": "start"}})
+        self.assertEqual(result["status"], "refused")
+        self.assertEqual(result["reason"], "mesh_follower")
+
+
 if __name__ == "__main__":
     unittest.main()
 

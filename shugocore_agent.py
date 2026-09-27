@@ -69,7 +69,7 @@ _ORCH_MIN_BATTERY_PCT = 15
 # use another node as its hands.
 DELEGATE_TOPIC = "orchestrate/delegate"
 DELEGATE_RESULT_TOPIC = "orchestrate/result"
-DELEGATABLE_ACTIONS = ("speak", "ask_user")
+DELEGATABLE_ACTIONS = ("speak", "ask_user", "mesh_rpc")
 # What a node advertises over the mesh so the primary can measure which device is
 # closest to the operator. Only facts a node actually perceived are sent: a device
 # that saw nothing reports nothing rather than a guess.
@@ -890,6 +890,9 @@ class AndroidAgent:
             self._delegated_results: List[Dict[str, Any]] = []
             self._delegated_out = 0
             self._peer_tts: Dict[str, bool] = {}
+            # The app's own native library dir, set by the Kotlin service: the
+            # peripheral binary lives there and only the app can execute it.
+            self._native_library_dir: str = ""
             self._last_route: Optional[Dict[str, Any]] = None
             self._delegated_from: Optional[str] = None
             self.shugonet_runtime.set_send_handler(self._on_mesh_send)
@@ -1154,6 +1157,45 @@ class AndroidAgent:
         import logging as _logging
         _logging.getLogger(__name__).error(
             "speak failed on %s: %s", getattr(self, "node_id", "?"), detail)
+
+    def _execute_mesh_rpc(self, decision: Dict[str, Any]) -> Dict[str, Any]:
+        """Executor for the delegated ``mesh_rpc`` action: this node's peripheral.
+
+        The primary decides which devices hold layers, but only the app can start
+        an Android peripheral (the adb shell cannot execute nativeLibraryDir). So
+        the primary asks from inside the mesh instead of from a debug broadcast,
+        through the same authority gate as any other delegated action -- and the
+        device answers with what it actually did.
+        """
+        import json as _json
+
+        if not self._mesh_may_act("mesh_rpc"):
+            return {"status": "refused", "reason": "mesh_follower",
+                    "primary": (self.mesh_election.primary()
+                                if self.mesh_election is not None else None)}
+        from mesh_rpc import DEFAULT_RPC_PORT  # noqa: WPS433
+
+        params = decision.get("params") or {}
+        action = str(params.get("action") or "start").strip().lower()
+        try:
+            port = int(params.get("port") or DEFAULT_RPC_PORT)
+        except (TypeError, ValueError):
+            port = DEFAULT_RPC_PORT
+        lan = str(params.get("lan") or "0").strip().lower() in ("1", "true",
+                                                                "yes", "on")
+        try:
+            summary = _json.loads(self.debug_mesh_rpc(
+                action=action,
+                native_library_dir=getattr(self, "_native_library_dir", ""),
+                port=port, lan=1 if lan else 0))
+        except Exception as exc:
+            return {"status": "error", "action": "mesh_rpc", "port": port,
+                    "message": type(exc).__name__}
+        ok = bool(summary.get("ok"))
+        return {"status": "success" if ok else "error", "action": "mesh_rpc",
+                "port": port, "lan": bool(lan), "rpc": summary,
+                "reason": "" if ok else (summary.get("error")
+                                         or "peripheral did not start")}
 
     def _execute_speak(self, decision: Dict[str, Any]) -> Dict[str, Any]:
         """Executor for the internal speak action. Text is sanitized and
@@ -1667,6 +1709,36 @@ class AndroidAgent:
         return delivered
 
     # -- v1.30.6 mesh RPC peripheral (layer split) ------------------------
+    def register_native_library_dir(self, path: str) -> None:
+        """Remember this app's native library dir (set by the Kotlin service).
+
+        The layer-split peripheral binary lives there and only the app can execute
+        it, so a delegated ``mesh_rpc`` start needs this value to find its own
+        binary without the caller knowing anything about the device.
+        """
+        self._native_library_dir = str(path or "").strip()
+
+    def mesh_peer_endpoints(self) -> List[tuple]:
+        """Every peer this node can dial, as ``[(id, host, port), ...]``.
+
+        The union of the device-to-device map file and the operator's
+        ``SHUGOCORE_MESH_PEERS``. An orchestrator that cannot resolve an endpoint
+        cannot verify a peripheral, and that failure looks exactly like a device
+        that refused to start.
+        """
+        peers: List[tuple] = []
+        seen = set()
+        spec = (self._load_mesh_peers_file()
+                + self._parse_mesh_peers(
+                    os.environ.get("SHUGOCORE_MESH_PEERS", "")))
+        for entry in spec or []:
+            device_id = str(entry[0]) if entry else ""
+            if not device_id or device_id in seen:
+                continue
+            seen.add(device_id)
+            peers.append(entry)
+        return peers
+
     def debug_mesh_rpc(self, action: str = "start", native_library_dir: str = "",
                        port: int = 50052, lan: int = 0) -> str:
         """Start/stop this device's mesh RPC peripheral; returns a JSON summary.
@@ -2329,8 +2401,10 @@ class AndroidAgent:
             return
         self._delegated_from = peer
         try:
-            executor = (self._execute_speak if action_type == "speak"
-                        else self._execute_ask_user)
+            executors = {"speak": self._execute_speak,
+                         "ask_user": self._execute_ask_user,
+                         "mesh_rpc": self._execute_mesh_rpc}
+            executor = executors[action_type]
             result = executor({"action_type": action_type, "params": params})
         except Exception as exc:
             result = {"status": "error", "message": type(exc).__name__}

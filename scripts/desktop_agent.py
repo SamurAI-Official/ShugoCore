@@ -156,6 +156,22 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--response-target", default=None,
                     help="force the answering device for --say (same as policy "
                          "response_target)")
+    ap.add_argument("--model-host", default=None, metavar="GGUF",
+                    help="serve this model with layers spread over the hive "
+                         "(layer-split offload; off by default)")
+    ap.add_argument("--model-host-binary", default=None,
+                    help="llama-server built with -DGGML_RPC=ON")
+    ap.add_argument("--model-host-port", type=int, default=8099,
+                    help="port the host model listens on (loopback)")
+    ap.add_argument("--model-host-layers", type=int, default=24,
+                    help="total layers to divide between host and hive")
+    ap.add_argument("--model-host-context", type=int, default=2048)
+    ap.add_argument("--model-host-threads", type=int, default=0)
+    ap.add_argument("--model-host-reserve-mb", type=int, default=192,
+                    help="peripheral memory left alone (OS + agent runtime)")
+    ap.add_argument("--model-host-lan", action="store_true",
+                    help="let peripherals bind their (unauthenticated) RPC "
+                         "socket on the network instead of loopback; audited")
     ap.add_argument("--deploy-target", action="append", default=[],
                     metavar="SERIAL",
                     help="allow ADB deployment to this device serial "
@@ -296,6 +312,8 @@ def _status_line(agent, runtime, ticks) -> str:
         live = len(election.live_peers()) if election is not None else 0
     except Exception:
         live = -1
+    model_host = getattr(agent, "_model_host", None)
+    host_line = (model_host.summary_line() if model_host is not None else "off")
     return (f"tick {ticks} | cycles={loop.get('cycles')} "
             f"rate={loop.get('success_rate')} | node={lease.get('node_id', '?')} "
             f"prio={lease.get('priority', '?')} role={status.get('mesh_role', '?')} "
@@ -304,7 +322,7 @@ def _status_line(agent, runtime, ticks) -> str:
             f"rx={rx} tx={tx} "
             f"say_to={routing.get('device')} deleg_sent={delegated.get('sent')} "
             f"artifacts={shared} art_in={art_in} art_out={art_out} "
-            f"imported={stats.get('imported')}")
+            f"imported={stats.get('imported')} model_host={host_line}")
 
 
 def _enable_fleet_deploy(agent, args) -> None:
@@ -379,6 +397,34 @@ def _startup_artifacts(runtime, args) -> None:
             log.warning("artifact %s %s failed: %s", action, name, exc)
             continue
         log.info("artifact %s %s <-> %s: %s", action, name, peer, result)
+
+
+def _startup_model_host(agent, args) -> None:
+    """Serve the model with layers on the hive, when the operator asks for it.
+
+    Off by default and fail-closed: without ``--model-host`` nothing is planned and
+    nothing is delegated. With it, the orchestrator plans from the fleet's own
+    advertised headroom, asks each chosen device to start its RPC peripheral over
+    the mesh, launches the same llama-server the agent would use locally, verifies
+    it answers, and says where to point the agent.
+    """
+    if not getattr(args, "model_host", None):
+        return
+    from mesh_model_host import MeshModelHost  # noqa: WPS433
+
+    host = MeshModelHost(
+        args.model_host, agent=agent, binary=args.model_host_binary or None,
+        port=args.model_host_port, total_layers=args.model_host_layers,
+        context=args.model_host_context, threads=args.model_host_threads,
+        reserve_bytes=int(args.model_host_reserve_mb) * 1024 * 1024,
+        allow_lan=bool(args.model_host_lan),
+        peers=lambda: agent.mesh_peer_endpoints())
+    agent._model_host = host
+    state = host.start()
+    log.info("model host: %s", host.summary_line())
+    if state.get("mode") == "split":
+        log.info("point the agent at it with --api-url http://127.0.0.1:%s",
+                 state.get("host_port"))
 
 
 def _startup_say(agent, args) -> None:
@@ -527,6 +573,7 @@ def main(argv=None) -> int:
 
     _enable_fleet_deploy(agent, args)
     _startup_artifacts(runtime, args)
+    _startup_model_host(agent, args)
     _startup_say(agent, args)
 
     ticks = 0

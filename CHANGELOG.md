@@ -6,6 +6,36 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### P1.1: the layer split runs from the runtime (v1.30.18)
+
+`plan_layer_split()` had existed since the layer-split work and was called by
+nobody. It has a runtime now: `mesh_model_host.py` plans layers from the election's
+*own* live peers, wakes their peripherals over the mesh, launches llama-server with
+the resulting `--rpc` / `-dev` / `-ngl` (plus `--tensor-split` when several devices
+contribute), then verifies `/health` **and** a one-token completion.
+`scripts/desktop_agent.py --model-host <gguf>` turns it on; it is off by default and
+fail-closed at every step.
+
+New delegated action **`mesh_rpc`**: the primary asks a device to start its own
+peripheral. Only the app can execute a phone's native-library binary, so this
+replaces the adb debug broadcast for headless orchestration -- through the device's
+own authority gate, returning what it actually did. The Kotlin service now registers
+its native library dir with the agent so the device can find its own binary.
+
+Decisions rather than assumptions:
+
+- Reachability is a TCP connect to the peripheral's port, not the peer's word.
+- A device that does not answer loses its layers (they stay local) and is reported
+  with the reason rather than silently skipped.
+- `mmap` defaults *off* when offloading: with it the host keeps the GGUF mapped and
+  RSS stays at the local-only figure, hiding the win the split exists for.
+- `local` always says why: `model_host=local(skipped shugo-a51:thermal_status=4)`.
+
+Measured end to end with a loopback peripheral standing in for a device: 23/24
+layers planned remote, delegated start, `--rpc 127.0.0.1:50052 -dev RPC0 -ngl 23
+-c 512 -t 4 --no-mmap`, health and probe both true, host RSS **183 MB** against
+**537 MB** local-only.
+
 ### Node consistency in one command, and the Mac can measure its memory (v1.30.17)
 
 Consistency on a fleet node has four parts, and every incident so far came from one

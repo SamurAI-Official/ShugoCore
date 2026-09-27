@@ -67,10 +67,17 @@ def plan_for_fleet(live_peers, total_layers: int, bytes_per_layer: int, *,
             entry["paired"] = peer.get("paired")
         nodes.append(entry)
     plan = plan_layer_split(nodes, total_layers, bytes_per_layer,
-                            local_layers_min=local_layers_min)
+                            local_layers_min=local_layers_min,
+                            reserve_bytes=int(reserve_bytes))
     # The reserve is a property of the peripheral, not of the plan, so report the
     # headroom the same way the planner measured it.
     plan["reserve_bytes"] = int(reserve_bytes)
+    # What the planner was actually given. "insufficient_headroom" is only useful
+    # if the number behind it is visible: a peer's advertised memory and the value
+    # the planner decided on are not the same thing until you print both.
+    plan["nodes"] = nodes
+    plan["bytes_per_layer"] = int(bytes_per_layer)
+    plan["total_layers"] = int(total_layers)
     if excluded:
         plan["skipped"] = list(plan.get("skipped") or []) + excluded
     return plan
@@ -340,6 +347,14 @@ class MeshModelHost:
                             else "skipped " + ", ".join(reasons[:4]))
         else:
             state_reason = ""
+        if not remote:
+            # Print the planner's inputs whenever it declines to offload: the
+            # difference between "the device has no room" and "the advertisement
+            # said so" is invisible otherwise.
+            logger.info("mesh model host: nothing assigned -- reserve=%s B, "
+                        "bytes/layer=%s B, nodes=%s, skipped=%s",
+                        plan.get("reserve_bytes"), plan.get("bytes_per_layer"),
+                        plan.get("nodes"), plan.get("skipped"))
         extra = host_extra_args(assignments, endpoints, context=self.context,
                                 threads=self.threads,
                                 mmap=self._effective_mmap(remote))
@@ -349,6 +364,9 @@ class MeshModelHost:
             "assignments": assignments, "started": started,
             "skipped": plan.get("skipped") or [], "unreachable": unreachable,
             "headroom": plan.get("headroom") or {}, "extra_args": extra,
+            "plan_nodes": plan.get("nodes") or [],
+            "bytes_per_layer": plan.get("bytes_per_layer"),
+            "reserve_bytes": plan.get("reserve_bytes"),
             "host_port": self.port, "rpc_port": self.rpc_port,
             "launcher": type(self._launcher).__name__ if self._launcher else "",
             "reason": state_reason, "launched": False, "health": False,

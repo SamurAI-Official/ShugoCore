@@ -204,13 +204,19 @@ def process_rss_mb(pid) -> float:
 
 def plan_layer_split(nodes: List[Dict[str, Any]], total_layers: int,
                      bytes_per_layer: int,
-                     local_layers_min: int = 1) -> Dict[str, Any]:
+                     local_layers_min: int = 1,
+                     reserve_bytes: int = DEFAULT_RESERVE_BYTES) -> Dict[str, Any]:
     """Assign layers to peripherals by measured headroom (fail-closed).
 
     Each node dict may carry ``device_id``, ``mem_available_bytes``,
     ``advertised_bytes``, ``thermal_status`` and ``paired``. Unpaired or
     thermally-critical nodes are skipped and reported; whatever no peripheral
     can hold stays local, so the model always still runs.
+
+    ``reserve_bytes`` is memory left to the peripheral's own OS and runtime, and it
+    has to reach ``usable_headroom``: forgetting it here silently overrode every
+    caller's budget with the module default, so an operator asking for a 96 MB
+    reserve was judged against 192 MB and told the device had no room.
 
     Returns ``{"assignments", "remote_layers", "local_layers", "skipped",
     "headroom"}``.
@@ -240,7 +246,8 @@ def plan_layer_split(nodes: List[Dict[str, Any]], total_layers: int,
                             "reason": f"thermal_status={thermal_int}"})
             continue
         room = usable_headroom(node.get("mem_available_bytes"),
-                               node.get("advertised_bytes"))
+                               node.get("advertised_bytes"),
+                               reserve_bytes=reserve_bytes)
         headroom[device_id] = room
         layers = room // per_layer
         if layers <= 0:

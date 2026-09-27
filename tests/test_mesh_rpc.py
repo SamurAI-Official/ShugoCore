@@ -414,6 +414,35 @@ class DelegatedMeshRpcTestCase(unittest.TestCase):
         self.assertEqual(result["reason"], "mesh_follower")
 
 
+class ReserveTestCase(unittest.TestCase):
+    """The reserve an operator asks for must be the reserve that is applied.
+
+    `plan_layer_split` used to call `usable_headroom` without passing its
+    `reserve_bytes`, so every caller was judged against the module default: an
+    operator asking for 96 MB was told a phone with 156 MB free had no room.
+    """
+
+    MIB = 1024 * 1024
+
+    def test_a_smaller_reserve_lets_a_device_contribute(self):
+        node = {"device_id": "shugo-tab", "mem_available_bytes": 200 * self.MIB,
+                "thermal_status": 0}
+        generous = plan_layer_split([node], 24, 20 * self.MIB,
+                                    reserve_bytes=96 * self.MIB)
+        self.assertEqual(generous["assignments"], {"shugo-tab": 5})
+        strict = plan_layer_split([node], 24, 20 * self.MIB,
+                                  reserve_bytes=192 * self.MIB)
+        self.assertEqual(strict["assignments"], {})
+        self.assertIn("insufficient_headroom",
+                      " ".join(item["reason"] for item in strict["skipped"]))
+
+    def test_the_default_reserve_is_still_the_safe_one(self):
+        node = {"device_id": "shugo-tab", "mem_available_bytes": 220 * self.MIB,
+                "thermal_status": 0}
+        plan = plan_layer_split([node], 24, 20 * self.MIB)
+        self.assertEqual(plan["assignments"], {"shugo-tab": 1})
+
+
 if __name__ == "__main__":
     unittest.main()
 

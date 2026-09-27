@@ -134,6 +134,17 @@ class SettleTestCase(unittest.TestCase):
         self.assertIn("insufficient_headroom", state["reason"])
 
 
+    def test_the_plan_reports_what_the_planner_was_given(self):
+        """`insufficient_headroom` is only actionable with the number behind it."""
+        plan = mmh.plan_for_fleet([PEER_PHONE], 24, 20 * MIB,
+                                  reserve_bytes=192 * MIB)
+        self.assertEqual(plan["nodes"][0]["device_id"], "shugo-tab")
+        self.assertEqual(plan["nodes"][0]["mem_available_bytes"],
+                         PEER_PHONE["mem_available_bytes"])
+        self.assertEqual(plan["bytes_per_layer"], 20 * MIB)
+        self.assertEqual(plan["reserve_bytes"], 192 * MIB)
+
+
 class EndpointTestCase(unittest.TestCase):
     def test_peers_give_ids_to_host_port(self):
         mapping = mmh.endpoint_map([("shugo-tab", "192.168.1.164", 9000)])

@@ -524,6 +524,16 @@ class ReconcileTestCase(unittest.TestCase):
         # An error with no message tells a human nothing they can act on.
         self.assertEqual(reason({"status": "error"}), "peripheral did not answer")
 
+    def test_the_status_line_says_how_many_checks_ran(self):
+        """A hold is silent, so the line must distinguish it from never checking."""
+        host = self._start([PEER_MEDIUM])
+        host.start()
+        self.assertNotIn("recon=", host.summary_line())
+        host.note_reconcile("hold")
+        self.assertIn("recon=1:hold", host.summary_line())
+        host.note_reconcile("restart")
+        self.assertIn("recon=2:restart", host.summary_line())
+
     def test_the_unreachable_list_is_de_duplicated_by_device(self):
         merged = mmh.MeshModelHost._merge_unreachable(
             [{"device_id": "shugo-tab", "reason": "peripheral did not answer"}],

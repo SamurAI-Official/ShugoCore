@@ -337,6 +337,8 @@ class MeshModelHost:
         self._last_restart = 0.0
         self._relaunches = 0
         self._failures = 0
+        self._reconciles = 0
+        self._last_action = ""
         self._make_launcher = launcher or _default_launcher
         self._connect = connect
         self._probe = prober or probe_completion
@@ -545,10 +547,23 @@ class MeshModelHost:
     def status(self) -> Dict[str, Any]:
         return dict(self._state)
 
+    def note_reconcile(self, action: str) -> None:
+        """Count checks and remember the last verdict, for the status line.
+
+        A hold is silent on purpose (a hive that reloads every check would lose its KV
+        cache for nothing), so without this the status line cannot tell "checked and
+        satisfied" from "never checked" -- which is exactly the question asked of it
+        when a split did not appear.
+        """
+        self._reconciles += 1
+        self._last_action = str(action or "?")
+
     def summary_line(self) -> str:
         """One status-line field: what this hive is actually hosting."""
         state = self._state
         mode = state.get("mode", "off")
+        checked = (f",recon={self._reconciles}:{self._last_action}"
+                   if self._reconciles else "")
         if mode == "split":
             devices = ",".join(f"{device}:{layers}" for device, layers in
                                sorted((state.get("assignments") or {}).items()))
@@ -557,10 +572,10 @@ class MeshModelHost:
             restarts = int(state.get("relaunches") or 0)
             relaunched = f",relaunch={restarts}" if restarts else ""
             return (f"split(layers={state.get('remote_layers')}/"
-                    f"{self.total_layers} dev={devices}{verified}{relaunched})")
+                    f"{self.total_layers} dev={devices}{verified}{relaunched}{checked})")
         if mode == "local":
-            return f"local({state.get('reason') or 'no peripherals'})"
-        return f"{mode}({state.get('reason') or 'not started'})"
+            return f"local({state.get('reason') or 'no peripherals'}{checked})"
+        return f"{mode}({state.get('reason') or 'not started'}{checked})"
 
     def reconcile(self, *, force: bool = False) -> Dict[str, Any]:
         """Re-plan against the live hive: the watchdog first, then the rebalance.

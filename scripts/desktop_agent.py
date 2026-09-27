@@ -627,6 +627,7 @@ def main(argv=None) -> int:
                 # model, so it must not overlap a model call.
                 try:
                     result = host.reconcile()
+                    host.note_reconcile(result.get("action"))
                     if result.get("action") not in (None, "hold", "deferred"):
                         log.info("model host %s: %s", result.get("action"),
                                  host.summary_line())

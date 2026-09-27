@@ -114,6 +114,11 @@ class SettleTestCase(unittest.TestCase):
         host = self._host(live_peers=lambda: [], peers=[])
         self.assertFalse(host._should_wait_for_peers({}))
 
+    def test_a_peer_that_has_been_heard_is_a_hive_even_with_an_empty_map(self):
+        """Discovery fills the peer map over time; a heartbeat proves the hive."""
+        host = self._host(live_peers=lambda: [{"node_id": "shugo-mac"}], peers=[])
+        self.assertTrue(host._should_wait_for_peers({}))
+
     def test_a_zero_settle_timeout_disables_the_wait(self):
         self.assertFalse(
             self._host(settle_timeout=0)._should_wait_for_peers({}))

@@ -432,7 +432,10 @@ class MeshModelHost:
             return False
         if plan.get("assignments"):
             return False
-        return bool(self.fleet_peers())
+        # Someone is out there -- either configured or already heard from -- so the
+        # rest of the hive may still be arriving. Discovery fills the peer map over
+        # time, which is exactly the window the phones were missing from.
+        return bool(self.fleet_peers()) or bool(self.live_peers())
 
     def _effective_mmap(self, remote: int) -> bool:
         """Auto: mmap locally, release the host's copy when offloading.

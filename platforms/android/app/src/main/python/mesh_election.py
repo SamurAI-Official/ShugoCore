@@ -16,6 +16,7 @@ Also owns the split-layer command-line builder used by
 
 import logging
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -33,13 +34,58 @@ except Exception:
         def default_chunk(machine, exe):
             return 24
 
+def parse_vm_stat(text, page_size=16384) -> int:
+    """Available bytes from macOS ``vm_stat`` output.
+
+    "Available" approximates what the kernel would hand out: free, inactive and
+    speculative pages. ``os.sysconf("SC_AVPHYS_PAGES")`` is not defined on macOS,
+    so without this a Mac node advertised no headroom -- and a node advertising
+    none is ineligible in the election and skipped by the layer planner: alive,
+    and contributing nothing.
+    """
+    counted = 0
+    for line in (text or "").splitlines():
+        name, sep, rest = line.partition(":")
+        if not sep or name.strip() not in ("Pages free", "Pages inactive",
+                                           "Pages speculative"):
+            continue
+        digits = "".join(ch for ch in rest if ch.isdigit())
+        if digits:
+            counted += int(digits)
+    try:
+        return max(0, counted) * max(0, int(page_size))
+    except (TypeError, ValueError):
+        return 0
+
+
+def macos_available_memory(run=None) -> int:
+    """Free physical memory on macOS (0 when it cannot be measured)."""
+    runner = run or subprocess.run
+    try:
+        proc = runner(["vm_stat"], capture_output=True, text=True, timeout=10)
+        text = getattr(proc, "stdout", "") or ""
+    except Exception:
+        return 0
+    page_size = 16384                    # Apple silicon default, refined below
+    try:
+        proc = runner(["sysctl", "-n", "hw.pagesize"], capture_output=True,
+                      text=True, timeout=10)
+        reported = int((getattr(proc, "stdout", "") or "").strip())
+        if reported > 0:
+            page_size = reported
+    except Exception:
+        pass
+    return parse_vm_stat(text, page_size)
+
+
 def available_memory_bytes() -> int:
     """Best-effort free physical memory in bytes (0 when unmeasurable).
 
     The election refuses a candidate that reports no headroom, so a node which
     cannot measure memory must not advertise zero: on a desktop host that marks
     every host ineligible and would hand the primary lease to a phone by
-    accident. POSIX, macOS and Android answer via ``sysconf``; Windows via
+    accident. POSIX and Android answer via ``sysconf``; macOS via ``vm_stat``
+    (it does not define ``SC_AVPHYS_PAGES``); Windows via
     ``GlobalMemoryStatusEx``.
     """
     try:
@@ -49,6 +95,12 @@ def available_memory_bytes() -> int:
             return pages * size
     except (AttributeError, ValueError, OSError, TypeError):
         pass
+    if sys.platform == "darwin":
+        # macOS defines neither name above through os.sysconf, which is why a Mac
+        # node used to advertise no headroom at all.
+        available = macos_available_memory()
+        if available > 0:
+            return available
     try:
         import ctypes
 
@@ -71,32 +123,6 @@ def available_memory_bytes() -> int:
             return int(status.ullAvailPhys)
     except Exception:
         pass
-    # macOS has no SC_AVPHYS_PAGES (the first branch raises ValueError there),
-    # so the two paths above both miss and every macOS host reported zero
-    # headroom. The election reads <= 0 as "no-headroom" and refuses the node,
-    # which is why a Mac could never win the lease it was the best candidate
-    # for. vm_stat is the supported way to ask; its counters are page counts,
-    # not bytes.
-    if sys.platform == "darwin":
-        try:
-            import re
-            import subprocess
-
-            out = subprocess.run(["vm_stat"], capture_output=True, text=True,
-                                 timeout=5).stdout
-            page_match = re.search(r"page size of (\d+)", out)
-            if page_match:
-                page = int(page_match.group(1))
-                free = re.search(r"Pages free:\s+(\d+)", out)
-                # Speculative pages are already-reserved cache the kernel can
-                # reclaim instantly, so they count as available headroom.
-                spec = re.search(r"Pages speculative:\s+(\d+)", out)
-                pages = (int(free.group(1)) if free else 0) + \
-                        (int(spec.group(1)) if spec else 0)
-                if pages > 0 and page > 0:
-                    return pages * page
-        except Exception:
-            pass
     return 0
 
 
@@ -159,10 +185,13 @@ class MeshElection:
             thermal = int(payload.get("thermal_status", 0))
         except (TypeError, ValueError):
             thermal = 0
-        try:
-            mem = int(payload.get("mem_available_bytes", 0))
-        except (TypeError, ValueError):
-            mem = 0
+        if "mem_available_bytes" in payload:
+            try:
+                mem = int(payload["mem_available_bytes"])
+            except (TypeError, ValueError):
+                mem = 0            # reported but unusable: fail closed
+        else:
+            mem = None             # not reported: unknown, so still a candidate
         ts = _now() if now is None else float(now)
         entry = {
             "node_id": node_id, "priority": priority,
@@ -214,8 +243,14 @@ class MeshElection:
                 return "thermal-critical"
         except (TypeError, ValueError):
             return "thermal-unknown"
+        mem = entry.get("mem_available_bytes")
+        if mem is None:
+            # Unreported headroom is *unknown*, not zero: a node that cannot
+            # measure its free memory stays a candidate instead of advertising
+            # itself out of the election (which is how a Mac went invisible).
+            return None
         try:
-            if int(entry.get("mem_available_bytes", 0)) <= 0:
+            if int(mem) <= 0:
                 return "no-headroom"
         except (TypeError, ValueError):
             return "no-headroom"
@@ -256,6 +291,21 @@ class MeshElection:
         ts = _now() if now is None else float(now)
         candidates = self._live_candidates(ts)
         winner = candidates[0]["node_id"] if candidates else None
+        # Incumbency: an equal-ranked challenger does not depose the holder. The
+        # ranking is (priority, node_id), so a node joining with the same
+        # priority could take the lease from a healthy holder on the alphabet
+        # alone -- the fleet re-homed for no reason and a new primary had to take
+        # over mid-flight. A strictly *better* candidate still wins.
+        if winner and candidates:
+            with self._lock:
+                holder = self._primary_id
+            if holder and holder != winner:
+                incumbent = next((e for e in candidates
+                                  if e.get("node_id") == holder), None)
+                if incumbent is not None and (
+                        int(incumbent.get("priority", 100))
+                        <= int(candidates[0].get("priority", 100))):
+                    winner = holder
         with self._lock:
             previous = self._primary_id
             if winner != previous:

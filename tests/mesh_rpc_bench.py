@@ -38,6 +38,10 @@ import time
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import mesh_rpc  # noqa: E402  (portable liveness/RSS live with the RPC code)
+
 RPC_ACTION = "com.samurai.shugocore.DEBUG_MESH_RPC"
 DEFAULT_HOST_PORT = 8099
 
@@ -105,12 +109,8 @@ def remove_usb_forward(serial: str, local_port: int) -> None:
 
 
 def rss_mb(pid: int) -> float:
-    try:
-        proc = subprocess.run(["ps", "-o", "rss=", "-p", str(pid)],
-                              capture_output=True, text=True, timeout=10)
-        return int((proc.stdout or "0").strip() or 0) / 1024.0
-    except Exception:
-        return 0.0
+    """Resident size of the model host, portable across platforms."""
+    return mesh_rpc.process_rss_mb(pid)
 
 
 def post_json(url: str, payload: dict, timeout: float = 300.0) -> dict:
@@ -124,7 +124,7 @@ def post_json(url: str, payload: dict, timeout: float = 300.0) -> dict:
 def wait_health(base: str, pid: int, timeout: float) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if subprocess.run(["ps", "-p", str(pid)], capture_output=True).returncode:
+        if not mesh_rpc.process_alive(pid):
             return False
         try:
             with urllib.request.urlopen(base + "/health", timeout=2) as response:

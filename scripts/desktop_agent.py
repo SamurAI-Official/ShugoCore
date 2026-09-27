@@ -62,6 +62,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from shugocore_agent import create_agent  # noqa: E402
+from node_identity import load_or_create as _load_identity  # noqa: E402
 from fleet_deploy import (  # noqa: E402
     FleetDeployHandler,
     SubprocessAdbRunner,
@@ -148,6 +149,13 @@ def parse_args(argv=None) -> argparse.Namespace:
                     metavar="NAME=PEER",
                     help="offer one of my shared artifacts to a peer at "
                          "startup; the peer pulls it (repeatable)")
+    ap.add_argument("--say", action="append", default=[], metavar="TEXT[@DEVICE]",
+                    help="speak this text through the hive at startup: routed to "
+                         "the device closest to the operator, or to @DEVICE when "
+                         "forced (repeatable)")
+    ap.add_argument("--response-target", default=None,
+                    help="force the answering device for --say (same as policy "
+                         "response_target)")
     ap.add_argument("--deploy-target", action="append", default=[],
                     metavar="SERIAL",
                     help="allow ADB deployment to this device serial "
@@ -279,11 +287,22 @@ def _status_line(agent, runtime, ticks) -> str:
     shared = len(runtime.list_artifacts() or [])
     art_in = artifacts.get("received")
     art_out = artifacts.get("sent")
+    routing = (status.get("response_routing") or {}) if isinstance(status, dict) else {}
+    delegated = (status.get("delegated") or {}) if isinstance(status, dict) else {}
+    # The election's own view: how many peers it considers live, and who it thinks
+    # holds the lease. Without this, "the hive has a primary" and "this node sees
+    # one" are indistinguishable from the status line.
+    try:
+        live = len(election.live_peers()) if election is not None else 0
+    except Exception:
+        live = -1
     return (f"tick {ticks} | cycles={loop.get('cycles')} "
             f"rate={loop.get('success_rate')} | node={lease.get('node_id', '?')} "
             f"prio={lease.get('priority', '?')} role={status.get('mesh_role', '?')} "
             f"primary={status.get('mesh_primary')} connected={len(connected)} "
-            f"mesh_peers={len(declared or [])} beats={heard} rx={rx} tx={tx} "
+            f"mesh_peers={len(declared or [])} beats={heard} live={live} "
+            f"rx={rx} tx={tx} "
+            f"say_to={routing.get('device')} deleg_sent={delegated.get('sent')} "
             f"artifacts={shared} art_in={art_in} art_out={art_out} "
             f"imported={stats.get('imported')}")
 
@@ -362,6 +381,69 @@ def _startup_artifacts(runtime, args) -> None:
         log.info("artifact %s %s <-> %s: %s", action, name, peer, result)
 
 
+def _startup_say(agent, args) -> None:
+    """Speak once through the hive: routed, or forced to a named device.
+
+    This is the operator-facing form of the routing rule -- the primary decides
+    the words, the device closest to the operator says them -- and with @DEVICE
+    it also exercises the delegated path deterministically (useful on a bench
+    where nobody is standing in front of a camera).
+    """
+    if not getattr(args, "say", None):
+        return
+    if args.response_target:
+        policy = getattr(agent, "policy", None)
+        if isinstance(policy, dict):
+            policy["response_target"] = args.response_target
+        log.info("response target forced to %s", args.response_target)
+    time.sleep(2.0)                          # let the peer dials settle
+    # A delegated action is judged against the *receiver's* election, which holds
+    # its previous lease holder until a heartbeat or two after a restart. Wait
+    # until this node is seen as primary by a live peer before addressing one --
+    # otherwise the first delegation of a fresh start is refused as "not the
+    # primary", which is exactly the transient we kept hitting.
+    #
+    # A *routed* answer needs one more thing: the observation must list the peers,
+    # because the router scores their facts. A node that just booted has an
+    # election verdict before its first observation, so the first routed
+    # utterance used to answer "no device reports speech output" while the phones
+    # were plainly able to speak.
+    routed = [spec for spec in args.say if "@" not in str(spec)]
+    deadline = time.monotonic() + 45.0
+    while time.monotonic() < deadline:
+        try:
+            election = getattr(agent, "mesh_election", None)
+            settled = (election is not None
+                       and str(election.tick().get("primary") or "")
+                       == str(agent.node_id)
+                       and len(election.live_peers()) >= 1)
+            if settled and routed:
+                candidates = agent._response_candidates()
+                settled = any(not c.get("is_self") for c in candidates)
+        except Exception:
+            settled = False
+        if settled:
+            break
+        time.sleep(1.0)
+    else:
+        log.warning("hive has not settled on this node as primary; speaking anyway")
+    for spec in args.say:
+        text, _, device = str(spec).partition("@")
+        text, device = text.strip(), device.strip()
+        if not text:
+            continue
+        if device:
+            result = agent._mesh_delegate(device, {
+                "action_type": "speak", "params": {"text": text}})
+            result = dict(result or {}, delegated_to=device, forced=True)
+        else:
+            result = agent._route_response("speak", {"text": text})
+        log.info("say %r -> %s", text, result or "answered locally")
+        if result is None and not device:
+            chosen, why = agent.select_response_node()
+            log.info("no device to speak through: %s", why)
+
+
 def main(argv=None) -> int:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -385,7 +467,7 @@ def main(argv=None) -> int:
     if args.artifact_dir:
         os.environ["SHUGOCORE_ARTIFACT_DIR"] = str(args.artifact_dir)
 
-    mesh_id = args.mesh_node_id or f"shugo-{caps}"
+    mesh_id = args.mesh_node_id or _load_identity(str(data_dir), caps=caps)
     log.info("booting node: mesh id '%s' (election prio %s), data dir %s",
              mesh_id, args.mesh_priority, data_dir)
     agent = create_agent(device_caps=caps, api_url=args.api_url,
@@ -445,6 +527,7 @@ def main(argv=None) -> int:
 
     _enable_fleet_deploy(agent, args)
     _startup_artifacts(runtime, args)
+    _startup_say(agent, args)
 
     ticks = 0
     next_status = (time.monotonic() + args.status_every

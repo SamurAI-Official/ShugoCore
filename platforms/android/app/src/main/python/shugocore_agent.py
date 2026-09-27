@@ -58,6 +58,25 @@ logger = logging.getLogger("shugocore_android")
 # The orchestration loop stages surfaced on the AGENT tab. Stage tracking is
 # honest: a stage is only reported as run when the code path for it actually
 # executed during the tick.
+# Top-down orchestration floors: below either of these a node stops deciding for
+# itself (a phone with 30 MiB free or a flat battery is a sensor, not an
+# orchestrator) and hands the work to the primary instead.
+_ORCH_MIN_HEADROOM_BYTES = 64 * 1024 * 1024
+_ORCH_MIN_BATTERY_PCT = 15
+# Mesh topics for delegated work. The primary may ask a node to perform one
+# already-gated action (speak / ask the local human); the node answers on the
+# result topic. Only the lease holder is accepted as a sender, so a peer cannot
+# use another node as its hands.
+DELEGATE_TOPIC = "orchestrate/delegate"
+DELEGATE_RESULT_TOPIC = "orchestrate/result"
+DELEGATABLE_ACTIONS = ("speak", "ask_user")
+# What a node advertises over the mesh so the primary can measure which device is
+# closest to the operator. Only facts a node actually perceived are sent: a device
+# that saw nothing reports nothing rather than a guess.
+MESH_PERCEPTION_KEYS = ("face_count", "face_present", "gaze_toward_camera",
+                        "voice_active", "speech_source", "speech_recent",
+                        "utterance_age_s", "presence_present")
+_DELEGATE_LOCK = threading.Lock()
 PIPELINE_STAGES = ("OBSERVE", "VERIFY_ATTENTION", "GATE", "DECIDE",
                    "EXECUTE", "EVALUATE", "RECORD", "CONSOLIDATE")
 
@@ -122,6 +141,18 @@ class AndroidAgent:
         # this, MemoryManager/DecisionEngine fail to open their SQLite files
         # and the whole agent construction throws.
         self.data_dir = data_dir
+        # v1.30.10: one identity per device. The same string is the election node
+        # id, the transport agent id and the name peers dial, so a node can be
+        # addressed by the name it answers to (delegated work, response routing).
+        # Persisted in the data dir, so a restart or upgrade keeps the name; an
+        # explicitly passed mesh_node_id wins over generation.
+        try:
+            from node_identity import load_or_create as _load_identity
+            self.node_id = _load_identity(self.data_dir, suggested=mesh_node_id,
+                                          caps=self.device_caps)
+        except Exception:
+            self.node_id = (mesh_node_id
+                            or f"shugo-{self.device_caps or 'android'}")
         # v1.30.4: bearer token for the desktop server (paired with
         # desktop_api_url). Empty / None means no token; the local llama.cpp
         # server is open, so the token is opt-in. Stored only on this
@@ -174,7 +205,7 @@ class AndroidAgent:
         if _HAS_MESH_ELECTION:
             try:
                 self.mesh_election = MeshElection(
-                    node_id=mesh_node_id or f"android-{self.device_caps}",
+                    node_id=self.node_id,
                     priority=mesh_priority)
             except Exception:
                 self.mesh_election = None
@@ -834,7 +865,7 @@ class AndroidAgent:
             # mesh instead of an ADB cable.
             share_dir, stage_dir = AndroidAgent._mesh_artifact_dirs(self.data_dir)
             self.shugonet_runtime = ShugonetAgentRuntime(
-                agent_id=f"shugo-{self.device_caps or 'android'}",
+                agent_id=self.node_id,
                 host="0.0.0.0", port=mesh_port,
                 memory=shugonet_memory,
                 fallback_controller=shugonet_fallbacks,
@@ -854,9 +885,25 @@ class AndroidAgent:
             # Build traffic joins the audit chain (resolved lazily: the engine's
             # chain may not exist yet at this point).
             self.shugonet_runtime.set_artifact_audit(self._mesh_artifact_audit)
+            # Response routing + delegated work: which device answers, and how a
+            # node receives an action the primary directed at it.
+            self._delegated_results: List[Dict[str, Any]] = []
+            self._delegated_out = 0
+            self._peer_tts: Dict[str, bool] = {}
+            self._last_route: Optional[Dict[str, Any]] = None
+            self._delegated_from: Optional[str] = None
+            self.shugonet_runtime.set_send_handler(self._on_mesh_send)
             peers = (self._parse_mesh_peers(
                         _os.environ.get("SHUGOCORE_MESH_PEERS", ""))
                      + self._load_mesh_peers_file())
+            if peers and not mesh_token:
+                # A node with peers but no secret advertises into a wall: every
+                # token-gated peer refuses its frames, and the sender has no way
+                # to tell that from "nobody is listening".
+                self.log("MESH",
+                         "no mesh token configured: token-gated peers will "
+                         "refuse this node's frames (set SHUGOCORE_MESH_TOKEN "
+                         "or <data-dir>/mesh_token.txt)", level="WARN")
             unique_peers: Dict[str, tuple] = {}
             for peer_id, peer_host, peer_port in peers:
                 unique_peers[peer_id] = (peer_host, peer_port)
@@ -1097,6 +1144,17 @@ class AndroidAgent:
                                      frame_source=frame_source,
                                      audit=getattr(self, "audit", None))
 
+    def _log_speak_failure(self, detail: str) -> None:
+        """Record a speech-output failure where an operator can read it.
+
+        The LogBus is in-memory (the UI polls it); a phone's stderr and a host's
+        stdout need the module logger, and that is what survives the run.
+        """
+        self.log("ERROR", f"speak failed: {detail}", level="ERROR")
+        import logging as _logging
+        _logging.getLogger(__name__).error(
+            "speak failed on %s: %s", getattr(self, "node_id", "?"), detail)
+
     def _execute_speak(self, decision: Dict[str, Any]) -> Dict[str, Any]:
         """Executor for the internal speak action. Text is sanitized and
         bounded here; the listener (Kotlin TTS) performs the actual output.
@@ -1116,6 +1174,11 @@ class AndroidAgent:
             str(params.get("text") or params.get("utterance") or ""), 400)
         if not text:
             return {"status": "refused", "reason": "empty speech content"}
+        # Route the utterance to the device closest to the operator (this one
+        # when it is the closest, another node otherwise).
+        route = self._route_response("speak", {"text": text})
+        if route is not None:
+            return route
         listener = self._speak_listener
         if listener is None:
             return {"status": "no_output",
@@ -1124,9 +1187,20 @@ class AndroidAgent:
         try:
             delivered = bool(listener.speak(text))
         except Exception as exc:
-            self.log("ERROR", f"speak listener failed: {type(exc).__name__}",
-                     level="ERROR")
-            return {"status": "error", "message": type(exc).__name__}
+            # The cause must survive the trip. A delegated speak that fails is
+            # undiagnosable if the sender only learns "error", so the reason is
+            # machine-readable and carries what the platform actually said, and it
+            # is logged where an operator can read it afterwards.
+            detail = (f"speak_listener_failed: {type(exc).__name__}: {exc}")
+            self._log_speak_failure(detail)
+            return {"status": "error", "message": type(exc).__name__,
+                    "reason": detail[:200]}
+        if not delivered:
+            # The platform held the text and refused it. Reporting success here
+            # would be the same silence this whole path exists to prevent.
+            self._log_speak_failure("speak_listener_returned_false")
+            return {"status": "error", "spoken": text, "delivered": False,
+                    "reason": "speak_listener_returned_false"}
         if self.interaction is not None:
             self.interaction.record_agent_response(AgentResponse(
                 type="speech", content=text, target="user"))
@@ -1157,6 +1231,11 @@ class AndroidAgent:
                 or params.get("utterance") or ""), 400)
         if not text:
             return {"status": "refused", "reason": "empty question"}
+        # Ask through the device closest to the operator: a question is only
+        # useful where the human can hear and answer it.
+        route = self._route_response("ask_user", {"question": text})
+        if route is not None:
+            return route
         listener = self._speak_listener
         if listener is None:
             return {"status": "no_output",
@@ -1668,6 +1747,75 @@ class AndroidAgent:
         except Exception:
             return 0
 
+    def _mesh_perception_facts(self) -> Dict[str, Any]:
+        """The perception facts this node contributes to its advertisement.
+
+        Sent under the ``remote_*`` spelling the Android shell already streams,
+        so whichever transport carried the advertisement the router needs only
+        one spelling. Without these the primary scores every device at zero and
+        stays silent even with an operator standing in front of a phone.
+        """
+        observation = (self.last_observation
+                       if isinstance(getattr(self, "last_observation", None), dict)
+                       else {})
+        human = (observation.get("human")
+                 if isinstance(observation.get("human"), dict) else {})
+        telemetry = getattr(self, "telemetry", None)
+        if not isinstance(telemetry, dict):
+            telemetry = {}
+        # A node's own perception arrives through two doors. Telemetry carries what
+        # the platform measures directly (voice energy, and the fused scene verdict
+        # under its own spelling); the interaction bus carries the camera's own
+        # observations and the attribution verdict. Read both -- neither alone is
+        # the whole picture, and a device that reports nothing stays silent.
+        sources: Dict[str, Any] = {
+            "face_count": human.get("face_count", telemetry.get("face_count")),
+            "face_present": human.get("face_present",
+                                      telemetry.get("face_present")),
+            "gaze_toward_camera": human.get(
+                "gaze_toward_camera",
+                telemetry.get("gaze_toward_camera")),
+            "voice_active": human.get("voice_active",
+                                      telemetry.get("voice_active")),
+            "speech_source": human.get(
+                "speech_source",
+                telemetry.get("speech_source",
+                              telemetry.get("scene_speech_source"))),
+            "speech_recent": human.get("speech_recent"),
+            "utterance_age_s": human.get("utterance_age_s",
+                                         telemetry.get("utterance_age_s")),
+            "presence_present": human.get("presence_present"),
+        }
+        interaction = getattr(self, "interaction", None)
+        if interaction is not None:
+            try:
+                context = interaction.human_context() or {}
+            except Exception:
+                context = {}
+            if isinstance(context, dict):
+                if sources["face_count"] is None:
+                    sources["face_count"] = context.get("face_count")
+                if sources["speech_source"] in (None, ""):
+                    sources["speech_source"] = context.get("speech_source")
+                if sources["presence_present"] is None and context.get("presence"):
+                    # Any modality can honestly report "someone is here"; it is a
+                    # weaker fact than a face, and scored as one.
+                    sources["presence_present"] = (
+                        str(context.get("presence")) == "user_present")
+        facts: Dict[str, Any] = {}
+        for key, value in sources.items():
+            if value is None or value == "":
+                continue
+            facts[f"remote_{key}"] = value
+        # State the face verdict explicitly rather than leaving it to be inferred
+        # from the count: "I am looking at a person" is the single most useful
+        # fact the router can receive, and it should not depend on a spelling.
+        if "remote_face_present" not in facts:
+            count = facts.get("remote_face_count")
+            if isinstance(count, (int, float)):
+                facts["remote_face_present"] = int(count) > 0
+        return facts
+
     def _mesh_heartbeat_payload(self) -> Dict[str, Any]:
         """The advertisement THIS node publishes over the ShugoNet mesh.
 
@@ -1686,9 +1834,25 @@ class AndroidAgent:
         except (TypeError, ValueError):
             thermal = 0
         try:
-            return election.local_heartbeat(
+            payload = election.local_heartbeat(
                 thermal_status=thermal,
                 mem_available_bytes=self._mesh_mem_headroom())
+            if isinstance(payload, dict):
+                # Free memory we could not measure is *unknown*, not zero. The
+                # election refuses a candidate that reports no headroom, so
+                # advertising 0 would exclude a node that simply cannot read its
+                # own free memory (some macOS/POSIX hosts) from the hive.
+                if int(payload.get("mem_available_bytes") or 0) <= 0:
+                    payload.pop("mem_available_bytes", None)
+                # Tell the fleet whether this node can actually speak, so the
+                # primary can route an answer to a device with a speaker (and
+                # never to one without).
+                payload["can_speak"] = (getattr(self, "_speak_listener", None)
+                                        is not None)
+                # Where this device is relative to the operator, as measured by
+                # its own camera and microphone.
+                payload.update(self._mesh_perception_facts())
+            return payload
         except Exception as exc:
             self.log("MESH", f"heartbeat payload failed: {exc}", level="WARN")
             return {}
@@ -1706,8 +1870,31 @@ class AndroidAgent:
         node_id = str(payload.get("node_id") or "").strip()
         if not node_id:
             return
-        if node_id == getattr(self.mesh_election, "node_id", None):
+        own_ids = {str(value) for value in
+                   (getattr(self, "node_id", None),
+                    getattr(getattr(self, "mesh_election", None), "node_id", None))
+                   if value}
+        if node_id in own_ids:
+            # Another node is advertising THIS node's identity. It would shadow
+            # us in every peer's election (and in ours), so say so loudly rather
+            # than silently ignoring the frame.
+            self.log("MESH", f"another node is advertising my identity "
+                             f"({node_id}); one node must be renamed",
+                     level="ERROR")
             return
+        # Feed the election *here*, not only through _mesh_heartbeat_tick: the
+        # Android shell pushes its own DDS view into telemetry['mesh_peers'] every
+        # second, replacing the advertisement we just merged. A phone's election
+        # could therefore know only its DDS peers (other phones) and never the host
+        # that leads the hive -- which is why a delegated action from that host was
+        # refused as "not the primary". A mesh advertisement is authoritative for
+        # this node's own verdict; the tick's pass still covers the DDS path.
+        election = getattr(self, "mesh_election", None)
+        if election is not None:
+            try:
+                election.observe_heartbeat(dict(payload))
+            except Exception:
+                pass
         peers = self.telemetry.get("mesh_peers")
         if not isinstance(peers, list):
             peers = []
@@ -1720,7 +1907,22 @@ class AndroidAgent:
             "paired": payload.get("paired", True),
             "seq": payload.get("seq", 0),
             "source": "mesh",
+            "received_at": time.time(),
         }
+        # Carry what the advertisement said about being a mouth and about who it
+        # can see. Without these the router treats every peer as a speaker and as
+        # a device with nobody standing in front of it -- which is exactly the
+        # silence an operator sees when the hive should answer through the phone
+        # in their hand.
+        can_speak = payload.get("can_speak")
+        if can_speak is not None:
+            entry["can_speak"] = bool(can_speak)
+            peer_tts = getattr(self, "_peer_tts", None)
+            if isinstance(peer_tts, dict):
+                peer_tts[node_id] = bool(can_speak)
+        for key, value in payload.items():
+            if str(key).startswith("remote_"):
+                entry[key] = value
         merged = [p for p in peers
                   if str(p.get("device_id") or p.get("node_id") or "") != node_id]
         merged.append(entry)
@@ -1814,12 +2016,18 @@ class AndroidAgent:
         except Exception as exc:
             self.log("MESH", f"election tick failed: {exc}", level="WARN")
 
-    def _mesh_may_act(self, action: str) -> bool:
+    def _mesh_may_act(self, action: str, delegated_by: Optional[str] = None) -> bool:
         """Track 1 primary-only guardrail: True when this node may run the
         side-effect `action`. Allowed when there is no election module, no
         live primary other than us (standalone / partition — fail closed to
         standalone per the design), or we hold the lease. A follower logs a
-        refusal and the caller journals instead of acting."""
+        refusal and the caller journals instead of acting.
+
+        A *delegated* action is allowed too: when ``delegated_by`` (or the
+        in-flight delegation sender) is the current primary, this node is acting
+        as the primary's hands, which is exactly how a hive answers through the
+        device nearest the operator.
+        """
         election = self.mesh_election
         if election is None:
             return True
@@ -1830,9 +2038,388 @@ class AndroidAgent:
         primary = result.get("primary")
         if primary is None or primary == election.node_id:
             return True
+        sender = delegated_by or getattr(self, "_delegated_from", None)
+        if sender and str(sender) == str(primary):
+            self.log("MESH", f"delegated {action} accepted from primary "
+                             f"{primary}")
+            return True
         self.log("MESH", f"follower refusal: {action} "
                          f"(primary={primary})", level="WARN")
         return False
+
+    def _capacity_profile(self) -> Dict[str, Any]:
+        """What this runtime actually has to work with, right now.
+
+        The same signals the election ranks on (thermal state, free memory) plus
+        the two a phone adds (battery level and whether it is charging), so
+        "fall back to top-down" is decided on measured capacity rather than on
+        device class.
+        """
+        telemetry = self.telemetry if isinstance(self.telemetry, dict) else {}
+
+        def _int(value, default=0):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+
+        try:
+            memory_free = int(self._mesh_mem_headroom())
+        except Exception:
+            memory_free = 0
+        election = self.mesh_election
+        return {
+            "thermal_status": _int(telemetry.get(
+                "thermal_state", telemetry.get("thermal_status", 0))),
+            "mem_available_bytes": memory_free,
+            "battery_level": _int(self._get_battery(), 100),
+            "charging": bool(telemetry.get("is_charging", False)),
+            "priority": _int(getattr(election, "priority", 500), 500),
+            "device_caps": self.device_caps,
+        }
+
+    def _orchestration_mode(self) -> Tuple[str, str]:
+        """(mode, reason): how much agency this node keeps right now.
+
+        Top-down orchestration by capacity, which is what the fleet is for: the
+        node holding the lease (or standing alone) orchestrates itself; a node a
+        live peer outranks hands orchestration up and only executes what the
+        primary delegates; and a node whose own headroom is critical steps down
+        even with nobody to hand to. An operator can override either way through
+        policy (``orchestration``: ``auto`` | ``full`` | ``sensor_only``).
+        """
+        policy = getattr(self, "policy", None)
+        override = "auto"
+        if isinstance(policy, dict):
+            override = str(policy.get("orchestration") or "auto").strip().lower()
+        profile = self._capacity_profile()
+        if override in ("full", "primary"):
+            return "primary", "operator override: full local agency"
+        if override in ("sensor_only", "subordinate", "delegated"):
+            return "subordinate", "operator override: delegated work only"
+        try:
+            from mesh_election import THERMAL_REFUSE_STATUS as _refuse
+        except Exception:
+            _refuse = 3
+        if profile["thermal_status"] >= _refuse:
+            return "degraded", (f"thermal {profile['thermal_status']} is at or "
+                                f"past the refuse threshold ({_refuse})")
+        if (profile["mem_available_bytes"]
+                and profile["mem_available_bytes"] < _ORCH_MIN_HEADROOM_BYTES):
+            return "degraded", (f"only {profile['mem_available_bytes']} B of "
+                                f"headroom (floor {_ORCH_MIN_HEADROOM_BYTES})")
+        if (profile["battery_level"] <= _ORCH_MIN_BATTERY_PCT
+                and not profile["charging"]):
+            return "degraded", (f"battery {profile['battery_level']}% and not "
+                                f"charging")
+        election = self.mesh_election
+        if election is None:
+            return "standalone", "no election module: self-sufficient"
+        try:
+            result = election.tick()
+        except Exception as exc:
+            return "standalone", f"election unavailable ({type(exc).__name__})"
+        primary = result.get("primary")
+        if primary is None or primary == election.node_id:
+            return "primary", ("holding the lease" if primary
+                               else "no live candidates to hand to")
+        best = None
+        try:
+            peers = [p for p in election.live_peers()
+                     if p.get("node_id") == primary]
+            best = peers[0] if peers else None
+        except Exception:
+            best = None
+        if best is not None:
+            return "subordinate", (
+                f"peer {primary} outranks this node "
+                f"(prio {best.get('priority')} vs {profile['priority']}, "
+                f"mem {best.get('mem_available_bytes')} vs "
+                f"{profile['mem_available_bytes']} B free)")
+        return "subordinate", f"peer {primary} holds the lease"
+
+    def _response_candidates(self) -> List[Dict[str, Any]]:
+        """Every device that could answer, with the facts that place it.
+
+        Self comes from this node's own observation; peers come from the remote
+        perception facts the shell streams (``remote_face_present`` and friends),
+        joined with what their heartbeats said about speech output.
+        """
+        observation = (self.last_observation
+                       if isinstance(self.last_observation, dict) else {})
+        human = observation.get("human") or {}
+        faces = human.get("face_count")
+        self_facts: Dict[str, Any] = {
+            "face_present": bool(int(faces) > 0) if isinstance(faces, (int, float))
+            else False,
+            "speech_source": human.get("speech_source"),
+            "speech_recent": bool(human.get("speech_recent")),
+        }
+        telemetry = self.telemetry if isinstance(self.telemetry, dict) else {}
+        peers = observation.get("mesh_peers")
+        if not isinstance(peers, list) or not peers:
+            # The observation is the *model's* view of the world; the merged
+            # advertisement store is the router's. On a host with no shell only the
+            # mesh writes that store, and a routed --say runs before the first tick,
+            # so reading the observation alone left the primary with no peer
+            # candidates at all and the hive stayed silent however clearly a phone
+            # could see the operator.
+            peers = telemetry.get("mesh_peers")
+        if not isinstance(peers, list):
+            peers = []
+        if telemetry.get("voice_active"):
+            self_facts["voice_active"] = True
+        try:
+            att_state, _ = self.attention.evaluate()
+            self_facts["attention_state"] = getattr(att_state, "value", att_state)
+        except Exception:
+            pass
+        election = self.mesh_election
+        candidates = [{
+            "device_id": (election.node_id if election is not None
+                          else getattr(self, "node_id", None)
+                          or f"shugo-{self.device_caps or 'node'}"),
+            "facts": self_facts,
+            "can_speak": self._speak_listener is not None,
+            "is_self": True,
+            "priority": int(getattr(election, "priority", 500)),
+        }]
+        peer_tts = getattr(self, "_peer_tts", None) or {}
+        for peer in peers:
+            if not isinstance(peer, dict):
+                continue
+            device = str(peer.get("device_id") or peer.get("id") or "").strip()
+            if not device:
+                continue
+            age = peer.get("age_s")
+            if not isinstance(age, (int, float)):
+                # Facts decay: a face seen two minutes ago does not mean the
+                # operator is standing there now, so age them from the moment the
+                # advertisement arrived when the peer did not stamp one itself.
+                received = peer.get("received_at")
+                if isinstance(received, (int, float)):
+                    age = max(0.0, time.time() - float(received))
+            candidates.append({
+                "device_id": device,
+                "facts": {k: v for k, v in peer.items()
+                          if str(k).startswith("remote_")},
+                "can_speak": bool(peer.get("can_speak",
+                                          peer_tts.get(device, True))),
+                "is_self": False,
+                "priority": int(peer.get("priority", 500) or 500),
+                "age_s": age if isinstance(age, (int, float)) else None,
+            })
+        return candidates
+
+    def select_response_node(self) -> Tuple[Optional[Dict[str, Any]], str]:
+        """Which device should say it: the one closest to the operator."""
+        from response_routing import select as _select
+        policy = (self.policy if isinstance(getattr(self, "policy", None), dict)
+                  else {})
+        forced = policy.get("response_target") or "auto"
+        chosen, why = _select(self._response_candidates(), forced=forced)
+        self._last_route = {
+            "device": (chosen or {}).get("device_id"),
+            "score": (chosen or {}).get("score"),
+            "signals": (chosen or {}).get("why") or [],
+            "reason": why,
+            "forced": (None if str(forced).strip() in ("", "auto") else forced),
+        }
+        return chosen, why
+
+    def _route_response(self, action_type: str, params: Dict[str, Any]
+                        ) -> Optional[Dict[str, Any]]:
+        """Send this response to the closest device, or None to answer locally.
+
+        None keeps the single-node path exactly as it was. When the chosen device
+        is another node the response is *delegated* over the mesh: that node
+        validates the request (only the primary may direct it), speaks through
+        its own speaker, and reports the outcome back here.
+        """
+        chosen, why = self.select_response_node()
+        if chosen is None or chosen.get("is_self"):
+            return None
+        peer = str(chosen["device_id"])
+        payload = {
+            "action_type": str(action_type),
+            "params": dict(params or {}),
+            "text": str((params or {}).get("text")
+                        or (params or {}).get("question") or "")[:400],
+        }
+        result = dict(self._mesh_delegate(peer, payload) or {})
+        result.setdefault("status", "error")
+        result["delegated_to"] = peer
+        result["route"] = why
+        self.log("MESH", f"response routed to {peer}: {why}")
+        # The LogBus is in-memory (the UI polls it) -- a host's stdout and a
+        # device's stderr need the same fact through the module logger.
+        import logging as _logging
+        _logging.getLogger(__name__).info(
+            "response routed to %s (%s): %s", peer, action_type, why)
+        return result
+
+    def _mesh_delegate(self, peer: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Ask ``peer`` to perform one already-gated action on our behalf."""
+        runtime = getattr(self, "shugonet_runtime", None)
+        if runtime is None:
+            return {"status": "error", "message": "no mesh runtime"}
+        try:
+            sent = runtime.send(peer, DELEGATE_TOPIC, payload)
+        except Exception as exc:
+            return {"status": "error", "message": type(exc).__name__}
+        if str((sent or {}).get("status")) != "success":
+            return {"status": "error",
+                    "message": (sent or {}).get("reason") or "delegate send failed"}
+        self._delegated_out = int(getattr(self, "_delegated_out", 0)) + 1
+        # Keep the payload: a receiver whose lease view still lags can refuse with
+        # "not the primary", and that refusal is worth one bounded retry.
+        pending = getattr(self, "_delegated_pending", None)
+        if pending is None:
+            pending = {}
+            self._delegated_pending = pending
+        with _DELEGATE_LOCK:
+            pending[peer] = {"payload": dict(payload),
+                             "attempt": int(getattr(self, "_delegated_attempt", 0))}
+        return {"status": "delegated", "peer": peer}
+
+    def _on_mesh_send(self, peer: str, topic: str, payload: Any) -> None:
+        """Handle a frame a peer addressed to this node (the inbound `send`)."""
+        if topic == DELEGATE_TOPIC:
+            self._handle_delegated_action(str(peer), payload)
+        elif topic == DELEGATE_RESULT_TOPIC:
+            self._record_delegated_result(str(peer), payload)
+
+    def _handle_delegated_action(self, peer: str, payload: Any) -> None:
+        """Run an action the primary delegated, then report the outcome.
+
+        Authority first: only the current lease holder may direct this node, so a
+        peer cannot use a follower as its hands. The action then runs through this
+        node's *own* gate (``_mesh_may_act`` with the sender recorded), which is
+        why delegated output is allowed on a follower while self-initiated output
+        there is still refused.
+        """
+        election = self.mesh_election
+        primary = None
+        if election is not None:
+            try:
+                primary = election.tick().get("primary")
+            except Exception:
+                primary = None
+        if primary is None or str(primary) != peer:
+            # Say what this node believes, not just that it disagreed: a stale or
+            # empty election view is the usual cause, and naming it turns a
+            # mystery refusal into a diagnosis.
+            detail = (f"sender is not the primary (mine is "
+                      f"{primary or 'unknown'}, sender {peer})")
+            self.log("MESH", f"refused delegated action from {peer}: {detail}",
+                     level="WARN")
+            self._mesh_reply(peer, {"id": (payload or {}).get("id"),
+                                    "status": "refused", "reason": detail})
+            return
+        if not isinstance(payload, dict):
+            return
+        action_type = str(payload.get("action_type") or "")
+        params = (payload.get("params")
+                  if isinstance(payload.get("params"), dict) else {})
+        if action_type not in DELEGATABLE_ACTIONS:
+            self._mesh_reply(peer, {"id": payload.get("id"),
+                                    "status": "refused",
+                                    "reason": f"action '{action_type}' is not "
+                                              f"delegatable"})
+            return
+        self._delegated_from = peer
+        try:
+            executor = (self._execute_speak if action_type == "speak"
+                        else self._execute_ask_user)
+            result = executor({"action_type": action_type, "params": params})
+        except Exception as exc:
+            result = {"status": "error", "message": type(exc).__name__}
+        finally:
+            self._delegated_from = None
+        self.log("MESH", f"ran delegated {action_type} for {peer}: "
+                         f"{result.get('status')}")
+        # Forward the receiver's own explanation, not just its status: the sender
+        # has no other way to see why a delegated action did not happen.
+        outcome = (result.get("reason") or result.get("message"))
+        if str(result.get("status")) != "success" or not result.get("delivered"):
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "delegated %s for %s finished %s delivered=%s: %s", action_type,
+                peer, result.get("status"), result.get("delivered"),
+                outcome or "no reason given")
+        self._mesh_reply(peer, {"id": payload.get("id"),
+                                "status": result.get("status"),
+                                "action_type": action_type,
+                                "delivered": result.get("delivered"),
+                                "reason": outcome})
+
+    def _record_delegated_result(self, peer: str, payload: Any) -> None:
+        """Record the outcome a subordinate reported for a delegated action."""
+        if not isinstance(payload, dict):
+            return
+        record = {"peer": peer, "status": payload.get("status"),
+                  "action_type": payload.get("action_type"),
+                  "delivered": payload.get("delivered"),
+                  "reason": payload.get("reason"), "at": time.time()}
+        with _DELEGATE_LOCK:
+            self._delegated_results.append(record)
+            del self._delegated_results[:-16]
+        self.log("MESH", f"delegate result from {peer}: "
+                         f"{record.get('status')} {record.get('action_type')}")
+        import logging as _logging
+        _logging.getLogger(__name__).info(
+            "delegate result from %s: %s %s delivered=%s %s", peer,
+            record.get("status"), record.get("action_type"),
+            record.get("delivered"), record.get("reason") or "")
+        self._retry_delegation_if_stale(peer, record)
+
+    def _retry_delegation_if_stale(self, peer: str, record: Dict[str, Any]) -> None:
+        """Re-send a delegation the receiver refused because its lease lagged.
+
+        A receiver judges authority against its *own* election, which can still
+        name the previous holder for a few seconds after a handover (or a
+        restart). That refusal is transient and repeats nothing dangerous, so it
+        gets a bounded retry rather than being reported as a policy failure. Any
+        other refusal is final and left alone.
+        """
+        reason = str(record.get("reason") or "").lower()
+        if "not the primary" not in reason:
+            return
+        with _DELEGATE_LOCK:
+            pending = dict(getattr(self, "_delegated_pending", {}) or {})
+            entry = pending.get(peer)
+            attempt = int((entry or {}).get("attempt", 0))
+            if not entry or attempt >= 2:
+                if entry and attempt >= 2:
+                    self.log("MESH", f"delegation to {peer} still refused after "
+                                     f"{attempt + 1} attempts; giving up",
+                             level="WARN")
+                    pending.pop(peer, None)
+                    self._delegated_pending = pending
+                return
+            attempt += 1
+            pending[peer] = {"payload": entry["payload"], "attempt": attempt}
+            self._delegated_pending = pending
+        payload = entry["payload"]
+
+        def _retry():
+            time.sleep(6.0)
+            self.log("MESH", f"retrying delegation to {peer} "
+                             f"(attempt {attempt + 1}): its lease view lagged")
+            self._mesh_delegate(peer, payload)
+
+        threading.Thread(target=_retry, daemon=True).start()
+
+    def _mesh_reply(self, peer: str, payload: Dict[str, Any]) -> None:
+        """Send a delegation outcome back to the primary (best effort)."""
+        runtime = getattr(self, "shugonet_runtime", None)
+        if runtime is None:
+            return
+        try:
+            runtime.send(peer, DELEGATE_RESULT_TOPIC, dict(payload))
+        except Exception as exc:
+            self.log("MESH", f"delegate reply to {peer} failed: "
+                             f"{type(exc).__name__}", level="WARN")
 
     def _mesh_role_label(self) -> str:
         """Compact role for the status surface: 'none' (module missing),
@@ -2278,12 +2865,30 @@ class AndroidAgent:
         try:
             observation = self._get_observation()
             self.last_observation = observation
+            # Top-down orchestration by capacity: a node that a live peer
+            # outranks (or one with no headroom left) keeps observing,
+            # heartbeating and serving memory, but does NOT run its own
+            # model-backed decision loop -- orchestration belongs to the
+            # primary, and the work this node does is what the primary delegates
+            # to it. The mode is logged on change, not every tick.
+            mode, why = self._orchestration_mode()
+            self._orchestration = {"mode": mode, "reason": why,
+                                   "profile": self._capacity_profile()}
+            if mode != getattr(self, "_last_orchestration_mode", None):
+                self._last_orchestration_mode = mode
+                self.log("AGENT", f"orchestration mode: {mode} ({why})")
+            subordinate = mode in ("subordinate", "degraded")
+            if subordinate:
+                outcome = "NO_ACTION"
+                trail = ("OBSERVE", "DELEGATED")
+                detail = f"{mode}: {why}"[:120]
+                decision = f"{mode} of {why}"[:90]
             # v1.28.1: conversational fast path — new speech triggers a
             # personality-driven response immediately, bypassing the full
             # tool-use decision pipeline. No engine gate: deterministic
             # commands (timer/memory) work without a model; the engine call
             # inside _handle_conversational_input already guards itself.
-            if observation.get("new_speech"):
+            if observation.get("new_speech") and not subordinate:
                 self._handle_conversational_input(observation)
                 # Still drain conversation events (closed-loop record) before
                 # returning — the ask/answer round-trip must be journaled.
@@ -2307,7 +2912,7 @@ class AndroidAgent:
             # stay in the bounded bus, per the transcripts-never-enter-memory
             # rule established with the 1.12 journal contract).
             self._drain_conversation_events()
-            if self.engine is not None:
+            if self.engine is not None and not subordinate:
                 allowed, scope = self._backend_target_allowed()
                 if not allowed:
                     self.log("POLICY", f"backend {scope} '{self.api_url}' "
@@ -3020,6 +3625,19 @@ class AndroidAgent:
             # Track 1: election role — "primary", "follower", "standalone",
             # "none" (no election module) or "unknown" (election error).
             "mesh_role": self._mesh_role_label(),
+            # Top-down orchestration: how much agency this node currently keeps,
+            # why (measured capacity / election), and the profile it used.
+            "orchestration": dict(getattr(self, "_orchestration", None) or {
+                "mode": "unknown", "reason": "not evaluated yet"}),
+            # Which device answers, on what evidence, and what the hive has
+            # reported back for delegated work.
+            "response_routing": dict(getattr(self, "_last_route", None) or {
+                "device": None, "reason": "not evaluated yet"}),
+            "delegated": {
+                "sent": int(getattr(self, "_delegated_out", 0)),
+                "results": [dict(r) for r in
+                            list(getattr(self, "_delegated_results", []))[-4:]],
+            },
             "mesh_primary": (self.mesh_election.primary()
                              if self.mesh_election is not None else None),
             # Track 2: security inventory + baseline drift (observational,

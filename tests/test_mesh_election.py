@@ -9,14 +9,60 @@ guardrail wiring (_mesh_may_act, side-effect refusals, status surface).
 import os
 import sys
 import tempfile
+import types
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import mesh_election as me  # noqa: E402
 from mesh_election import MeshElection, available_memory_bytes  # noqa: E402
 from shugocore_agent import create_agent  # noqa: E402
+import node_identity  # noqa: E402
 
 DESKTOP_MEM = 8_000_000_000  # healthy desktop headroom
+
+
+class MacosMemoryTestCase(unittest.TestCase):
+    """macOS exposes no SC_AVPHYS_PAGES through os.sysconf.
+
+    That is why a Mac node advertised `mem=0`: it looked alive to every peer,
+    was ineligible in the election, and would be skipped by the layer planner.
+    """
+
+    VM_STAT = ("Mach Virtual Memory Statistics: (page size of 16384 bytes)\n"
+               "Pages free:                          123456.\n"
+               "Pages active:                       1000000.\n"
+               "Pages inactive:                      654321.\n"
+               "Pages speculative:                     5000.\n"
+               "Pages wired down:                    400000.\n")
+
+    def test_vm_stat_counts_free_inactive_and_speculative(self):
+        self.assertEqual(me.parse_vm_stat(self.VM_STAT, 16384),
+                         (123456 + 654321 + 5000) * 16384)
+
+    def test_unparsable_output_is_zero_not_an_error(self):
+        self.assertEqual(me.parse_vm_stat("", 16384), 0)
+        self.assertEqual(me.parse_vm_stat("garbage", 0), 0)
+        self.assertEqual(me.parse_vm_stat(None, "not-a-size"), 0)
+
+    def test_the_darwin_path_uses_vm_stat_and_the_reported_page_size(self):
+        calls = []
+
+        def _run(cmd, **_kwargs):
+            calls.append(cmd[0])
+            if cmd[0] == "vm_stat":
+                return types.SimpleNamespace(stdout=self.VM_STAT)
+            return types.SimpleNamespace(stdout="16384\n")
+
+        self.assertEqual(me.macos_available_memory(run=_run),
+                         (123456 + 654321 + 5000) * 16384)
+        self.assertEqual(calls, ["vm_stat", "sysctl"])
+
+    def test_a_missing_vm_stat_reports_zero(self):
+        def _run(_cmd, **_kwargs):
+            raise OSError("vm_stat not found")
+
+        self.assertEqual(me.macos_available_memory(run=_run), 0)
 
 
 class TestElectionRules(unittest.TestCase):
@@ -139,14 +185,30 @@ class TestAgentGuardrail(unittest.TestCase):
         self.agent.telemetry = {}
 
     def test_create_agent_builds_election(self):
+        data_dir = tempfile.mkdtemp(prefix="mesh_election_probe_")
         probe = create_agent(device_caps="A51",
                              api_url="http://127.0.0.1:11434",
-                             data_dir=tempfile.mkdtemp(
-                                 prefix="mesh_election_probe_"))
+                             data_dir=data_dir)
         try:
             self.assertIsNotNone(probe.mesh_election)
-            self.assertEqual(probe.mesh_election.node_id, "android-A51")
+            # The election id is this node's identity: a valid, unique name that
+            # is persisted, not a capability string it shares with other devices.
+            self.assertTrue(node_identity.is_valid(probe.mesh_election.node_id),
+                            probe.mesh_election.node_id)
+            self.assertEqual(probe.mesh_election.node_id, probe.node_id)
             self.assertEqual(probe.mesh_election.priority, 500)
+            # Same data dir, same name: an upgrade or restart keeps its identity.
+            second = create_agent(device_caps="A51",
+                                  api_url="http://127.0.0.1:11434",
+                                  data_dir=data_dir)
+            try:
+                self.assertEqual(second.node_id, probe.node_id,
+                                 "the node changed identity across a restart")
+            finally:
+                try:
+                    second.cleanup()
+                except Exception:
+                    pass
         finally:
             try:
                 probe.cleanup()

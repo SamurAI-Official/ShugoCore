@@ -531,6 +531,32 @@ when it uses them) — so the matrix flags a reinstall (every claim missing) whi
 not crying wolf about a host that keeps its weights in the model backend. A laptop
 or the Mac runs the same tool against its own data dir once it has joined.
 
+### Actuation sandbox: what the agent may do (v1.30.7)
+
+`actuation_sandbox.py` drives the **real** gate and the **real** execution layer
+against a **real** service on 127.0.0.1 that records what arrived, so every claim
+is checked twice — what the engine reported, and whether a byte reached the wire:
+
+```bash
+python3 actuation_sandbox.py --data-dir runtime/sandbox
+```
+
+The target serves TLS (its CA is trusted through `REQUESTS_CA_BUNDLE`, never by
+disabling verification) because egress is https-only; a plain-HTTP twin exists so
+one scenario can show that rule refusing a local service. Live result: **17/17**
+scenarios behave as required — the allowlisted loopback actuation lands (HTTP 200,
+recorded in the chain) and all sixteen refusals deliver **zero** bytes: default
+allowlist, plain http, no/expired/revoked consent, approval denied/pending, LAN
+target, internet target, method not allowed, forged verdict, missing verdict,
+SAFE_STATE, mobile actuation topic, unpaired device.
+
+Useful things it pinned down: a local plain-HTTP service is unreachable by policy
+even with consent; `api_call`'s shipped method allowlist is GET-only, so a POST
+needs explicit allowlisting; a consent refusal surfaces as the Tier 3 invariant
+`consent_required` before the consent registry is consulted; and device topics
+require pairing first — after which actuation topics are still unreachable by
+construction.
+
 ### Quickstart
 
 ```python

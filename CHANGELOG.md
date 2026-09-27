@@ -6,6 +6,356 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### Node consistency in one command, and the Mac can measure its memory (v1.30.17)
+
+Consistency on a fleet node has four parts, and every incident so far came from one
+of them drifting silently. `scripts/node_consistency.py` reports all four *on the
+node itself*: the repo commit and its distance from origin; the llama.cpp pin
+versus the checkout; whether the Android bundle still matches the repo's copies;
+and whether the layer-split host binaries exist **and** can offload (`--rpc`
+present -- a build that compiles and cannot offload is how that went wrong once).
+It also reports the node's persisted id and whether it can measure free memory,
+because a node that advertises none is ineligible in the election and skipped by
+the layer planner: alive, and contributing nothing.
+
+That last check found a live fault: **the Mac advertises `mem=0`**.
+`available_memory_bytes()` answered via `os.sysconf` and a Windows `ctypes` path
+and had no macOS branch -- macOS does not define `SC_AVPHYS_PAGES`, so every Mac
+node advertised no headroom and could never be a candidate.
+`mesh_election.macos_available_memory()` now reads `vm_stat` (free + inactive +
+speculative pages, page size from `sysctl -n hw.pagesize`), and the Darwin
+platform is routed there explicitly.
+
+The same observation showed the Mac advertising `shugo-MacBook` while the peer map
+dials `shugo-mac`: still needs its restart to adopt the persisted identity, and the
+checker names that difference rather than leaving it to be inferred from a log.
+
+### The fleet builds llama.cpp from the pinned commit (v1.30.16)
+
+The Phase 0 commit silently moved the recorded llama.cpp pin: `git add -A` staged
+the gitlink, taking it from `6703d78` -- what the phone's peripheral is built from,
+and the commit `docs/layer_split_rpc.md` measured -- to a newer local checkout
+`95887577`, 410 commits ahead. A host and a peripheral built from different trees
+can disagree about the wire protocol while every local test passes, so the pin is
+restored in `88cea0a` and the decision is recorded rather than implied.
+
+Both revisions were checked before choosing, because the question had to be about
+parity and not capability: `llama_state_seq_save_file` / `_load_file`,
+`llama_memory_clear` / `llama_memory_seq_rm` (what `llama_jni.cpp` actually calls),
+`--rpc` and `--slot-save-path` are all present at the pin, and the peripheral's
+CMake target is `ggml-rpc-server` at both revisions. Both also measure the same:
+host RSS 537 -> 170 MB with all 24 layers on a peripheral holding 377 MB and
+**tokens identical** to local greedy decode.
+
+So nothing was gained by the jump and protocol risk was. The Windows host was
+rebuilt from the pin, and the loopback tables were re-measured there
+(`runtime/evidence/mesh_model_host/loopback_measurement.md`): the bench at the pin
+reads local 476MB / 22.15 tok/s -> all 24 layers 445MB / 40.03 tok/s.
+`docs/layer_split_rpc.md` now carries the rule: a pin change is explicit -- bump
+it, rebuild **both** ends, re-measure, and name the commit in the numbers.
+
+### Phase 0: the layer split builds and is measurable on Windows (v1.30.15)
+
+First step of the approved distributed-inference plan: make the layer-split path
+reproducible instead of a shell history, and answer the questions the KV phase
+depends on *before* designing it.
+
+- **`scripts/build_llama_rpc.py`** builds the host (`llama-server` +
+  `ggml-rpc-server`, static backends) and the arm64 peripheral from the pinned
+  submodule. It finds CMake/Ninja (the Android SDK's copies work as host tools)
+  and the MSVC environment via `vswhere`, records the checkout, the repo pin and
+  the source facts in `runtime/evidence/mesh_model_host/llama_build.txt`, and does
+  not call a build good until the server offers `--rpc`.
+- **The pinned llama.cpp has the KV APIs Phase 2 needs**
+  (`llama_state_seq_save_file` / `_load_file`, `--slot-save-path`), so parking a
+  sequence's state on a peripheral is supported rather than a gamble.
+- **Measured on Windows over loopback** (`runtime/evidence/mesh_model_host/loopback_measurement.md`):
+  with all 24 layers of a 0.5B on a peripheral, host RSS falls **537 -> 170 MB**
+  while the peripheral holds **377 MB**, and the tokens are **identical** to local
+  greedy decode. With mmap the host keeps the GGUF mapped, so the win is visible
+  only with `--no-mmap`.
+- **`mesh_rpc.process_alive` / `process_rss_mb`**: the benchmark asked "is the
+  peripheral still there?" with `ps -p`, which does not exist on Windows -- it
+  raised instead of reporting. Portable now, so the bench runs here.
+
+Four traps, each found by running the thing rather than reading it: shared/dynamic
+ggml backends produce a server that cannot offload (static now);
+`--list-devices` is not a working-build check for a static build; `cmd /c "call …"`
+cannot carry a quoted path and `set` wraps `PATH` away; and `LNK1104` on
+`bin\ggml-rpc-server.exe` means an old peripheral process still holds the file.
+
+### A failed delegated action says why (v1.30.14)
+
+The A51 accepted the primary's delegated `speak` and then reported `error` with
+`delivered=None` and no reason: `_execute_speak` put the cause in `message`, the
+delegation handler forwarded only `reason`, and the receiver logged only the
+status. A device-side failure was therefore invisible from both ends -- the hub
+could see that the hive chose the right mouth and that it did not speak, but not
+why.
+
+Every failure on the speech path now carries a machine-readable reason
+(`speak_listener_failed: <Exc>: <message>`, `speak_listener_returned_false`), the
+delegation handler forwards it (falling back to `message`), and the receiver logs
+it through the module logger -- which on Android lands in logcat and on a host in
+stderr, both of which outlive the run. A listener that returns false is no longer
+reported as a success: the platform held the text and refused it, and saying so is
+the whole point of this path.
+
+### A node reports what it can actually perceive, from both doors (v1.30.13)
+
+Measured against the live hive, a phone's own perception never reached its
+advertisement, so the router saw three healthy speakers and scored every one of
+them `0.00`:
+
+* a phone's **camera** facts land on the interaction bus (`face_count`, the
+  attribution verdict), not in telemetry;
+* a phone's **microphone** facts land in telemetry under the shell's own
+  spellings (`voice_active`, `scene_speech_source`), not the router's;
+* the shell pushes no local face/gaze at all -- only its peers' facts.
+
+`_mesh_perception_facts` now reads both doors and maps the platform's spellings,
+so an advertisement says what the device actually perceived. A camera refused by
+policy no longer makes a phone invisible either: telemetry's voice energy and the
+bus's presence are advertised as `remote_presence_present`, a new weak signal
+(0.15) that is deliberately below the selection floor on its own -- a person in
+the next room is not an operator -- but which, with live voice, makes the phone
+in front of them the answer.
+
+### The nearest device can now be found: presence is advertised (v1.30.12)
+
+The routed path -- "the primary decides the words, the device closest to the
+operator says them" -- could not choose a phone at all. Two independent gaps, both
+found by measuring the live hive rather than reading the code:
+
+1. **No node advertised where it was.** A node's advertisement carried identity,
+   priority, thermal state, headroom and `can_speak` -- and nothing about the
+   operator. The primary scored every device at `0.00`, so even with the operator
+   standing in front of the Tab the honest answer was "nobody reports the operator
+   present" and the hive stayed silent. Nodes now advertise what they actually
+   perceived (`remote_face_present`, `remote_face_count`,
+   `remote_gaze_toward_camera`, `remote_voice_active`, `remote_speech_source`,
+   `remote_speech_recent`, `remote_utterance_age_s`) under the same spelling the
+   Android shell already streams, so one spelling reaches the router whichever
+   transport delivered it. Nothing observed means nothing advertised.
+2. **`can_speak` was dead data.** Devices advertised it; nothing read it, so a
+   peer with no speaker was treated as a mouth. The receiving node now records it
+   on the peer entry and in `_peer_tts`, and the router consults it, which is what
+   the routing contract always claimed.
+
+Two smaller corrections in the same path: the age of a peer's facts is now derived
+from when the advertisement arrived (so evidence decays even when the peer stamps
+no age, and a face seen two minutes ago stops placing a device), and a **routed**
+`--say` waits for the observation to list the peers, not just for the election to
+settle -- a hub that had just booted had a verdict before its first tick and
+answered the first utterance with "no device reports speech output" while the
+phones could plainly speak.
+
+### A mesh advertisement is authoritative for the receiver's own verdict (v1.30.11)
+
+Delegated work was dispatched correctly and then refused: the receiver answered
+`sender is not the primary`. The cause was structural, not a race. A peer's
+advertisement is merged into `telemetry['mesh_peers']` and the election is fed
+from that key by `_mesh_heartbeat_tick` -- but on Android the **shell owns that
+key** and pushes its own DDS view every tick, replacing what the mesh just merged.
+A phone's election could therefore know only its DDS peers (other phones) and
+never the host that leads the hive, so it judged that host's delegation against a
+primary that was one of its neighbours.
+
+A mesh advertisement now feeds the election **immediately**, in
+`_mesh_heartbeat_received`, while the tick's pass still covers the DDS path. The
+same message also stopped being silent about the mismatch: a refusal names the
+receiver's own view (`mine is <primary>, sender <peer>`), and a refusal that is
+merely a lagging lease gets a **bounded retry** (two attempts, six seconds apart)
+rather than being reported as a policy failure -- any other refusal stays final.
+
+### One identity per node (v1.30.10)
+
+**The defect.** A node had two names: the mesh id it *self-declared* -- derived
+from device capabilities, e.g. `android-Unknown (s5e8835)`, a string with spaces,
+parentheses and a SoC token two devices can share -- and the name its peers
+*dialled* it by (`shugo-tab`, from their peer maps). Nothing could address a node
+by the name it answered to: delegated work and response routing aimed at a name
+that was not in `_outbound` ("unknown peer"), and two devices reporting the same
+SoC would have collided and shadowed each other in every election.
+
+**The fix.** `node_identity.py` is the single source of truth: a short,
+filesystem/CLI-safe id persisted as `<data-dir>/node_id.txt`, adopted on every
+start, used as the election node id, the transport agent id **and** the dial name.
+Precedence is stored id, then an explicit `mesh_node_id`, then
+`shugo-<caps>-<random>` -- the suffix is what makes an automatically named node
+unique, because capability strings are not. Both layers now also *detect* a
+duplicate: a heartbeat claiming our own identity logs a loud error in the agent and
+a warning in the transport instead of being silently ignored.
+
+**Migration.** Each phone's name was pre-written as the name it is already dialled
+by (`shugo-tab`, `shugo-a51`, `shugo-a16`), so no peer map changed: identity and
+dial name are now the same string by construction, which is what makes a node
+addressable by a peer that only knows one of them.
+
+Tests: 10 new -- sanitize (including the old capability form), persistence,
+adoption of a stored id, uniqueness across data dirs, an unwritable data dir, and
+that the agent actually uses the stored id for the election *and* the transport.
+
+### Unknown headroom is not zero headroom (a Mac could not join the hive)
+
+The Mac joined the mesh and advertised every 10 s, but never appeared as a
+candidate. Two reasons, both about treating a *missing* measurement as a
+*measured* failure:
+
+- A host that cannot read its own free memory advertised `mem_available_bytes: 0`,
+  and the election refuses a candidate reporting no headroom -- so the node
+  advertised itself out of its own hive. Unmeasurable memory is now **omitted**
+  from the advertisement, and the receiver treats an absent field as *unknown*
+  rather than empty. A field that is present and zero still means "measured
+  empty" and is still ineligible; a field that is present but unusable ("lots")
+  still fails closed.
+- The old unit test asserted the opposite (`absence is not fabrication`,
+  fail-closed). That rule excluded exactly the node that needed the entry most, so
+  the test now states the new one and keeps the two cases that matter (reported
+  zero, unusable value) as ineligible.
+
+Incumbency landed with it, because making a second host eligible exposed it: the
+ranking is `(priority, node_id)`, so a machine joining on the same priority could
+take the lease from a healthy holder on the alphabet alone, re-homing the fleet
+mid-flight. A **strictly better** candidate still takes over; an equal-ranked one
+no longer does.
+
+With both changes the Mac is a full hive member, and the hub keeps the lease it
+already holds.
+
+### Answers come from the device nearest the operator (response routing)
+
+A hive has several mouths but one operator. `speak` and `ask_user` now choose
+which device says it: `response_routing.py` scores each device from the
+perception facts the fleet already publishes -- camera face, gaze toward the
+camera, VAD, speech attribution, how recently the human spoke, and the attention
+verdict -- with local and `remote_*` spellings normalised so a peer's facts and
+our own score identically. Evidence decays (halved after 15 s, ignored after 45 s),
+so a face seen two minutes ago does not mean the operator is standing there now.
+
+- The nearest **speaker** wins: a device that cannot speak is never chosen,
+  however close it is, and devices advertise `can_speak` in their heartbeats.
+- Ties break deterministically (score, can_speak, election priority, device id),
+  so two runs on the same evidence pick the same mouth.
+- **Silence is allowed**: with nobody reporting the operator present the agent
+  does not guess a device -- it records `nobody reports the operator present` (or
+  `no device reports speech output` on a host with no speaker) and stays quiet.
+  An operator can still force a device with policy `response_target = <device>`.
+
+The chosen device receives the utterance over the mesh as a **delegated action**
+(`orchestrate/delegate`), runs it through its own gate, speaks through its own
+speaker and reports the outcome back on `orchestrate/result` (visible in
+`get_status()["delegated"]` and `response_routing`). Two authority rules keep this
+from becoming a remote-control channel: only the current lease holder may direct
+another node, and only `speak`/`ask_user` are delegatable -- everything else is
+refused. A follower still cannot speak on its own initiative; it can only be the
+primary's voice.
+
+The transport needed one fix to make this real: inbound `send` frames were acked
+and then dropped, so a peer could address a node and be heard by nobody.
+`set_send_handler()` now delivers them (peer, topic, payload) to the agent.
+
+### Phase E: claim, check, artifact
+
+`claim_matrix.py` turns each claim the docs make into a row -- the check that
+decides it, the captured evidence, and a verdict -- and refuses to call anything
+proven because it is written down:
+
+| verdict | meaning |
+| --- | --- |
+| `proven` | every check passed |
+| `failed` | a check did not pass |
+| `unproven` | a live check could not be evaluated (not the same as failing) |
+
+Checks are either commands (test modules, `actuation_sandbox.py`,
+`capability_matrix.py`) or *live* facts parsed from real output by pure functions
+(`role=primary`, `imported=N`, a hash-linked chain, "no local model calls on a
+subordinate"). Artifacts land in `runtime/evidence/<id>.txt`, so a claim can be
+inspected later instead of trusted:
+
+```bash
+python3 claim_matrix.py --status-file runtime/device_backups/<host>.err
+```
+
+### Top-down orchestration by measured capacity (v1.30.8)
+
+Android nodes kept running the **full** agent loop -- local model proposals,
+`ask_user` decisions, decision-journal writes -- while a desktop held the primary
+lease. That is both wasteful and wrong: the hive has one orchestrator, and a
+phone's job is the work the primary delegates to it.
+
+`_orchestration_mode()` now decides agency every tick from *measured capacity* --
+the same thermal/free-memory signals the election ranks on, plus battery level
+and whether the device is charging -- together with the election's own verdict:
+
+- `primary` -- holds the lease (or stands alone): full local agency.
+- `subordinate` -- a live peer outranks this node (better priority/headroom): it
+  keeps observing, heartbeating and serving memory, but does **not** run its own
+  model-backed decision loop; its work is what the primary delegates.
+- `degraded` -- no headroom of its own (thermal at the refuse threshold, free
+  memory under 64 MiB, or battery <= 15% and not charging): steps down even with
+  nobody to hand to.
+- Operator override through policy: `orchestration`: `auto` | `full` |
+  `sensor_only`.
+
+Status carries it (`get_status()["orchestration"]` = mode, reason, capacity
+profile), and the mode is logged on change rather than every tick.
+
+Verified live on the real fleet (both phones upgraded in place to 1.30.8): the Tab
+and A51 now log **zero** `ANDROID_INFERENCE generate called` and **zero**
+`Decision made for task` lines, and their decision journals stop being written --
+the Tab's last entry is the old local `ask_user` proposal that came back
+`mesh_follower`, which is exactly the behaviour that prompted this. Both keep
+heartbeating: the hub still reports `connected=3 mesh_peers=2` with the desktop
+holding the lease, so a subordinate stays a first-class hive member.
+
+Also in this change: a refused frame now says *why* -- `mesh token missing (this
+node gates every frame; give the sender SHUGOCORE_MESH_TOKEN)` instead of
+"malformed" -- and a node that has peers but no token warns at startup that it is
+advertising into a wall. That is precisely what the Mac was doing: it is dialled
+and advertising every 10 s, and both the hub and the phones were refusing every
+frame it sent.
+
+### Phase D: the loopback actuation sandbox (containment, not adjectives)
+
+`actuation_sandbox.py` drives the **real** pipeline -- the engine's own
+`_gate_decision` (Tier 3 invariants, SAFE_STATE, external consent, human
+approval) and then its own `_execute_gated` (hash-bound policy token) and the
+real `ExecutionLayer` -- against a **real** service on 127.0.0.1 that records what
+arrived. Every scenario is checked twice: what the engine reported, and whether
+any byte reached the wire. A refusal that still hit the target, or a "success"
+that never landed, is a FAIL here.
+
+The target serves TLS (self-signed CA trusted through `REQUESTS_CA_BUNDLE`, never
+by disabling verification) because the shipped egress policy is https-only. A
+plain-HTTP twin exists so a scenario can *show* that rule refusing a local
+service even with consent and approval in hand.
+
+All 17 scenarios behave as required on the live host:
+
+| scenario | expect | wire |
+| --- | --- | --- |
+| loopback refused by the default allowlist | refused | 0 |
+| **loopback allowlisted + consent + approval** | **allowed** | **1** (HTTP 200, audited) |
+| loopback plain http refused by the scheme rule | refused | 0 |
+| no consent / expired consent / revoked consent | refused | 0 |
+| approval denied / approval pending | refused | 0 |
+| LAN target / internet target | refused | 0 |
+| method not allowed | refused | 0 |
+| forged verdict / missing verdict | refused | 0 |
+| SAFE_STATE (read-only) | refused | 0 |
+| mobile actuation topic / unpaired device | refused | 0 |
+| mobile sensor topic | allowed | — |
+
+Four operator-relevant properties fell out of writing it, each now pinned by a
+scenario: egress is **https-only** (a local HTTP service is unreachable by
+policy); `api_call`'s shipped method allowlist is **GET only**, so a POST needs
+explicit operator say-so; consent refusals surface as the Tier 3 invariant
+`consent_required` *before* the consent registry is consulted; and device topics
+require **pairing first**, after which a paired device may still only publish on
+the contracted sensor namespace -- actuation topics are unreachable by
+construction.
+
 ### Capability retention, checked instead of asserted (Phase C)
 
 Every capability this system claims lives somewhere concrete on each node, so

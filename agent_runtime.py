@@ -279,16 +279,29 @@ class _PeerServer(threading.Thread):
         When the runtime was created with an ``auth_token``, an inbound message
         must also carry a matching ``token`` (shared-secret gate).
         """
+        return self._accepts_reason(msg) is None
+
+    def _accepts_reason(self, msg: Any) -> Optional[str]:
+        """Why a frame is refused, or None when it is accepted.
+
+        The reason matters operationally: "token missing" on a live fleet means
+        an un-onboarded node (or a stale secret), while "no message type" means a
+        real protocol problem. Logging only "malformed" sent a debugging round
+        after a Mac that was advertising perfectly well without a token.
+        """
         if not isinstance(msg, dict):
-            return False
+            return "not a JSON object"
         msg_type = msg.get("type")
         if not isinstance(msg_type, str) or not msg_type:
-            return False
+            return "no message type"
         if self._auth_token:
             presented = msg.get("token")
-            return bool(presented) and hmac.compare_digest(
-                str(presented), self._auth_token)
-        return True
+            if not presented:
+                return ("mesh token missing (this node gates every frame; "
+                        "give the sender SHUGOCORE_MESH_TOKEN)")
+            if not hmac.compare_digest(str(presented), self._auth_token):
+                return "mesh token does not match this node's"
+        return None
 
     def _handle_client(self, client_sock: socket.socket, addr: Any) -> None:
         buf = b""
@@ -321,8 +334,10 @@ class _PeerServer(threading.Thread):
                     except Exception as exc:
                         logger.warning("shugonet parse error: %s", exc)
                         continue
-                    if not self._accepts(msg):
-                        logger.warning("shugonet refused malformed message from %s", addr)
+                    reason = self._accepts_reason(msg)
+                    if reason is not None:
+                        logger.warning("shugonet refused frame from %s: %s",
+                                       addr, reason)
                         continue
                     try:
                         self._runtime._dispatch_message(msg, client_sock)
@@ -395,6 +410,10 @@ class ShugonetAgentRuntime:
         self._heartbeat_interval = max(0.0, float(heartbeat_interval))
         self._heartbeat_provider: Optional[Callable[[], Dict[str, Any]]] = None
         self._heartbeat_handler: Optional[Callable[[Dict[str, Any]], None]] = None
+        # Inbound `send` frames carry application topics (delegated work, build
+        # notes). The transport only acked them before, so a peer could address a
+        # node and be heard by nobody -- the delegate channel needs the payload.
+        self._send_handler: Optional[Callable[[str, str, Any], None]] = None
         self._heartbeats: Dict[str, Dict[str, Any]] = {}
         self._heartbeat_thread: Optional[threading.Thread] = None
         # Build updates ride the same mesh: a node shares files from one
@@ -558,6 +577,13 @@ class ShugonetAgentRuntime:
         """Set the callable invoked for every peer advertisement received."""
         self._heartbeat_handler = handler if callable(handler) else None
 
+    def set_send_handler(
+            self, handler: Optional[Callable[[str, str, Any], None]]) -> None:
+        """Set the callable invoked for inbound ``send`` frames (peer, topic,
+        payload). The frame is still acked by the transport; this is what lets a
+        node actually *receive* delegated work instead of silently acking it."""
+        self._send_handler = handler if callable(handler) else None
+
     def heartbeat_snapshot(self, limit: int = 16) -> Dict[str, Dict[str, Any]]:
         """Last advertisement heard per peer, bounded, for status surfaces."""
         with self._lock:
@@ -613,6 +639,13 @@ class ShugonetAgentRuntime:
         if not isinstance(payload, dict):
             return
         node_id = str(payload.get("node_id") or msg.get("from") or "").strip()
+        sender = str(msg.get("from") or "").strip()
+        if sender and sender == self.agent_id:
+            # A peer answering to our own name: every election that sees both
+            # frames will merge them into one record, so one of the two nodes
+            # must be renamed. Warn (once per sender) rather than ignore it.
+            logger.warning("shugonet: another node is advertising my identity "
+                           "(%s); one node must be renamed", sender)
         if not node_id:
             return
         record = dict(payload)
@@ -1248,6 +1281,13 @@ class ShugonetAgentRuntime:
         if msg_type == "send":
             ack = {"type": "ack", "in_response_to": msg_id, "status": "received"}
             self._send_json(sock, ack)
+            handler = self._send_handler
+            if handler is not None:
+                try:
+                    handler(str(msg.get("from") or ""), str(msg.get("topic") or ""),
+                            msg.get("payload"))
+                except Exception as exc:
+                    logger.warning("send handler failed: %s", exc)
         elif msg_type == "query":
             resp = {"type": "query_result", "in_response_to": msg_id,
                     "from": self.agent_id,

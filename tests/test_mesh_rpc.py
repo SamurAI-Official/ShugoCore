@@ -18,6 +18,8 @@ from mesh_rpc import (  # noqa: E402
     find_rpc_server,
     is_private_bind,
     plan_layer_split,
+    process_alive,
+    process_rss_mb,
     usable_headroom,
 )
 from shugocore_agent import create_agent  # noqa: E402
@@ -328,6 +330,30 @@ class TestAgentMeshRpcEntryPoint(unittest.TestCase):
         self.assertTrue(self._fake.instances[-2].stopped)
         self.assertFalse(self.json.loads(self.agent.debug_mesh_rpc("stop"))
                          ["running"])
+
+
+class PeripheralProcessTestCase(unittest.TestCase):
+    """Liveness/RSS must work on the platform we actually measure on.
+
+    The benchmark answered "is the peripheral still there?" with `ps -p`, which
+    does not exist on Windows: the check raised instead of reporting, and the
+    first loopback run died on it.
+    """
+
+    def test_this_process_is_alive(self):
+        self.assertTrue(process_alive(os.getpid()))
+
+    def test_a_bogus_pid_is_not_alive(self):
+        self.assertFalse(process_alive(999999))
+        self.assertFalse(process_alive(0))
+        self.assertFalse(process_alive("not-a-pid"))
+
+    def test_rss_of_this_process_is_measurable(self):
+        self.assertGreater(process_rss_mb(os.getpid()), 0.0)
+
+    def test_rss_of_a_bogus_pid_is_zero_not_an_error(self):
+        self.assertEqual(process_rss_mb(999999), 0.0)
+        self.assertEqual(process_rss_mb(None), 0.0)
 
 
 if __name__ == "__main__":

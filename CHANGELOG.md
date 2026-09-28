@@ -6,6 +6,37 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### Baselines: what a deploy took away (v1.30.23, in progress)
+
+`capability_matrix.py` can now record a run as a baseline (`--save-baseline`) and compare a
+later run against it (`--baseline`), so "the upgrade preserves your memory" is checked
+against the device on both sides of the upgrade instead of being asserted. The comparison
+charges a run only for what it changed: a claim the baseline never knew about is new
+knowledge rather than damage (adding a node cannot look like that node losing its memory),
+and a claim that was already failing is reported as *still failing* rather than blamed on
+the deploy. Exit status is 1 on a regression and 0 when nothing regressed, so it doubles as
+a post-deploy gate. The first real baseline — hub, Tab S9 FE, A16 — is saved at
+`runtime/capability_baseline.json`.
+
+### Memory durability: a drained batch is not yet durable (v1.30.23, in progress)
+
+Tier 1 truncated its write-ahead journal at `drain()` time — before consolidation had
+stored anything in Tier 2 — so a crash in that window lost exactly the episodes the journal
+exists to guard, and the loss was invisible: the truncate is what makes a 0-byte journal
+look like normal operation. A drained batch is now marked in flight and its copy is
+released only when consolidation acknowledges it. Compaction rewrites through a temporary
+file with `os.replace` rather than truncating, because a plain truncate at acknowledgment
+time would also drop events recorded since the drain. Replaying an acknowledged batch is
+harmless: Tier 2 ignores content it already holds.
+
+### A capability says where a service is, not which model to ask (v1.30.23, in progress)
+
+`--persona-url auto` resolved the Mac's phrasing service and the phrasing request then came
+back HTTP 404: the advertised capability carries a locator, and nothing carried the model
+name, so a placeholder was being sent to a healthy endpoint. An unnamed model now asks the
+endpoint once (`/v1/models`, then Ollama's `/api/tags`) and remembers the answer, which is
+what makes auto-resolution configuration-free; naming a model still skips the question.
+
 ### The hive resolves its own services (v1.30.22)
 
 `capabilities.py` answers the question the other two planes do not: which node *offers a

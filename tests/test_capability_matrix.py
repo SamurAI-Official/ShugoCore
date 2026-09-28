@@ -4,6 +4,9 @@ The classifier is fed fixture listings here, including the two failures that
 matter operationally: a node whose data dir is empty (a reinstall, not an
 upgrade) and a node holding the wrong mesh secret.
 """
+import contextlib
+import io
+import json
 import os
 import sys
 import tempfile
@@ -155,6 +158,121 @@ class HostScanTestCase(unittest.TestCase):
             self.assertEqual(rows["shared"], "ok")
             self.assertEqual(result["events"], ["restart"])
             self.assertNotIn("note", result)
+
+
+class BaselineTestCase(unittest.TestCase):
+    """A matrix says what is true now; a baseline says what changed."""
+
+    def _healthy(self, name="phone"):
+        result = cm.evaluate(cm.parse_android_listing(LISTING), platform="android",
+                             expected_token="fleet-secret",
+                             state={"token": "fleet-secret"})
+        result["name"] = name
+        return result
+
+    def test_a_run_compared_with_its_own_baseline_shows_no_change(self):
+        # Through JSON, the way a baseline actually reaches a later run.
+        baseline = json.loads(json.dumps(cm.snapshot([self._healthy()],
+                                                     label="after 1.30.22")))
+        report = cm.diff(baseline, [self._healthy()])
+        self.assertEqual(report["regressed"], [])
+        self.assertIn("no change", cm.render_diff(report, baseline))
+
+    def test_an_upgrade_that_wipes_memory_is_a_regression(self):
+        baseline = cm.snapshot([self._healthy()])
+        wiped = cm.evaluate({}, platform="android")
+        wiped["name"] = "phone"
+        report = cm.diff(baseline, [wiped])
+        self.assertIn("tier2_memory", {e["key"] for e in report["regressed"]})
+        self.assertIn("phone:tier2_memory ok->missing",
+                      cm.render_diff(report, baseline))
+
+    def test_a_pre_existing_failure_is_not_blamed_on_this_run(self):
+        """A baseline taken from a broken node must not make the next fix look bad."""
+        already = cm.evaluate({}, platform="android")
+        already["name"] = "phone"
+        report = cm.diff(cm.snapshot([already]), [self._healthy("phone")])
+        self.assertEqual(report["regressed"], [])
+        self.assertTrue(report["recovered"])
+        self.assertIn("recovered", cm.render_diff(report))
+
+    def test_a_node_the_baseline_never_saw_is_unknown_not_damaged(self):
+        baseline = cm.snapshot([self._healthy("old-phone")])
+        report = cm.diff(baseline, [self._healthy("new-phone")])
+        self.assertEqual(report["regressed"], [])
+        self.assertEqual(report["unknown_nodes"], ["new-phone"])
+        self.assertIn("no baseline entry for: new-phone", cm.render_diff(report))
+
+    def test_a_baseline_that_cannot_be_read_is_reported_not_guessed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "baseline.json")
+            quiet = io.StringIO()
+            with contextlib.redirect_stdout(quiet):
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write("{not json")
+                self.assertIsNone(cm.load_baseline(path))
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write("[]")
+                self.assertIsNone(cm.load_baseline(path))
+                self.assertIsNone(cm.load_baseline(os.path.join(tmp, "gone.json")))
+            self.assertIn("unreadable", quiet.getvalue())
+
+
+class BaselineCliTestCase(unittest.TestCase):
+    """The comparison has to work as a gate, so its exit code matters."""
+
+    NAMES = ("semantic_memory.db", "audit_chain.jsonl", "decision_engine.log",
+             "episodic_journal.jsonl", "timers.json", "user_facts.json",
+             "personality_model.json", "mesh_token.txt")
+
+    def _host_dir(self, path):
+        for name in self.NAMES:
+            with open(os.path.join(path, name), "wb") as handle:
+                handle.write(b"x" * 32)
+        for name in ("shared", "artifacts"):
+            os.makedirs(os.path.join(path, name), exist_ok=True)
+        return path
+
+    def test_saving_then_comparing_a_baseline_gates_on_a_regression(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._host_dir(tmp)
+            baseline_path = os.path.join(tmp, "baseline.json")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = cm.main(["--host-dir", tmp, "--host-name", "hub",
+                                "--save-baseline", baseline_path,
+                                "--baseline-label", "release 1.30.22"])
+            self.assertEqual(code, 0, out.getvalue())
+            with open(baseline_path, encoding="utf-8") as handle:
+                saved = json.load(handle)
+            self.assertEqual(saved["label"], "release 1.30.22")
+            self.assertEqual(saved["nodes"]["hub"]["verdicts"]["tier2_memory"], "ok")
+
+            os.remove(os.path.join(tmp, "semantic_memory.db"))   # the upgrade
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = cm.main(["--host-dir", tmp, "--host-name", "hub",
+                                "--baseline", baseline_path])
+            self.assertEqual(code, 1, out.getvalue())
+            self.assertIn("hub:tier2_memory ok->missing", out.getvalue())
+
+            self._host_dir(tmp)                                   # put it back
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = cm.main(["--host-dir", tmp, "--host-name", "hub",
+                                "--baseline", baseline_path])
+            self.assertEqual(code, 0, out.getvalue())
+            self.assertIn("no change against the baseline", out.getvalue())
+
+    def test_a_missing_baseline_file_fails_rather_than_passing_silently(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._host_dir(tmp)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = cm.main(["--host-dir", tmp, "--baseline",
+                                os.path.join(tmp, "never-saved.json")])
+            self.assertEqual(code, 1)
+            self.assertIn("unreadable", out.getvalue())
 
 
 if __name__ == "__main__":

@@ -518,10 +518,10 @@ python3 capability_matrix.py --host-dir runtime/desktop --host-name hub \
     --token-file runtime/desktop/mesh_token.txt
 ```
 
-| node | after restarts + three in-place upgrades |
+| node | today |
 | --- | --- |
-| Tab S9 FE | 13/13 ok |
-| A51 | 13/13 ok |
+| Tab S9 FE (SM-X518U) | 13/13 ok |
+| A16 (SM-A166U) | 10 ok, 3 missing: timers, user_facts, models |
 | desktop hub | 8 ok, 2 not-created, 3 n/a, 0 failing |
 
 Verdicts distinguish *why* something is absent — `empty` (0 bytes, a failure, not
@@ -530,6 +530,26 @@ a pass), `missing`, `mismatch` (a mesh secret that is not the fleet's), `n/a`
 when it uses them) — so the matrix flags a reinstall (every claim missing) while
 not crying wolf about a host that keeps its weights in the model backend. A laptop
 or the Mac runs the same tool against its own data dir once it has joined.
+
+A single run only says what is true *now*. A **baseline** says what changed, which
+is the question an upgrade actually has to answer, so save one after a known-good
+deploy and compare every later run against it:
+
+```bash
+python3 capability_matrix.py --host-dir runtime/desktop --host-name hub \
+    --save-baseline runtime/capability_baseline.json --baseline-label "1.30.22"
+python3 capability_matrix.py --host-dir runtime/desktop --host-name hub \
+    --baseline runtime/capability_baseline.json
+# regressed: hub:tier2_memory ok->missing      (exit 1)
+```
+
+The comparison charges this run only for what it changed. A claim the baseline
+never knew about is new knowledge, not damage — so adding a node to the fleet
+cannot look like that node losing its memory — and a claim that was already
+failing is reported as *still failing* rather than blamed on the deploy. Exit
+status is 1 on a regression and 0 when nothing regressed, so it works as a
+post-deploy gate. The A16's three missing claims above are recorded in the
+baseline, which is what keeps them from masking a real regression later.
 
 ### Actuation sandbox: what the agent may do (v1.30.7)
 

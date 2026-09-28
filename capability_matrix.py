@@ -23,6 +23,7 @@ import json
 import os
 import re
 import subprocess
+from datetime import datetime, timezone
 
 # (key, label, path, kind, risk) -- kind is "file" or "dir"; risk explains what
 # would take the capability away, which is what an operator needs to know.
@@ -177,6 +178,120 @@ def summarize(result: dict) -> dict:
     return {"counts": counts, "failing": failing}
 
 
+# ---------------------------------------------------------------------------
+# Baselines: a known-good run to compare later runs against
+# ---------------------------------------------------------------------------
+FAILING_VERDICTS = ("missing", "empty", "mismatch")
+BASELINE_VERSION = 1
+
+
+def snapshot(results, *, label: str = "", created: str = None) -> dict:
+    """Record the verdicts of a run, so a later run can be compared against it.
+
+    The matrix alone says what is true now. Only a baseline answers the question an
+    upgrade actually has to answer -- *did this take anything away?* -- and answers it
+    without a human having to remember what the numbers were before.
+    """
+    return {
+        "baseline_version": BASELINE_VERSION,
+        "label": str(label or ""),
+        "created": created or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "nodes": {
+            str(node.get("name") or ""): {
+                "platform": node.get("platform"),
+                "version": node.get("version") or "",
+                "verdicts": {str(row.get("key")): str(row.get("verdict"))
+                             for row in node.get("rows", [])},
+            }
+            for node in results
+        },
+    }
+
+
+def load_baseline(path: str):
+    """Read a saved baseline, or ``None`` if it cannot be read or understood."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            loaded = json.load(handle)
+    except (OSError, ValueError) as exc:
+        print(f"baseline unreadable ({exc}): {path}")
+        return None
+    if not isinstance(loaded, dict) or not isinstance(loaded.get("nodes"), dict):
+        print(f"baseline has no readable nodes section: {path}")
+        return None
+    return loaded
+
+
+def diff(baseline: dict, results) -> dict:
+    """What a run took away, and what it gave back, relative to a baseline.
+
+    A claim the baseline never mentioned is new knowledge, not damage -- otherwise
+    adding a node to the fleet would look like a regression on that node. A claim that
+    was already failing is likewise not blamed on this run: it is reported separately
+    as still failing, so a deploy is judged only for what it changed.
+    """
+    recorded = (baseline or {}).get("nodes") or {}
+    report = {"regressed": [], "recovered": [], "still_failing": [],
+              "unknown_nodes": [], "new_claims": []}
+    for node in results:
+        name = str(node.get("name") or "")
+        before = recorded.get(name)
+        if not isinstance(before, dict):
+            report["unknown_nodes"].append(name)
+            continue
+        was = before.get("verdicts") or {}
+        current = {str(row.get("key")): str(row.get("verdict"))
+                   for row in node.get("rows", [])}
+        for key in sorted(set(was) | set(current)):
+            if key not in was:
+                report["new_claims"].append({"node": name, "key": key,
+                                             "now": current[key]})
+                continue
+            if key not in current:
+                # The claim is no longer reported at all, which is a loss too.
+                if was[key] not in FAILING_VERDICTS:
+                    report["regressed"].append({"node": name, "key": key,
+                                                "was": was[key],
+                                                "now": "unreported"})
+                continue
+            if current[key] in FAILING_VERDICTS:
+                entry = {"node": name, "key": key, "was": was[key],
+                         "now": current[key]}
+                if was[key] in FAILING_VERDICTS:
+                    report["still_failing"].append(entry)
+                else:
+                    report["regressed"].append(entry)
+            elif was[key] in FAILING_VERDICTS:
+                report["recovered"].append({"node": name, "key": key,
+                                            "was": was[key], "now": current[key]})
+    return report
+
+
+def render_diff(report: dict, baseline: dict = None) -> str:
+    """The comparison in the shortest form that names the problem."""
+    lines = []
+    if baseline:
+        lines.append(f"against baseline {baseline.get('label') or '(unlabelled)'}"
+                     f" saved {baseline.get('created') or 'unknown'}")
+    for heading in ("regressed", "recovered", "still_failing", "new_claims"):
+        entries = report.get(heading) or []
+        if entries:
+            lines.append(f"{heading.replace('_', ' ')}: "
+                         + ", ".join(_diff_cell(entry) for entry in entries))
+    if report.get("unknown_nodes"):
+        lines.append("no baseline entry for: " + ", ".join(report["unknown_nodes"]))
+    if not lines or (len(lines) == 1 and baseline):
+        lines.append("no change against the baseline")
+    return "\n".join(lines)
+
+
+def _diff_cell(entry: dict) -> str:
+    was, now = entry.get("was"), entry.get("now")
+    if was is None:
+        return f"{entry['node']}:{entry['key']}={now}"
+    return f"{entry['node']}:{entry['key']} {was}->{now}"
+
+
 def render(results) -> str:
     """A matrix: one row per claim, one column per node."""
     nodes = list(results)
@@ -285,6 +400,15 @@ def parse_args(argv=None) -> argparse.Namespace:
                          "against (e.g. <host-dir>/mesh_token.txt)")
     ap.add_argument("--json", action="store_true",
                     help="also dump the raw rows as JSON")
+    ap.add_argument("--save-baseline", default=None, metavar="PATH",
+                    help="write this run's verdicts to PATH as a baseline")
+    ap.add_argument("--baseline-label", default="", metavar="TEXT",
+                    help="label recorded inside a saved baseline")
+    ap.add_argument("--baseline", default=None, metavar="PATH",
+                    help="compare this run against a saved baseline and exit 1 "
+                         "on a regression (a capability the baseline had and "
+                         "this run lost); failures the baseline already had are "
+                         "reported, not charged to this run")
     return ap.parse_args(argv)
 
 
@@ -315,6 +439,23 @@ def main(argv=None) -> int:
             print(f"{result['name']}: {result['note']}")
     if args.json:
         print(json.dumps(results, indent=2, sort_keys=True))
+    if args.save_baseline:
+        baseline = snapshot(results, label=args.baseline_label)
+        try:
+            with open(args.save_baseline, "w", encoding="utf-8") as handle:
+                json.dump(baseline, handle, indent=2, sort_keys=True)
+            print(f"\nbaseline saved to {args.save_baseline} "
+                  f"({len(baseline['nodes'])} node(s), "
+                  f"label={baseline['label'] or 'none'})")
+        except OSError as exc:
+            print(f"\nbaseline not saved: {exc}")
+    if args.baseline:
+        loaded = load_baseline(args.baseline)
+        if loaded is None:
+            return 1
+        report = diff(loaded, results)
+        print("\n" + render_diff(report, loaded))
+        return 1 if report["regressed"] else 0
     failing = [result["name"] for result in results
                if summarize(result)["failing"]]
     if failing:

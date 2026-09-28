@@ -182,8 +182,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                     help="OpenAI-compatible endpoint of the model that phrases what this "
                          "node says (the Mac in this fleet): host:port or a base URL. "
                          "Unset means the node speaks its own draft")
-    ap.add_argument("--persona-model", default="persona", metavar="NAME",
-                    help="model name to ask the persona endpoint for")
+    ap.add_argument("--persona-model", default="", metavar="NAME",
+                    help="model name to ask the persona endpoint for; empty (the "
+                         "default) asks the endpoint which model it has")
     ap.add_argument("--persona-recheck", type=float, default=60.0, metavar="SECONDS",
                     help="how often to look for the phrasing service when --persona-url "
                          "is 'auto' (0 disables; a service found once is kept even if it "

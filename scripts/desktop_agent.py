@@ -624,15 +624,23 @@ def _startup_say(agent, args) -> None:
     else:
         log.warning("hive has not settled on this node as primary; speaking anyway")
     # An operator's line spoken at startup should be phrased like any other, and the
-    # phrasing service is normally resolved a moment *after* this node booted -- so ask
-    # once more now that the fleet is known, before anything is said. A no-op for a shaper
-    # that is explicitly configured or already enabled.
+    # phrasing service is normally resolved a moment *after* this node booted -- so wait
+    # for it, bounded, before saying anything: speaking the line unphrased is exactly what
+    # the operator did not ask for when they asked for a persona.
     shaper = getattr(getattr(agent, "engine", None), "persona_shaper", None)
-    if shaper is not None and not getattr(shaper, "enabled", False):
-        try:
-            _resolve_persona(agent, shaper)
-        except Exception as exc:
-            log.warning("persona resolve before say failed: %s", exc)
+    if shaper is not None and not getattr(shaper, "enabled", False) \
+            and getattr(shaper, "auto", False):
+        deadline = time.monotonic() + 30.0
+        while not shaper.enabled and time.monotonic() < deadline:
+            try:
+                _resolve_persona(agent, shaper)
+            except Exception as exc:
+                log.warning("persona resolve before say failed: %s", exc)
+            if not shaper.enabled:
+                time.sleep(2.0)
+        if not shaper.enabled:
+            log.warning("persona=auto: no phrasing service after 30s; lines are spoken "
+                        "as typed")
     for spec in args.say:
         text, _, device = str(spec).partition("@")
         text, device = text.strip(), device.strip()
@@ -685,6 +693,7 @@ def main(argv=None) -> int:
     auto_persona = str(args.persona_url).strip().lower() == "auto"
     shaper = PersonaShaper("" if auto_persona else args.persona_url, args.persona_model,
                            timeout=args.persona_timeout)
+    shaper.auto = auto_persona
     agent = create_agent(device_caps=caps, api_url=args.api_url,
                          data_dir=str(data_dir), mesh_node_id=mesh_id,
                          mesh_priority=args.mesh_priority,

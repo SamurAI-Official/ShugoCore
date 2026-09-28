@@ -68,6 +68,10 @@ class PersonaShaper:
         self._post = poster or _post_chat
         # The character text the primary owns and hands over per call.
         self.instructions = str(instructions or "")
+        # Set by the caller when the endpoint is to be resolved from the fleet: a shaper
+        # that is merely unconfigured and one that is waiting for a service to appear look
+        # identical otherwise, and only the second should be waited for.
+        self.auto = False
         self.shaped = 0
         self.fallbacks = 0
 

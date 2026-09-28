@@ -262,6 +262,10 @@ class PersonaResolutionTestCase(unittest.TestCase):
         self.assertFalse(module._resolve_persona(self._agent([]), shaper))
         self.assertTrue(shaper.enabled)
 
+    def test_a_shaper_set_to_auto_is_distinguishable_from_one_that_is_off(self):
+        self.assertFalse(persona.PersonaShaper("").auto)     # deliberately off
+        self.assertFalse(persona.PersonaShaper("mac:11434").auto)
+
     def test_a_shaper_enabled_late_still_gets_its_character(self):
         """Enabled after startup must not mean phrased without a personality."""
         from personality.loader import PersonalityProfile

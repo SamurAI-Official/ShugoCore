@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "shugocore"
-version = "1.30.5"
+version = "1.30.23"
 description = "A continuous orchestration layer for synthetic functional agency: multi-model decisions, tool execution, four-tier memory, deterministic safety interlocks."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -33,22 +33,30 @@ dev = ["pytest", "ruff>=0.6", "bandit>=1.7",
 [project.scripts]
 shugocore-verify-audit = "audit:cli_main"
 shugocore-server = "shugocore_server:main"
+# Operator tools, each of which already exposes main(argv=None) -> int. Shipping
+# them as entry points is what makes the published wheel as capable as the tree:
+# the capability baseline and fleet onboarding are the two things an operator
+# reaches for first, and neither was reachable from an installed package before.
+shugocore-capability-matrix = "capability_matrix:main"
+shugocore-claim-matrix = "claim_matrix:main"
+shugocore-onboard = "fleet_onboard:main"
+shugocore-actuation-sandbox = "actuation_sandbox:main"
 
 [tool.setuptools]
 packages = ["benchmarks", "conversation", "kv_mesh", "nrr", "personality",
             "prompts", "simulation", "subsystems"]
-py-modules = ["acceleration", "agent_runtime", "android_bridge", "android_inference", "android_model_manager",
-              "android_node", "android_runtime", "attention_layer", "audit", "autonomy", "continuous_agent",
-              "decision_engine", "delegation", "execution_layer", "fallbacks",
-              "gazebo_simulation", "human_interaction", "logging_manager", "memory_system",
-              "mesh_election", "mesh_rpc",
-              "mobile_nodes", "model_backends", "model_manager",
-              "moveit_planner", "pg_memory", "policy", "py_compat",
-              "reinforcement_learning",
-              "robotics_handler", "ros2_interface", "security", "security_inventory",
-              "shugonet_bridge", "shugocore_agent", "shugocore_server", "state_machine", "subconscious",
-              "talker", "task_manager", "telemetry", "token_budget", "vector_db",
-              "version"]
+py-modules = ["acceleration", "actuation_sandbox", "agent_runtime", "android_bridge", "android_inference",
+              "android_model_manager", "android_node", "android_runtime", "attention_layer", "audit",
+              "autonomy", "capabilities", "capability_matrix", "check_apk", "claim_matrix",
+              "continuous_agent", "decision_engine", "delegation", "execution_layer", "fallbacks",
+              "fleet_deploy", "fleet_onboard", "gazebo_simulation", "gguf_meta", "human_interaction",
+              "logging_manager", "memory_system", "mesh_election", "mesh_model_host", "mesh_rpc",
+              "mobile_nodes", "model_backends", "model_manager", "moveit_planner", "node_identity",
+              "persona", "pg_memory", "policy", "py_compat", "reinforcement_learning",
+              "response_routing", "robotics_handler", "ros2_interface", "security",
+              "security_inventory", "shugonet_bridge", "shugocore_agent", "shugocore_server",
+              "state_machine", "subconscious", "talker", "task_manager", "telemetry", "token_budget",
+              "vector_db", "version"]
 
 [tool.ruff]
 line-length = 100

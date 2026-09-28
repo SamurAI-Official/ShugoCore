@@ -6,7 +6,18 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
-### A proposer that keeps failing stops being asked (v1.30.23, in progress)
+## [1.30.23] - 2026-09-27 — the first published release since 1.30.5
+
+This release carries every change since the 1.30.5 wheel: the hive's capability map and
+placement plane, the persona phrasing service, fleet onboarding, capability baselines,
+memory-durability and proposal-backoff fixes. Publishing it means the package on PyPI
+finally matches the tree the fleet has been running — the module list had stopped at
+1.30.5, so `capabilities.py`, `persona.py`, `mesh_model_host.py` and the rest were in the
+repository and absent from anything installed. The operator tools now ship as console
+scripts: `shugocore-capability-matrix`, `shugocore-claim-matrix`, `shugocore-onboard` and
+`shugocore-actuation-sandbox`.
+
+### A proposer that keeps failing stops being asked (v1.30.23)
 
 The rule fallback already existed for a model that never proposes an executable action,
 but it did not stop *calling* that model: every cycle paid the round-trip again, and the
@@ -17,7 +28,7 @@ unusable proposals now open a backoff window that doubles with the streak and is
 status cannot read as "the model produced garbage" when it was never asked — and the
 streak stops growing while we are the ones not asking.
 
-### `fleet_onboard.py`: onboarding as a deliberate act (v1.30.23, in progress)
+### `fleet_onboard.py`: onboarding as a deliberate act (v1.30.23)
 
 A node needs a shared secret and a peer list, both device-local, and both easy to get
 wrong in ways the node cannot see. The new tool writes them idempotently: an existing
@@ -27,7 +38,7 @@ than clobbered, malformed entries are reported instead of dropped, and `--check`
 a node's state while writing nothing. `--check` on `runtime/desktop` shows the peers file
 still lists `shugo-a51`, a phone no longer attached.
 
-### Baselines: what a deploy took away (v1.30.23, in progress)
+### Baselines: what a deploy took away (v1.30.23)
 
 `capability_matrix.py` can now record a run as a baseline (`--save-baseline`) and compare a
 later run against it (`--baseline`), so "the upgrade preserves your memory" is checked
@@ -39,7 +50,7 @@ the deploy. Exit status is 1 on a regression and 0 when nothing regressed, so it
 a post-deploy gate. The first real baseline — hub, Tab S9 FE, A16 — is saved at
 `runtime/capability_baseline.json`.
 
-### Memory durability: a drained batch is not yet durable (v1.30.23, in progress)
+### Memory durability: a drained batch is not yet durable (v1.30.23)
 
 Tier 1 truncated its write-ahead journal at `drain()` time — before consolidation had
 stored anything in Tier 2 — so a crash in that window lost exactly the episodes the journal
@@ -50,7 +61,7 @@ file with `os.replace` rather than truncating, because a plain truncate at ackno
 time would also drop events recorded since the drain. Replaying an acknowledged batch is
 harmless: Tier 2 ignores content it already holds.
 
-### A capability says where a service is, not which model to ask (v1.30.23, in progress)
+### A capability says where a service is, not which model to ask (v1.30.23)
 
 `--persona-url auto` resolved the Mac's phrasing service and the phrasing request then came
 back HTTP 404: the advertised capability carries a locator, and nothing carried the model

@@ -58,6 +58,34 @@ name, so a placeholder was being sent to a healthy endpoint. An unnamed model no
 endpoint once (`/v1/models`, then Ollama's `/api/tags`) and remembers the answer, which is
 what makes auto-resolution configuration-free; naming a model still skips the question.
 
+### An operator's line is phrased like any other, and late is still in time (v1.30.23)
+
+`--say` bypassed the phrasing step entirely, so the one line an operator explicitly asked
+the hive to speak was the one line that went out unphrased. An operator line is now a
+speech decision like any other path, and getting there surfaced the same late-arrival race
+the service URL had, twice:
+
+- The character text was attached only when the shaper was already usable at *startup*, so a
+  shaper enabled by the fleet resolution would have phrased with no personality at all.
+  Attaching it is now idempotent and happens the moment the shaper becomes usable.
+- `--say` ran before resolution and spoke the unphrased draft. It now waits, bounded (30 s),
+  and says so when it gives up — gated on `auto`, so a shaper that is deliberately off is
+  not waited for, and the status records that choice rather than a timeout.
+
+### A locator is worthless until a peer can dial it (v1.30.23)
+
+The capability map was advertising addresses that meant something only to the node they
+came from. A node configured for `127.0.0.1` published its own loopback, so a peer adopting
+that locator dialled itself; and `persona` was defined as "I have a client endpoint
+configured", which points *elsewhere*, so the Mac (which serves the model) claimed nothing
+while a phone could appear to offer phrasing. Locators are now rewritten to the address
+peers reach the node on and dropped when that cannot be learned, `persona` means "I serve a
+model whose backend is my own loopback", and the consumer rewrites a peer's "here" to the
+address it is dialling. Fixing that surfaced a classic: `text.partition(":")` splits at the
+*scheme's* colon, so `http://127.0.0.1:11434` became `…:9000//127.0.0.1:11434`. The
+substitution now works on the scheme-stripped address, and the test asserts both the exact
+form and the address the connect used.
+
 ### The hive resolves its own services (v1.30.22)
 
 `capabilities.py` answers the question the other two planes do not: which node *offers a

@@ -104,6 +104,14 @@ decoupled maintenance worker that never blocks the primary loop.
 | `mobile_nodes.py` | Host-side mobile fleet: pairing with TTL, topic ACL, compute offload broker, clamped teleop relay |
 | `shugonet_bridge.py` | Multi-agent networking via Shogunet: send/query/sync actions, fleet memory mesh |
 | `fleet_deploy.py` | Host-only fleet rollout: consent- and approval-gated ADB installs onto operator-allowlisted devices, with artifact-root, digest and audit enforcement |
+| `fleet_onboard.py` | Writes the two device-local files a node needs to join -- `mesh_token.txt` and `mesh_peers.json` -- without forking the fleet; `--check` reports and writes nothing |
+| `capability_matrix.py` | Capability-retention matrix per node (what each claim actually has), with baselines as a post-deploy gate |
+| `capabilities.py` | Capability placement: the bounded service vocabulary (`reasoning` / `persona` / `perception` / `capacity`), advertised in the heartbeat and resolved to node + reason |
+| `persona.py` | Phrasing service: shapes a spoken line through an OpenAI-compatible endpoint; fail-open on style, never on safety |
+| `mesh_election.py` | Primary lease: heartbeat advertisements ranked by `(role, priority, node_id)`, with thermal and headroom exclusions |
+| `mesh_rpc.py` | Mesh transport: heartbeat plus authenticated RPC over TCP |
+| `mesh_model_host.py` | Layer-split model host: plan, reconcile, per-device detach, cache-aware budget |
+| `gguf_meta.py` | Reads a GGUF header (`block_count`, KV heads, embedding length) without loading the weights |
 | `acceleration.py` | Hardware acceleration ladder (NPU → DSP → GPU → CPU) with thermal demotion and failure degradation |
 | `robotics_handler.py` | Robotics execution handler: verified Twist/trajectory dispatch, emergency stop, watchdog |
 | `state_machine.py` | Strict interlocks for the observation-action loop |
@@ -369,10 +377,12 @@ the same pattern as other side-effecting actions.
 
 Exactly one live node holds the primary lease and runs the loop's side effects;
 every other live node falls back to peripheral mode (sensors, journal, RPC
-offload, never speaks). Candidates are ranked by heartbeat advertisement --
-lower `--mesh-priority` wins, ties broken by node id -- and a node is excluded
-when it is unpaired, thermally critical (status >= 3) or reports no memory
-headroom.
+offload, never speaks). Candidates are ranked by `(role, priority, node_id)` -- a
+node's *role* first, so a follower never outranks a primary-capable node whatever
+its priority, then lower `--mesh-priority` wins, ties broken by node id. Ranking
+priority alone was a split brain: two priority-10 nodes each saw the other as
+non-deposable. A node is excluded when it is unpaired, thermally critical
+(status >= 3) or reports no memory headroom.
 
 Advertisements travel over the ShugoNet mesh itself
 (`{"type": "heartbeat", "from": ..., "payload": {...}}`; fire-and-forget, never
@@ -382,6 +392,53 @@ advertisement is merged into `telemetry['mesh_peers']` and evaluated immediately
 so the role tracks the fleet within one heartbeat interval. Hosts with no
 telemetry measure their own free memory (`mesh_election.available_memory_bytes()`),
 because the election refuses a candidate advertising zero headroom.
+
+### Capability placement: which node offers what (v1.30.22)
+
+Authority is the election's and capacity is the model host's; this is the third
+question — which node *offers a service* the hive can use, and where to reach it.
+`capabilities.py` defines a short, bounded vocabulary, and every node advertises
+what it **actually runs**, in the heartbeat the mesh already carries:
+
+| capability | means (the module's own words) | resolved to here |
+|---|---|---|
+| `reasoning` | can answer with its own model (a local model backend) | `shugo-mac` |
+| `persona` | can phrase a line of speech (an OpenAI-compatible endpoint) | `shugo-mac` |
+| `perception` | can report what its sensors see | `shugo-tab` |
+| `capacity` | can hold layers of someone else's model (an RPC peripheral) | `shugo-mac` |
+
+Each capability resolves to a single node (the placement line above is what one hub
+actually reported), so the column is the winner, not the only claimant. The phones
+advertise `capacity` and `perception` and **not** `reasoning` — the follower posture
+stated as a fact rather than a configuration. A capability exists in this vocabulary
+only when something asks for it: adding one means adding its consumer.
+
+Two rules keep the map honest, and both came from watching it be wrong:
+
+- **Advertised is not usable.** A locator that does not answer is reported
+  unreachable and never offered, so `placement=` cannot name a service that is gone.
+- **"Nobody" needs a reason.** A peer that stayed silent and a fleet that never
+  claimed the capability look identical in a status line, so the absence carries
+  which of the two it was.
+
+A locator only means something if a *peer* can dial it, so an advertisement made
+from `127.0.0.1` is rewritten to the address peers reach this node on (a
+routing-table probe; nothing is sent) and dropped rather than published when that
+cannot be learned — and a consumer substituting a peer's "here" for its own
+rewrites it to the address it is already dialling. `persona` means *serves* a
+model, not "has a client endpoint configured": the first points at itself and the
+second points elsewhere, which is exactly the confusion that once made a phone look
+like it could phrase for the hive when it could not.
+
+The first consumer is speech. `--persona-url auto` resolves the phrasing service
+from the fleet instead of naming a node, re-checked every `--persona-recheck`
+(60 s), because a service that appears a moment after this node boots is the normal
+case. `--say` waits — bounded — for that resolution rather than speaking unphrased,
+and a shaper that is deliberately off is not waited for at all. An unnamed
+`--persona-model` asks the endpoint which model it has (`/v1/models`, then Ollama's
+`/api/tags`) and remembers the answer, so auto-resolution needs no out-of-band
+knowledge; naming one skips the question. The status line reports the result as
+`placement=reasoning@…,persona@…` and `persona=<model>@<host>` or `persona=off`.
 
 ### Fleet deployment action types
 

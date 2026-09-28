@@ -184,6 +184,10 @@ def parse_args(argv=None) -> argparse.Namespace:
                          "Unset means the node speaks its own draft")
     ap.add_argument("--persona-model", default="persona", metavar="NAME",
                     help="model name to ask the persona endpoint for")
+    ap.add_argument("--persona-recheck", type=float, default=60.0, metavar="SECONDS",
+                    help="how often to look for the phrasing service when --persona-url "
+                         "is 'auto' (0 disables; a service found once is kept even if it "
+                         "later goes quiet)")
     ap.add_argument("--persona-timeout", type=float, default=8.0, metavar="SECONDS",
                     help="how long to wait for the persona model before speaking the "
                          "draft instead (style is never worth losing the line)")
@@ -507,6 +511,38 @@ def _phrase_line(agent, text: str) -> str:
     return spoken
 
 
+def _resolve_persona(agent, shaper, *, announce: bool = False) -> bool:
+    """Point the shaper at whichever live peer advertises the phrasing service.
+
+    Called at startup *and* on a cadence, because a service that appears a moment after
+    this node boots is the normal case rather than the exception -- the Mac may be
+    mid-restart when the PC starts. A resolution that finds nobody leaves the shaper as it
+    is: a service found once and then gone quiet is better retried (and failed open) than
+    forgotten. Returns True when the locator changed.
+    """
+    try:
+        peers = list(agent.mesh_election.live_peers())
+    except Exception:
+        peers = []
+    resolved = CapabilityMap(peers, verify=True).resolve("persona")
+    locator = str(resolved.get("locator") or "")
+    if locator:
+        endpoint = _persona_endpoint(locator)
+        if endpoint != shaper.url:
+            # Normalised the same way an explicit URL is, so both paths behave alike.
+            shaper.url = endpoint
+            log.info("persona resolved from the fleet: %s (%s)",
+                     shaper.label(), resolved["reason"])
+            return True
+        if announce:
+            log.info("persona already points at %s (%s)", shaper.label(),
+                     resolved["reason"])
+        return False
+    if announce:
+        log.info("persona=auto but nobody offers it: %s", resolved.get("reason"))
+    return False
+
+
 def _startup_say(agent, args) -> None:
     """Speak once through the hive: routed, or forced to a named device.
 
@@ -610,18 +646,9 @@ def main(argv=None) -> int:
                          mesh_priority=args.mesh_priority,
                          persona_shaper=shaper)
     if auto_persona:
-        try:
-            peers = list(agent.mesh_election.live_peers())
-        except Exception:
-            peers = []
-        resolved = CapabilityMap(peers, verify=True).resolve("persona")
-        if resolved.get("locator"):
-            # Normalised the same way an explicit URL is, so both paths behave alike.
-            shaper.url = _persona_endpoint(resolved["locator"])
-            log.info("persona resolved from the fleet: %s (%s)",
-                     shaper.label(), resolved["reason"])
-        else:
-            log.info("persona=auto but nobody offers it: %s", resolved.get("reason"))
+        # First attempt now; the loop retries, because the phrasing service may simply not
+        # have heartbeated yet (which is exactly what a fresh boot looks like).
+        _resolve_persona(agent, shaper, announce=True)
     if shaper.enabled:
         try:
             # The personality text stays the primary's: the phrasing node is handed what
@@ -714,6 +741,11 @@ def main(argv=None) -> int:
     reconcile_every = float(getattr(args, "model_host_reconcile", 0) or 0)
     next_reconcile = (time.monotonic() + reconcile_every
                       if host is not None and reconcile_every > 0 else None)
+    # The phrasing service is looked for again on its own cadence: it may appear, or move,
+    # long after this node booted.
+    persona_recheck = float(getattr(args, "persona_recheck", 0) or 0)
+    next_persona = (time.monotonic() + persona_recheck
+                    if auto_persona and persona_recheck > 0 else None)
     try:
         while not _STOP:
             agent.tick()
@@ -739,6 +771,12 @@ def main(argv=None) -> int:
                 except Exception as exc:
                     log.warning("model host reconcile failed: %s", exc)
                 next_reconcile = time.monotonic() + reconcile_every
+            if next_persona is not None and time.monotonic() >= next_persona:
+                try:
+                    _resolve_persona(agent, shaper)
+                except Exception as exc:
+                    log.warning("persona re-resolve failed: %s", exc)
+                next_persona = time.monotonic() + persona_recheck
             if next_status is not None and time.monotonic() >= next_status:
                 log.info("%s", _status_line(agent, runtime, ticks))
                 next_status = time.monotonic() + args.status_every

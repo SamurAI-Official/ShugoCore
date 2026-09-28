@@ -223,5 +223,54 @@ class OperatorLineTestCase(unittest.TestCase):
                          "as typed")
 
 
+class PersonaResolutionTestCase(unittest.TestCase):
+    """``--persona-url auto``: found when it appears, kept when it goes quiet."""
+
+    def _agent(self, peers):
+        return types.SimpleNamespace(
+            mesh_election=types.SimpleNamespace(live_peers=lambda: peers))
+
+    def _mac(self, locator="http://192.168.1.162:11434"):
+        return {"node_id": "shugo-mac", "mem_available_bytes": 1_900_000_000,
+                "caps": {"persona": locator}}
+
+    def test_it_points_the_shaper_at_the_peer_that_advertises_it(self):
+        module = _desktop_module()
+        shaper = persona.PersonaShaper("", "mac-persona")
+        self.assertFalse(shaper.enabled)
+        changed = module._resolve_persona(self._agent([self._mac()]), shaper)
+        self.assertTrue(changed)
+        self.assertEqual(shaper.url, "http://192.168.1.162:11434/v1/chat/completions")
+        self.assertEqual(shaper.label(), "mac-persona@192.168.1.162:11434")
+
+    def test_it_says_nothing_changed_when_the_answer_is_the_same(self):
+        """The cadence must not rewrite the shaper every minute."""
+        module = _desktop_module()
+        shaper = persona.PersonaShaper("http://192.168.1.162:11434", "mac-persona")
+        self.assertFalse(module._resolve_persona(self._agent([self._mac()]), shaper))
+
+    def test_a_fleet_that_does_not_offer_it_leaves_the_shaper_alone(self):
+        module = _desktop_module()
+        shaper = persona.PersonaShaper("", "mac-persona")
+        self.assertFalse(module._resolve_persona(self._agent([]), shaper))
+        self.assertEqual(shaper.url, "")
+        self.assertFalse(shaper.enabled)
+
+    def test_a_service_found_once_is_not_forgotten_when_it_goes_quiet(self):
+        module = _desktop_module()
+        shaper = persona.PersonaShaper("http://mac:11434", "mac-persona")
+        self.assertFalse(module._resolve_persona(self._agent([]), shaper))
+        self.assertTrue(shaper.enabled)
+
+    def test_an_advertised_locator_that_does_not_answer_is_not_adopted(self):
+        """Advertised is not usable -- the same rule as everywhere else."""
+        module = _desktop_module()
+        shaper = persona.PersonaShaper("", "mac-persona")
+        # TEST-NET-1: routeless, so the connect fails and the claim is not adopted.
+        self.assertFalse(module._resolve_persona(
+            self._agent([self._mac("http://192.0.2.1:11434")]), shaper))
+        self.assertFalse(shaper.enabled)
+
+
 if __name__ == "__main__":
     unittest.main()

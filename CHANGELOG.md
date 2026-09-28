@@ -6,6 +6,26 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### The hive resolves its own services (v1.30.22)
+
+`capabilities.py` answers the question the other two planes do not: which node *offers a
+service* the hive can use, and where to reach it. Authority is the election's, capacity is
+the model host's; this is placement.
+
+- A short, bounded vocabulary (`reasoning`, `persona`, `perception`, `capacity`), each node
+  advertising what it **actually runs** with a locator when there is an address to give,
+  carried in the heartbeat every node already reads and sanitised at the consumer.
+- **Advertised is not usable**: a locator that does not answer is reported unreachable and
+  never offered. **"Nobody" needs a reason**: a peer that stayed silent and a fleet that
+  never claimed the capability would otherwise look identical.
+- First consumer: `--persona-url auto` resolves the phrasing service from the fleet rather
+  than naming a node, re-checked every `--persona-recheck` (60 s) because a service that
+  appears a moment after this node boots is the normal case -- a service found once is kept
+  even if it later goes quiet, and the draft is spoken either way.
+- The status line reports `placement=reasoning@…,persona@…`, and the phones' own
+  advertisement says they offer `capacity` and `perception` and **not** `reasoning`, which
+  is the follower posture stated as a fact rather than a configuration.
+
 ### The persona model phrases; the PC decides and gates (v1.30.21)
 
 The two-stage description this system already carried -- *the primary decides what to say,

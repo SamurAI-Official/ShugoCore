@@ -60,12 +60,15 @@ class PersonaShaper:
                  timeout: float = DEFAULT_TIMEOUT_S,
                  poster=None, instructions: str = ""):
         self.url = _chat_endpoint(url)
-        self.model = str(model or "").strip() or "persona"
+        # Empty means "ask the endpoint" (see _first_model); naming one skips that.
+        self.model = str(model or "").strip()
         try:
             self.timeout = max(0.5, float(timeout or DEFAULT_TIMEOUT_S))
         except (TypeError, ValueError):
             self.timeout = DEFAULT_TIMEOUT_S
         self._post = poster or _post_chat
+        # Empty means "ask the endpoint which model it has" -- see _first_model.
+        self._resolved_model = ""
         # The character text the primary owns and hands over per call.
         self.instructions = str(instructions or "")
         # Set by the caller when the endpoint is to be resolved from the fleet: a shaper
@@ -83,8 +86,9 @@ class PersonaShaper:
         """Short form for a status line: ``persona=<model>@<host>``, or ``off``."""
         if not self.enabled:
             return "off"
+        label = self.model or self._resolved_model or "persona"
         host = self.url.split("//", 1)[-1].split("/", 1)[0]
-        return f"{self.model}@{host}"
+        return f"{label}@{host}"
 
     def _prompt(self, verdict: Optional[Dict[str, Any]]) -> str:
         """What the persona model is told: the character, and today's verdict."""
@@ -106,6 +110,34 @@ class PersonaShaper:
             lines.append("Governor: " + "; ".join(str(d) for d in detail) + ".")
         return "\n".join(lines)
 
+    def _first_model(self) -> str:
+        """Ask the endpoint which model to use, once, and remember it.
+
+        A capability advertises *where* the service is, not which of its models to ask, and
+        the node that consumes it should not have to be told out of band: one listing is
+        cheaper than an operator remembering a name (and the name being wrong is exactly
+        how a phrasing request fails with a 404 while everything else looks healthy).
+        """
+        if self._resolved_model:
+            return self._resolved_model
+        base = self.url.rsplit("/v1/", 1)[0]
+        for path, key in (("/v1/models", "data"), ("/api/tags", "models")):
+            try:
+                with urllib.request.urlopen(base + path,
+                                            timeout=self.timeout) as response:
+                    body = json.loads(response.read().decode("utf-8", "replace") or "{}")
+            except Exception:
+                continue
+            items = body.get(key) if isinstance(body, dict) else None
+            for item in (items or []):
+                entry = item if isinstance(item, dict) else {}
+                name = str(entry.get("id") or entry.get("name") or "").strip()
+                if name:
+                    self._resolved_model = name
+                    logger.info("persona: the endpoint offers %s", name)
+                    return name
+        return ""
+
     def shape(self, text: str, *, verdict: Optional[Dict[str, Any]] = None,
               instructions: str = "") -> Dict[str, Any]:
         """Return ``{text, source, reason}``; source is persona, draft or unavailable.
@@ -119,8 +151,13 @@ class PersonaShaper:
                     "reason": ("no persona endpoint" if not self.enabled
                                else "nothing to say")}
         character = str(instructions or self.instructions or "").strip()
+        model = self.model or self._first_model()
+        if not model:
+            self.fallbacks += 1
+            return {"text": draft, "source": "unavailable", "draft": draft,
+                    "reason": "the endpoint lists no model to ask"}
         payload = {
-            "model": self.model,
+            "model": model,
             "temperature": 0.7,
             "max_tokens": 220,
             "messages": [

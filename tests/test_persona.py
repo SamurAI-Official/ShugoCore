@@ -4,11 +4,13 @@ The properties these tests exist for are the ones a second model could quietly b
 it must never approve anything (it runs before the gate), it must never cost the hive
 its voice (every failure returns the draft), and it must never touch anything but speech.
 """
+import json
 import os
 import sys
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -286,6 +288,51 @@ class PersonaResolutionTestCase(unittest.TestCase):
         self.assertFalse(module._resolve_persona(
             self._agent([self._mac("http://192.0.2.1:11434")]), shaper))
         self.assertFalse(shaper.enabled)
+
+
+class PersonaModelChoiceTestCase(unittest.TestCase):
+    """A capability says where the service is, not which model to ask."""
+
+    LISTING = {"data": [{"id": "qwen2.5:0.5b"}]}
+
+    class _Response:
+        def __init__(self, body):
+            self._body = json.dumps(body).encode("utf-8")
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    def test_an_unnamed_model_is_asked_for_at_the_endpoint(self):
+        poster = _Recorder(reply=_reply("Phrased."))
+        shaper = persona.PersonaShaper("mac:11434", poster=poster)
+        with mock.patch.object(persona.urllib.request, "urlopen",
+                               return_value=self._Response(self.LISTING)):
+            result = shaper.shape("a line to phrase")
+        self.assertEqual(result["source"], "persona")
+        self.assertEqual(poster.calls[0]["payload"]["model"], "qwen2.5:0.5b")
+        self.assertIn("qwen2.5:0.5b", shaper.label())
+
+    def test_a_named_model_is_used_without_asking(self):
+        poster = _Recorder(reply=_reply("Phrased."))
+        shaper = persona.PersonaShaper("mac:11434", "qwen3.5:latest", poster=poster)
+        with mock.patch.object(persona.urllib.request, "urlopen",
+                               side_effect=AssertionError("should not ask")):
+            self.assertEqual(shaper.shape("a line")["source"], "persona")
+        self.assertEqual(poster.calls[0]["payload"]["model"], "qwen3.5:latest")
+
+    def test_an_endpoint_that_lists_nothing_is_a_failure_not_a_guess(self):
+        shaper = persona.PersonaShaper("mac:11434")
+        with mock.patch.object(persona.urllib.request, "urlopen",
+                               side_effect=OSError("no route to host")):
+            result = shaper.shape("a line")
+        self.assertEqual(result["source"], "unavailable")
+        self.assertIn("lists no model", result["reason"])
 
 
 if __name__ == "__main__":

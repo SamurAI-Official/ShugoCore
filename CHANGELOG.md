@@ -17,6 +17,40 @@ repository and absent from anything installed. The operator tools now ship as co
 scripts: `shugocore-capability-matrix`, `shugocore-claim-matrix`, `shugocore-onboard` and
 `shugocore-actuation-sandbox`.
 
+### The manifest is guarded now, because the release caught it (v1.30.23)
+
+`pyproject.toml` enumerates its modules by hand. That is what makes a wheel predictable,
+and what made it silently wrong: the list had stopped at 1.30.5, so thirteen modules were
+in the repository and absent from anything installed. The packaging twin of the Android
+tree-sync guard now fails the suite when a root module is neither declared nor excluded
+with a stated reason, when a declaration names a module that no longer exists, when a
+package with an `__init__.py` is undeclared, when a console script points at a module or
+function that is not shipped, or when the CHANGELOG has no section for the version being
+released (`tests/test_packaging_manifest.py`). Drift was proven to fail it before the
+guard was kept: removing `persona` from the list fails the suite with `['persona']`.
+
+### Deployed to the fleet, and the baseline says nothing was lost (v1.30.23)
+
+The same version went to the phones as an in-place upgrade through the gated
+`fleet_deploy` path — allowlist, digest match, audit trail — rather than a bare
+`adb install`, because an uninstall would take a device's memory and models with it.
+Three phones (Tab S9 FE / SM-X518U, A51 5G / SM-S515DL, A16 / SM-A166U) moved from
+versionCode 36 to 37 and from 1.30.22 to 1.30.23, each reporting
+`Streamed Install Success`.
+
+The capability matrix then compared the fleet against the baseline taken *before* the
+upgrade: **no regressions**, the A16's three pre-existing gaps reported as still failing
+rather than charged to this deploy, and the A51 — which was not attached when that
+baseline was taken — reported as a node with no baseline entry rather than as damage.
+That comparison exiting 0 is the claim "the upgrade preserved everything" being checked
+against the devices themselves.
+
+Building it needed three environment fixes, now in the README: `JAVA_HOME` pointing at
+the JDK's real directory, a `python3.exe` beside its own `python313.dll` for Chaquopy
+(the `chaquopy.buildPython` key in `local.properties` is ignored, and a launcher without
+the DLLs fails as `STATUS_DLL_NOT_FOUND`), and the fetched ONNX Runtime headers the
+native build requires.
+
 ### A proposer that keeps failing stops being asked (v1.30.23)
 
 The rule fallback already existed for a model that never proposes an executable action,
@@ -35,8 +69,10 @@ wrong in ways the node cannot see. The new tool writes them idempotently: an exi
 secret is reused rather than replaced (supplying a different one is an error unless
 `--force-token` means it, since that silently forks the fleet), peers are merged rather
 than clobbered, malformed entries are reported instead of dropped, and `--check` reports
-a node's state while writing nothing. `--check` on `runtime/desktop` shows the peers file
-still lists `shugo-a51`, a phone no longer attached.
+a node's state while writing nothing. `--check` on `runtime/desktop` still lists
+`shugo-a51`, a phone that was away from the mesh when the check ran and attached again
+later — which is why onboarding merges peer entries instead of pruning them: a device
+that is merely absent is not a device to forget.
 
 ### Baselines: what a deploy took away (v1.30.23)
 

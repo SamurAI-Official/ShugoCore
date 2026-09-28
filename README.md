@@ -317,6 +317,28 @@ The Android node runs the model locally, and constrains it to a schema:
   Exynos 1380-class device — no per-device builds, no `SIGILL`. (Force the
   historical single-arch layout with
   `./gradlew assembleDebug -Pshugocore.singlearch=true`.)
+
+**Building it on Windows** — the three things that stop a first build, none of them
+source:
+
+- `JAVA_HOME` must point at the JDK itself, one level deeper than the archive name
+  suggests (`…\jbrsdk21\jbrsdk_jcef-21.0.11-windows-x64-…`), and setting
+  `GRADLE_USER_HOME` reuses the warmed cache instead of re-downloading it.
+- Chaquopy runs the host interpreter named by `buildPython` ("python3") and looks for it
+  **on the PATH or in the project directory**. `chaquopy.buildPython` in
+  `local.properties` is ignored here — four consecutive builds failed with
+  `[python3] is not a valid Python 3.13 command` before that was accepted — so the
+  interpreter needs a `python3.exe` *beside its own `python313.dll`*. A launcher sitting
+  in some other directory fails with `STATUS_DLL_NOT_FOUND` (`exit -1073741515`), which
+  reads like a Chaquopy bug and is not one.
+- ONNX Runtime headers and the per-ABI libraries are fetched, never committed:
+  `scripts/fetch_ort_android.sh` (ORT 1.23.2, extracted from the Maven AAR and
+  gitignored). CMake names the missing path when they are absent, and the native step is
+  the long part of the build.
+
+The deploy itself is the gated one — allowlist, digest, audit trail — rather than a bare
+`adb install`, because an uninstall takes the device's memory and models with it; the
+capability baseline is what proves afterwards that an in-place upgrade kept everything.
 - **Measured.** A51 (Exynos 9611, 0.5B Q4_K_M, portable variant): ~30
   s/decision. Tab S9 FE (dotprod+fp16 variant, 1.5B Q4_K_M): ~23 s/decision.
 
@@ -490,9 +512,10 @@ python3 fleet_onboard.py --data-dir runtime/desktop --node-id shugo-desktop \
 An existing secret is *reused*; supplying a different one is an error unless
 `--force-token` says otherwise, because a node that quietly adopts a new token is a
 node whose every frame is refused — and from the node itself that is indistinguishable
-from a broken mesh. `--check` also surfaces the slower failure: `runtime/desktop`
-still lists `shugo-a51`, a phone that is no longer attached, so a peers file ages into
-a list of things to wait for unless someone prunes it.
+from a broken mesh. `--check` also surfaces the slower failure: `runtime/desktop` lists
+`shugo-a51`, which was away from the mesh when that check ran and attached again later —
+so a peers file ages into a list of things that are absent *sometimes*, which is exactly
+why onboarding merges peer entries rather than pruning them.
 
 Two quoting traps cost real time on this fleet, both worth knowing before the next run:
 
@@ -999,6 +1022,11 @@ hardware-facing stress suites:
   positional array, so a `Map` intended for a Python `dict` can arrive as a Java array
   (`Object of type jarray is not JSON serializable`). Boundary calls pass their
   arguments positionally, and the JSON boundary stays under test.
+- **Packaging manifest** — `pyproject.toml` enumerates `packages` / `py-modules` by hand,
+  so a module added to the tree and not declared ships as absent from the wheel (thirteen
+  were, until 1.30.23). The guard fails with the line to add, and keeps `version.py`,
+  `pyproject.toml`, the README badge and the CHANGELOG in lockstep
+  (`tests/test_packaging_manifest.py`).
 
 A `sensor_node` soak runs for 5 seconds at 20 Hz against the pure-Python fake
 bridge and asserts monotonic heartbeats plus bounded, non-runaway output -

@@ -18,9 +18,12 @@ data = apk.read("AndroidManifest.xml")
 text = data.decode("utf-8", errors="replace")
 text = parsem(text)
 print("=== parsed manifest (first 1000 chars) ===")
-print(text[:1000])
+# The manifest is binary XML, so the decoded text can contain bytes a cp1252 console
+# cannot encode: printing it raw raises UnicodeEncodeError and the check fails before
+# it reports anything at all.
+print(text[:1000].encode("ascii", "replace").decode("ascii"))
 print("=== parsed manifest (last 1000 chars) ===")
-print(text[-1000:])
+print(text[-1000:].encode("ascii", "replace").decode("ascii"))
 names = apk.namelist()
 print("\n=== python bundle: governor/personality files ===")
 for n in sorted(names):

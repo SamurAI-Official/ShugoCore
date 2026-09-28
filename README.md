@@ -413,6 +413,39 @@ A rollout only upgrades in place if every device trusts the signing key; a
 mismatch (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`) is reported per target and the
 device keeps its data - see the fleet-key notes in `CHANGELOG.md`.
 
+### Onboarding a node: the two things it cannot work out (v1.30.23)
+
+A node is accepted only if it presents the fleet's shared secret, and it reaches
+anyone only if it knows who to dial. Both are device-local files — `mesh_token.txt`
+and `mesh_peers.json` — so `fleet_onboard.py` writes them, and refuses to fork the
+fleet while doing it:
+
+```bash
+# read a node's state, change nothing (the first thing to run when the mesh is quiet)
+python3 fleet_onboard.py --check --data-dir runtime/desktop
+
+# onboard or re-onboard a node; peers are merged, never replaced
+python3 fleet_onboard.py --data-dir runtime/desktop --node-id shugo-desktop \
+    --peers "shugo-tab=192.168.1.164:9000,shugo-a16=192.168.1.176:9000" \
+    --token-file runtime/desktop/mesh_token.txt
+```
+
+An existing secret is *reused*; supplying a different one is an error unless
+`--force-token` says otherwise, because a node that quietly adopts a new token is a
+node whose every frame is refused — and from the node itself that is indistinguishable
+from a broken mesh. `--check` also surfaces the slower failure: `runtime/desktop`
+still lists `shugo-a51`, a phone that is no longer attached, so a peers file ages into
+a list of things to wait for unless someone prunes it.
+
+Two quoting traps cost real time on this fleet, both worth knowing before the next run:
+
+- **`--say` through `Start-Process`** passes the argument string raw, so a multi-word
+  line needs its quotes *inside* the string — `--say="the line to speak"` — or argparse
+  reads the tail as extra arguments.
+- **`git commit -m` with quotes in the body**: PowerShell strips them and git then reads
+  a word from the message as a pathspec. Write the message to a file and use
+  `git commit -F <file>`. `--peers` with spaces hits the same trap.
+
 ### Operator consent surface
 
 `ConsentRegistry` gates side-effecting, robotics, mobile, network and fleet
@@ -905,6 +938,10 @@ hardware-facing stress suites:
   terminates in a record), policy enforcement points, and the agent's honest
   stage trail — exercised against the same Python tree that is bundled into
   the APK (`tests/test_android_control_plane.py`).
+- **Chaquopy argument binding** — `callAttr(String, Object...)` binds kwargs into a
+  positional array, so a `Map` intended for a Python `dict` can arrive as a Java array
+  (`Object of type jarray is not JSON serializable`). Boundary calls pass their
+  arguments positionally, and the JSON boundary stays under test.
 
 A `sensor_node` soak runs for 5 seconds at 20 Hz against the pure-Python fake
 bridge and asserts monotonic heartbeats plus bounded, non-runaway output -

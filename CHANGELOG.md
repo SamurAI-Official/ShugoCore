@@ -6,6 +6,27 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### A proposer that keeps failing stops being asked (v1.30.23, in progress)
+
+The rule fallback already existed for a model that never proposes an executable action,
+but it did not stop *calling* that model: every cycle paid the round-trip again, and the
+failure counter climbed whether or not the model was the reason. Three consecutive
+unusable proposals now open a backoff window that doubles with the streak and is capped
+(30s → 600s), during which the proposer is not called at all. The skip is reported as
+`reason: proposer_backoff` with the remaining wait, never as `model_fallback`, so the
+status cannot read as "the model produced garbage" when it was never asked — and the
+streak stops growing while we are the ones not asking.
+
+### `fleet_onboard.py`: onboarding as a deliberate act (v1.30.23, in progress)
+
+A node needs a shared secret and a peer list, both device-local, and both easy to get
+wrong in ways the node cannot see. The new tool writes them idempotently: an existing
+secret is reused rather than replaced (supplying a different one is an error unless
+`--force-token` means it, since that silently forks the fleet), peers are merged rather
+than clobbered, malformed entries are reported instead of dropped, and `--check` reports
+a node's state while writing nothing. `--check` on `runtime/desktop` shows the peers file
+still lists `shugo-a51`, a phone no longer attached.
+
 ### Baselines: what a deploy took away (v1.30.23, in progress)
 
 `capability_matrix.py` can now record a run as a baseline (`--save-baseline`) and compare a

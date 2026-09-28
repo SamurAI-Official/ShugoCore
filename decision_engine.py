@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -163,6 +164,13 @@ logger = logging.getLogger(__name__)
 
 _PROPOSAL_JSON_PATTERN = re.compile(r"\{.*\}", re.DOTALL)
 
+# Proposal-failure backoff (v1.30.23): a proposer that keeps failing is not asked
+# every cycle. The wait grows with the failure streak and is capped, so a broken
+# model costs one round-trip per window instead of one per cycle -- and the failure
+# counter stops growing while we are the ones not asking.
+PROPOSAL_BACKOFF_BASE_SECS = 30.0
+PROPOSAL_BACKOFF_MAX_SECS = 600.0
+
 
 def _proposal_json_candidates(text: str):
     """
@@ -302,6 +310,7 @@ class DecisionEngine:
         # targets a real, writable path instead of failing with EROFS.
         self._log_dir = log_dir
         self._model_failures = 0  # consecutive model parse failures (rule-fallback trigger)
+        self._proposer_ready_at = 0.0  # monotonic time the proposer may be asked again
 
         # Governance components (security architecture):
         self.secrets = secrets if secrets is not None else SecretResolver()
@@ -539,13 +548,20 @@ class DecisionEngine:
         model_outputs: Dict[str, str] = {}
         proposals: List[Tuple[str, Dict[str, Any], float]] = []
 
+        # Proposal-failure backoff: while a previous streak is being waited out, the
+        # model is not called at all. The round-trip is the cost being avoided, so
+        # skipping it is the whole point -- and nothing here claims the model failed
+        # this cycle, because it was never asked.
+        now = time.monotonic()
+        backing_off = now < self._proposer_ready_at
+
         self.memory.record_event(
             "decision_requested",
             {"task_type": sanitize_text(task.get("type", "unknown"), 64),
              "content": sanitize_text(task.get("content", ""), 200)},
         )
 
-        for model in selected_models:
+        for model in ([] if backing_off else selected_models):
             model_id = str(model.get("id", ""))
             if not validate_model_name(model_id):
                 self.logger.error(f"Skipping model with invalid id: {model_id!r}")
@@ -591,32 +607,52 @@ class DecisionEngine:
             # healthy once, but a model that ONLY ever says null must still
             # reach the rule-based fallback, so it never resets the counter.
             self._model_failures = 0
+            self._proposer_ready_at = 0.0   # a usable proposal clears the backoff
         else:
-            self._model_failures += 1
-            if self._model_failures >= 3:
-                # Rule-based fallback: the on-device model repeatedly fails to
-                # propose an executable action (garbage, truncation, or a
-                # perpetual null). Emit the one action that is always safe and
-                # always executable so the loop stays productive and honest.
-                # Low confidence signals that this is heuristic, not a real
-                # model proposal.
-                self.logger.warning(
-                    f"Model failed to propose an executable action "
-                    f"({self._model_failures}x consecutive); "
-                    f"using rule-based fallback")
+            if backing_off:
+                # Not a failure: we chose not to spend the round-trip this cycle.
+                # Reported as its own reason so the status never reads as a model
+                # that produced garbage when it was never asked.
                 decision = {
                     "action_type": "record_observation",
-                    "params": {"text": "routine observation (rule-based fallback)",
-                               "reason": "model_fallback",
-                               "failures": self._model_failures},
+                    "params": {"text": "routine observation (proposer backoff)",
+                               "reason": "proposer_backoff",
+                               "failures": self._model_failures,
+                               "retry_in_secs": round(
+                                   self._proposer_ready_at - now, 1)},
                     "confidence": 0.1,
                     "proposal_source": "rule_fallback",
                 }
             else:
-                decision = {"action_type": None, "params": {},
-                            "confidence": 0.0,
-                            "proposal_source": ("null_proposal" if proposals
-                                                else None)}
+                self._model_failures += 1
+                if self._model_failures >= 3:
+                    # Rule-based fallback: the on-device model repeatedly fails to
+                    # propose an executable action (garbage, truncation, or a
+                    # perpetual null). Emit the one action that is always safe and
+                    # always executable so the loop stays productive and honest.
+                    # Low confidence signals that this is heuristic, not a real
+                    # model proposal.
+                    delay = min(
+                        PROPOSAL_BACKOFF_BASE_SECS * (2 ** (self._model_failures - 3)),
+                        PROPOSAL_BACKOFF_MAX_SECS)
+                    self._proposer_ready_at = time.monotonic() + delay
+                    self.logger.warning(
+                        f"Model failed to propose an executable action "
+                        f"({self._model_failures}x consecutive); using rule-based "
+                        f"fallback and not asking again for {delay:.0f}s")
+                    decision = {
+                        "action_type": "record_observation",
+                        "params": {"text": "routine observation (rule-based fallback)",
+                                   "reason": "model_fallback",
+                                   "failures": self._model_failures},
+                        "confidence": 0.1,
+                        "proposal_source": "rule_fallback",
+                    }
+                else:
+                    decision = {"action_type": None, "params": {},
+                                "confidence": 0.0,
+                                "proposal_source": ("null_proposal" if proposals
+                                                    else None)}
 
         decision["model_outputs"] = model_outputs
         decision["aggregated_output"] = sum(score for _, _, score in proposals)

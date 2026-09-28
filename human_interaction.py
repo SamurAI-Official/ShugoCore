@@ -22,7 +22,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from security import sanitize_text
 
 # Observation types (the contract the user-approved plan defines).
-OBSERVATION_TYPES = ("visual", "speech", "presence", "gesture", "interaction")
+# v1.30.24 adds "sound": non-speech acoustic events (a level change, an onset, a
+# classified sound) that are *not* speech and must never be read as a human talking.
+# Speech keeps its own type and transcript; the two are deliberately separate so a
+# classifier can never author a transcript.
+OBSERVATION_TYPES = ("visual", "speech", "presence", "gesture", "interaction", "sound")
 # Response types (reserved for v1.15/1.16 agent capabilities; defined now so
 # the schema is complete and stable before any emitter exists).
 RESPONSE_TYPES = ("speech", "visual", "action", "acknowledgement")

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "shugocore"
-version = "1.30.23"
+version = "1.30.24"
 description = "A continuous orchestration layer for synthetic functional agency: multi-model decisions, tool execution, four-tier memory, deterministic safety interlocks."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -44,7 +44,7 @@ shugocore-actuation-sandbox = "actuation_sandbox:main"
 
 [tool.setuptools]
 packages = ["benchmarks", "conversation", "kv_mesh", "nrr", "personality",
-            "prompts", "simulation", "subsystems"]
+            "prompts", "simulation", "sound", "subsystems"]
 py-modules = ["acceleration", "actuation_sandbox", "agent_runtime", "android_bridge", "android_inference",
               "android_model_manager", "android_node", "android_runtime", "attention_layer", "audit",
               "autonomy", "capabilities", "capability_matrix", "check_apk", "claim_matrix",

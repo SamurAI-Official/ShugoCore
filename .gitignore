@@ -48,6 +48,11 @@ platforms/android/build/
 *.apk
 *.aab
 
+# Model weights for audio perception (fetched, never committed -- see MODELS.md
+# for licences and scripts/fetch_audio_models.py for the pinned hashes). The
+# Android build needs them present as assets, exactly like the ONNX Runtime tree.
+platforms/android/app/src/main/assets/sound/
+
 # ONNX Runtime for Android is extracted from the official Maven AAR by
 # scripts/fetch_ort_android.sh at build time (~19-23 MB per ABI; regenerate,
 # don't commit). The C headers come from the same AAR so they always match.

@@ -3,7 +3,7 @@
 > A continuous orchestration layer for synthetic functional agency.
 
 [![PyPI](https://img.shields.io/pypi/v/shugocore)](https://pypi.org/project/shugocore/)
-![Release](https://img.shields.io/badge/release-v1.30.23-blue)
+![Release](https://img.shields.io/badge/release-v1.30.24-blue)
 ![Tests](https://img.shields.io/badge/tests-1105%20passing-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%E2%80%933.13-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android%20%28Termux%2FChaquopy%29-lightgrey)
@@ -461,6 +461,30 @@ and a shaper that is deliberately off is not waited for at all. An unnamed
 `/api/tags`) and remembers the answer, so auto-resolution needs no out-of-band
 knowledge; naming one skips the question. The status line reports the result as
 `placement=reasoning@…,persona@…` and `persona=<model>@<host>` or `persona=off`.
+
+### Audio perception: describe, then classify (v1.30.24)
+
+Hearing is the third sensory plane and it is built like the other two: a contract layer, an
+honest capability report, a fail-closed default. `sound/` takes a window descriptor in and
+gives a summary plus labels out, with no path that can carry samples — the audio form of
+"descriptors, never pixels", which for a microphone is also the privacy rule.
+
+| layer | what it answers | what it costs |
+|---|---|---|
+| Tier 0 `sound.descriptors` | how loud, rising or falling, how many onsets, longest silence, plus a one-sentence `describe()` | nothing: arithmetic over frame RMS the device's VAD already computes |
+| Tier 1 Silero VAD (MIT, 2.2 MB) | speech or not — so music, TV and a kettle can never read as someone talking to the agent | 512-sample chunks at 16 kHz plus a 64-sample context, ~1 ms each |
+| Tier 2 YAMNet (3.9 MB) | 521 AudioSet sound classes | one 15600-sample window (0.975 s) per call |
+
+A label is never a fact: AudioSet labels are weak, so they are capped in number, floored in
+confidence, and tagged `source: yamnet`. A classifier can never author a transcript —
+speech keeps its own observation type and its own words, and `sound` is a separate type on
+the bus. With no models fetched the worker advertises nothing and answers `not_supported`
+with a reason, because "the device did not hear anything" and "the device cannot hear" are
+different facts.
+
+Models are fetched, never committed: `scripts/fetch_audio_models.py` pins each file by
+sha256, and **MODELS.md** records every licence — including what was considered and
+rejected, and the attribution the AudioSet class map requires.
 
 ### Fleet deployment action types
 

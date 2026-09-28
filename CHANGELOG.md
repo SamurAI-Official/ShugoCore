@@ -6,6 +6,44 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+## [1.30.24] - 2026-09-28 — audio perception, in layers
+
+`sound/` is the contract layer for hearing, which is the NRR pattern applied to audio: a
+window descriptor in, a summary plus labels out, and no path that can carry samples. That
+is the same rule as "descriptors, never pixels" — and for audio it is also the privacy
+rule.
+
+- **Tier 0 — describe, without a model.** `sound.descriptors` turns per-frame RMS (which
+  the device's energy VAD already computes) into a level (quiet/conversational/loud), a
+  trend, an activity ratio, an onset count, the longest silence, and a one-sentence
+  `describe()`. Free, licence-free, and it replaces a boolean with a description.
+- **Tier 1 — speech or not, from a model.** Silero VAD (MIT, 2.2 MB, ONNX) verified here:
+  0.005 mean on 1 s of silence, 0.014 on noise, **0.813 mean / 1.000 max on real speech**.
+  Its contract is pinned in `sound.schema` because it is easy to get wrong: a 512-sample
+  chunk at 16 kHz *prepended with a 64-sample context* (576 in), and an RNN state of
+  `[2, 1, 128]` carried across chunks. Feeding 512 without the context reads as junk
+  (0.001) — precisely the bug that would have been invisible on a device.
+- **Tier 2 — what the sound was.** YAMNet (MediaPipe float32 bundle, 3.9 MB) takes a raw
+  15600-sample window (0.975 s at 16 kHz) and returns 521 AudioSet scores, computing its
+  own log-mel features internally, so there is no frontend to write. Verified: on
+  synthesized speech it returns `Speech 0.984, Speech synthesizer 0.148`, which also
+  confirms the class-map order (index 0 = Speech).
+- **A label is never a fact.** AudioSet labels are weak (balanced mAP 0.306), so labels
+  are capped in number, floored in confidence, and each carries `source: yamnet`. And a
+  classifier can never author a transcript: speech keeps its own observation type and its
+  own words.
+- **Fail-closed and honest.** A worker with no backend advertises *nothing* in
+  `compute_caps` and answers `not_supported` with a reason, because "the device did not
+  hear anything" and "the device cannot hear" are different facts.
+- **Bus contract.** `HumanObservation` gains `type="sound"`, and `observation_payload()`
+  flattens a result to seven keys, inside the bus's 12-key / 160-char budget.
+
+Models are fetched and never committed (`scripts/fetch_audio_models.py` with pinned
+hashes; `MODELS.md` records every licence). The device provider and the native JNI bridge
+that runs these two models on a phone are the next step — the contracts above are what
+they get built against, and both were verified against the real weights rather than
+assumed.
+
 ## [1.30.23] - 2026-09-27 — the first published release since 1.30.5
 
 This release carries every change since the 1.30.5 wheel: the hive's capability map and

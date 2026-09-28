@@ -511,6 +511,25 @@ def _phrase_line(agent, text: str) -> str:
     return spoken
 
 
+def _apply_persona_instructions(agent, shaper) -> None:
+    """Hand the phrasing model the character text the primary owns.
+
+    Called whenever the shaper *becomes* usable, not only at startup: the service is
+    normally resolved from the fleet a little later (the phrasing node may be
+    mid-restart when this one boots), and a shaper enabled late was otherwise phrased
+    with no character at all. Idempotent.
+    """
+    if getattr(shaper, "instructions", ""):
+        return
+    try:
+        # The personality text stays the primary's: the phrasing node is handed what to
+        # sound like, never the authority to decide what is said.
+        from personality.prompt import personality_system_prompt
+        shaper.instructions = personality_system_prompt(agent.personality)
+    except Exception as exc:
+        log.warning("persona instructions unavailable: %s", exc)
+
+
 def _peer_hosts(agent) -> Dict[str, str]:
     """``node_id -> the address its peers dial``, from the mesh peer map.
 
@@ -545,6 +564,7 @@ def _resolve_persona(agent, shaper, *, announce: bool = False) -> bool:
         if endpoint != shaper.url:
             # Normalised the same way an explicit URL is, so both paths behave alike.
             shaper.url = endpoint
+            _apply_persona_instructions(agent, shaper)      # newly usable: give it a voice
             log.info("persona resolved from the fleet: %s (%s)",
                      shaper.label(), resolved["reason"])
             return True
@@ -603,6 +623,16 @@ def _startup_say(agent, args) -> None:
         time.sleep(1.0)
     else:
         log.warning("hive has not settled on this node as primary; speaking anyway")
+    # An operator's line spoken at startup should be phrased like any other, and the
+    # phrasing service is normally resolved a moment *after* this node booted -- so ask
+    # once more now that the fleet is known, before anything is said. A no-op for a shaper
+    # that is explicitly configured or already enabled.
+    shaper = getattr(getattr(agent, "engine", None), "persona_shaper", None)
+    if shaper is not None and not getattr(shaper, "enabled", False):
+        try:
+            _resolve_persona(agent, shaper)
+        except Exception as exc:
+            log.warning("persona resolve before say failed: %s", exc)
     for spec in args.say:
         text, _, device = str(spec).partition("@")
         text, device = text.strip(), device.strip()
@@ -664,13 +694,7 @@ def main(argv=None) -> int:
         # have heartbeated yet (which is exactly what a fresh boot looks like).
         _resolve_persona(agent, shaper, announce=True)
     if shaper.enabled:
-        try:
-            # The personality text stays the primary's: the phrasing node is handed what
-            # to sound like, never the authority to decide what is said.
-            from personality.prompt import personality_system_prompt
-            shaper.instructions = personality_system_prompt(agent.personality)
-        except Exception as exc:
-            log.warning("persona instructions unavailable: %s", exc)
+        _apply_persona_instructions(agent, shaper)
         log.info("persona: %s (timeout %ss)", shaper.label(), shaper.timeout)
     # AndroidAgent.__init__ already bootstraps, so it has already started the
     # mesh using the environment set above. Bootstrapping again would re-enter

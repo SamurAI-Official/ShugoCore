@@ -262,6 +262,18 @@ class PersonaResolutionTestCase(unittest.TestCase):
         self.assertFalse(module._resolve_persona(self._agent([]), shaper))
         self.assertTrue(shaper.enabled)
 
+    def test_a_shaper_enabled_late_still_gets_its_character(self):
+        """Enabled after startup must not mean phrased without a personality."""
+        from personality.loader import PersonalityProfile
+
+        module = _desktop_module()
+        shaper = persona.PersonaShaper("", "mac-persona")
+        agent = self._agent([self._mac()])
+        agent.personality = PersonalityProfile()
+        module._resolve_persona(agent, shaper)
+        self.assertTrue(shaper.enabled)
+        self.assertTrue(shaper.instructions)
+
     def test_an_advertised_locator_that_does_not_answer_is_not_adopted(self):
         """Advertised is not usable -- the same rule as everywhere else."""
         module = _desktop_module()

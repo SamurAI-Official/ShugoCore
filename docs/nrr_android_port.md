@@ -247,15 +247,40 @@ and then sets `supports_nnapi = true`, but the session silently runs on the
 default CPU provider — so ShugoCore must not advertise NNAPI until the EP is
 genuinely appended (see below).
 
-## Next (not in this phase)
+## Integration status
 
-- `nrr_jni` shared library + `NRRBridge.kt`, routing `runInference("nrr_render")`
-  from `android_node.py` instead of the Python `worker_stub`.
-- Ship the ONNX model in `assets/` and resolve it via `AAssetManager`.
-- Advertise `compute_caps.workloads: ["nrr_render"]` sourced from the real
-  capabilities (CPU EP only) so `nodes_for_workload()` routing is truthful.
-- Optionally wire NNAPI: `apply_provider()` needs an `OrtSessionOptionsAppend-
-  ExecutionProvider_Nnapi` arm (the AAR ships `nnapi_provider_factory.h`).
-  Until then `supports_nnapi` must stay `false`.
-- Report bugs 1-4 upstream.
+Everything above is wired, and verified on a device (Galaxy A51 5G, SM-S515DL,
+arm64-v8a) against the 1.30.23 APK:
+
+- **Native library**: `nrr_jni` (`SHARED`) + `NRRBridge.kt`, loaded by
+  `ShugoCoreService` with an explicit `preferredBackend = "CPU"`, so the
+  auto-selection trap (bug 5) cannot fire.
+- **Python routing**: the service registers an `NrrRendererBridge` via
+  `android_agent.register_nrr_renderer`, and `nrr/adapter.py::android_native_worker`
+  builds the `NRRRenderWorker` on it. The Python `worker_stub` is now only the
+  fail-closed path for when no runtime is registered.
+- **The model ships**: `assets/nrr/nrr_upscaler_v0.1.onnx` (45 KB), marked
+  `noCompress 'onnx'` so `AAssetManager` can report its uncompressed length, and
+  extracted into `filesDir` on first run (ONNX Runtime needs a real path).
+- **Capabilities are honest**: the worker advertises `nrr_render` only when the
+  runtime can serve it, and reports `execution_provider: CPU` with
+  `neural_acceleration: absent`, because upstream's `apply_provider()` still
+  understands only cpu/cuda/directml.
+
+`tests/test_nrr_jni_contract.py` guards the three cross-language names all of this
+depends on — Kotlin's `external fun`s against the JNI exports (names *and* arity),
+the bridge methods Python calls against the Kotlin adapter's, and
+`loadLibrary("nrr_jni")` against the CMake target — and, when an APK has been built,
+reads the symbols back out of the packaged `.so`. Source greps cannot catch a stale
+or stripped build; reading the artifact can.
+
+## Still open (not in this phase)
+
+- **NNAPI**: `apply_provider()` needs an
+  `OrtSessionOptionsAppendExecutionProvider_Nnapi` arm (the AAR ships
+  `nnapi_provider_factory.h`). Until it genuinely appends the provider,
+  `supports_nnapi` must stay `false` and `neural_acceleration` `absent` — which is
+  what the probes report.
+- **Report upstream bugs 1-4.**
+
 

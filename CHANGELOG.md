@@ -51,6 +51,32 @@ the JDK's real directory, a `python3.exe` beside its own `python313.dll` for Cha
 the DLLs fails as `STATUS_DLL_NOT_FOUND`), and the fetched ONNX Runtime headers the
 native build requires.
 
+### NRR is wired end to end, and now guarded across its three languages (v1.30.23)
+
+The port notes listed the JNI library, the Kotlin bridge, the shipped model asset and the
+capability advertisement as future work. All four are in place, so the document now says
+so and keeps only NNAPI and the upstream bug reports open.
+
+Verified on a device rather than by reading the code: `nrr_probe`, cross-compiled from the
+same CMake sources with NDK 27 and pushed to a Galaxy A51 5G, reports
+`onnxruntime: true, active_backend: CPU, device_created: true, model_loaded: true,
+execute_frame: true, output_distinct_bytes: 17, failures: 0, ok: true` — a real transform
+rather than a passthrough, on the CPU execution provider, with `supports_nnapi` reported
+honestly as `false`. The 1.30.23 APK carries `libnrr_jni.so`, `libonnxruntime.so` (19 MB),
+`libomp.so`, and `assets/nrr/nrr_upscaler_v0.1.onnx`.
+
+The integration's weak point was that it spans three languages which agree only by *name*,
+and every one of those names fails at runtime: a renamed JNI export is an
+`UnsatisfiedLinkError` the first time a device renders, and a renamed bridge method is a
+Python `AttributeError` that the worker's fail-closed path swallows — the fleet would
+simply never advertise `nrr_render`, with no error anywhere. `tests/test_nrr_jni_contract.py`
+now holds those names together (Kotlin's `external fun`s against the JNI exports including
+their arity, the bridge methods Python calls against the Kotlin adapter,
+`loadLibrary("nrr_jni")` against the CMake target) and, when an APK exists, reads the
+symbols back out of the packaged `.so` — the only check that can see a stale or stripped
+build. Renaming one export fails three assertions, naming it exactly; renaming nothing
+passes.
+
 ### A proposer that keeps failing stops being asked (v1.30.23)
 
 The rule fallback already existed for a model that never proposes an executable action,

@@ -1,3 +1,4 @@
+import io
 import re
 from pathlib import Path
 import zipfile
@@ -26,10 +27,25 @@ print("=== parsed manifest (last 1000 chars) ===")
 print(text[-1000:].encode("ascii", "replace").decode("ascii"))
 names = apk.namelist()
 print("\n=== python bundle: governor/personality files ===")
-for n in sorted(names):
+# Chaquopy ships the app's Python as assets/chaquopy/app.imy, so looking only for a
+# "python/" prefix (the layout from years ago) lists nothing and reports a good APK as
+# empty. Read the archive it is actually in.
+bundle_names = []
+for candidate in ("assets/chaquopy/app.imy", "assets/chaquopy/app.zip"):
+    if candidate in names:
+        try:
+            with zipfile.ZipFile(io.BytesIO(apk.read(candidate))) as bundle:
+                bundle_names = bundle.namelist()
+            print(f"  ({candidate}: {len(bundle_names)} entries)")
+        except Exception as exc:
+            print(f"  ({candidate} unreadable: {exc})")
+        break
+for n in sorted(bundle_names):
     if "governor" in n or "personality" in n or "model.py" in n or "growth.py" in n:
         print("  ", n)
+print("  legacy python/ entries:", sum(1 for n in names if n.startswith("python/")))
 print("\n=== python bundle count ===")
-print("total python files:", sum(1 for n in names if n.startswith("python/")))
+print("total python files:", len(bundle_names)
+      + sum(1 for n in names if n.startswith("python/")))
 apk.close()
 apk.close()

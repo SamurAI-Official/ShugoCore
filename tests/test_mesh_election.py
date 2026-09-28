@@ -232,6 +232,15 @@ class RoleTestCase(unittest.TestCase):
                          "primary-capable")
         self.assertEqual(MeshElection("shugo-tab").node_role, "primary-capable")
 
+    def test_the_heartbeat_carries_what_the_node_offers(self):
+        e = MeshElection("shugo-desktop")
+        self.assertEqual(
+            e.local_heartbeat(caps={"persona": "http://m:1"})["caps"],
+            {"persona": "http://m:1"})
+        e.observe_heartbeat({"node_id": "shugo-tab", "mem_available_bytes": DESKTOP_MEM,
+                             "caps": {"perception": ""}})
+        self.assertEqual(e.live_peers()[0]["caps"], {"perception": ""})
+
     def test_what_each_peer_says_it_is_is_visible(self):
         e = self._follower()
         e.observe_heartbeat(self._pc())
@@ -274,6 +283,13 @@ class FollowerPostureTestCase(unittest.TestCase):
     def test_a_nonsense_role_is_primary_capable(self):
         agent = self._agent(node_role="leader-ish")
         self.assertEqual(agent.node_role, "primary-capable")
+
+    def test_a_node_advertises_only_the_capabilities_it_actually_has(self):
+        follower = self._agent(node_role="follower", local_model=False)
+        advertised = follower.hive_capabilities()
+        self.assertNotIn("reasoning", advertised)       # no local model: no claim
+        self.assertIn("capacity", advertised)           # it can hold layers for the host
+        self.assertIn("reasoning", self._agent().hive_capabilities())
 
 
 class TestElectionRules(unittest.TestCase):

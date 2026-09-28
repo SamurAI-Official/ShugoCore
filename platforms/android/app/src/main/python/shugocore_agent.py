@@ -947,6 +947,34 @@ class AndroidAgent:
             print(f"SHUGONET: start failed: {exc}", file=_sys.stderr, flush=True)
             pass
 
+    def hive_capabilities(self) -> Dict[str, str]:
+        """What this node offers the hive, in its own words (capabilities.py).
+
+        Derived from what the node is *actually* running rather than from what it was
+        configured to be: a node with no local model does not claim reasoning, a node whose
+        shell declared no sensors does not claim perception, and a locator is only given
+        when there is an address to give.
+        """
+        try:
+            from capabilities import claim
+        except Exception:
+            return {}
+        persona_url = ""
+        shaper = getattr(self, "persona_shaper", None)
+        if shaper is not None and getattr(shaper, "enabled", False):
+            persona_url = str(getattr(shaper, "url", "") or "")
+        declared = getattr(self, "capabilities", None)
+        return claim(
+            # A node with no `local_model` attribute was written before the flag existed,
+            # and such a node did load a model: absent means the old behaviour, not "off".
+            reasoning=bool(getattr(self, "local_model", True)),
+            persona=persona_url,
+            perception=bool(isinstance(declared, dict) and declared),
+            # Any node can be asked to hold layers; whether it *should* is the layer
+            # planner's question, and it answers it with measured headroom.
+            capacity=True,
+        )
+
     def model_registry(self, backend_kwargs: Dict[str, Any]) -> List[Dict[str, Any]]:
         """The models this node will actually load.
 
@@ -1946,7 +1974,8 @@ class AndroidAgent:
         try:
             payload = election.local_heartbeat(
                 thermal_status=thermal,
-                mem_available_bytes=self._mesh_mem_headroom())
+                mem_available_bytes=self._mesh_mem_headroom(),
+                caps=self.hive_capabilities())
             if isinstance(payload, dict):
                 # Free memory we could not measure is *unknown*, not zero. The
                 # election refuses a candidate that reports no headroom, so

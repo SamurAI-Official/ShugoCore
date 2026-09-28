@@ -63,7 +63,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from shugocore_agent import create_agent  # noqa: E402
 from node_identity import load_or_create as _load_identity  # noqa: E402
-from persona import PersonaShaper  # noqa: E402
+from persona import PersonaShaper, _chat_endpoint as _persona_endpoint  # noqa: E402
+from capabilities import KNOWN as KNOWN_CAPABILITIES, CapabilityMap  # noqa: E402
 from fleet_deploy import (  # noqa: E402
     FleetDeployHandler,
     SubprocessAdbRunner,
@@ -344,12 +345,21 @@ def _status_line(agent, runtime, ticks) -> str:
     # belongs on the line that describes the fleet.
     followers = len([peer for peer in live_peers
                      if str(peer.get("role") or "") == "follower"])
-    # Who phrases this node's speech: off, or the model and the node it lives on.
+    # Who phrases this node's speech: off, the model and node it names, or resolved.
     shaper = getattr(getattr(agent, "engine", None), "persona_shaper", None)
     try:
         persona = str(shaper.label()) if shaper is not None else "off"
     except Exception:
         persona = "configured"
+    # Where the hive's services are, resolved from what nodes advertise (capabilities.py).
+    # verify=False: a status line must not open sockets.
+    try:
+        known = CapabilityMap(live_peers, verify=False)
+        placement = ",".join(f"{name}@{known.resolve(name)['node']}"
+                             for name in KNOWN_CAPABILITIES
+                             if known.resolve(name).get("node"))
+    except Exception:
+        placement = ""
     model_host = getattr(agent, "_model_host", None)
     host_line = (model_host.summary_line() if model_host is not None else "off")
     return (f"tick {ticks} | cycles={loop.get('cycles')} "
@@ -361,7 +371,8 @@ def _status_line(agent, runtime, ticks) -> str:
             f"rx={rx} tx={tx} "
             f"say_to={routing.get('device')} deleg_sent={delegated.get('sent')} "
             f"artifacts={shared} art_in={art_in} art_out={art_out} "
-            f"imported={stats.get('imported')} persona={persona} model_host={host_line}")
+            f"imported={stats.get('imported')} persona={persona} "
+            f"placement={placement} model_host={host_line}")
 
 
 def _enable_fleet_deploy(agent, args) -> None:
@@ -589,13 +600,28 @@ def main(argv=None) -> int:
              mesh_id, args.mesh_priority, data_dir)
     # Phrasing is a hive service (persona.py): the primary owns the words *and* the gate,
     # a model on another node owns the wording. Unset by default, so a node without one
-    # behaves exactly as it did.
-    shaper = PersonaShaper(args.persona_url, args.persona_model,
+    # behaves exactly as it did. "auto" resolves it from the fleet instead of naming a
+    # node: whoever advertises the capability gets asked (capabilities.py).
+    auto_persona = str(args.persona_url).strip().lower() == "auto"
+    shaper = PersonaShaper("" if auto_persona else args.persona_url, args.persona_model,
                            timeout=args.persona_timeout)
     agent = create_agent(device_caps=caps, api_url=args.api_url,
                          data_dir=str(data_dir), mesh_node_id=mesh_id,
                          mesh_priority=args.mesh_priority,
-                         persona_shaper=shaper if shaper.enabled else None)
+                         persona_shaper=shaper)
+    if auto_persona:
+        try:
+            peers = list(agent.mesh_election.live_peers())
+        except Exception:
+            peers = []
+        resolved = CapabilityMap(peers, verify=True).resolve("persona")
+        if resolved.get("locator"):
+            # Normalised the same way an explicit URL is, so both paths behave alike.
+            shaper.url = _persona_endpoint(resolved["locator"])
+            log.info("persona resolved from the fleet: %s (%s)",
+                     shaper.label(), resolved["reason"])
+        else:
+            log.info("persona=auto but nobody offers it: %s", resolved.get("reason"))
     if shaper.enabled:
         try:
             # The personality text stays the primary's: the phrasing node is handed what

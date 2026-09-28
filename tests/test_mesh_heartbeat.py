@@ -230,6 +230,10 @@ class AgentHeartbeatWiringTestCase(unittest.TestCase):
         class _Dummy:
             _mesh_mem_headroom = AndroidAgent._mesh_mem_headroom
             _mesh_perception_facts = AndroidAgent._mesh_perception_facts
+            # The payload advertises what the node offers, so the stand-in needs the hook
+            # that answers it (a node with no `local_model` attribute counts as the old
+            # behaviour: one that did load a model).
+            hive_capabilities = AndroidAgent.hive_capabilities
             _mesh_heartbeat_payload = AndroidAgent._mesh_heartbeat_payload
             _mesh_heartbeat_received = AndroidAgent._mesh_heartbeat_received
             _mesh_heartbeat_tick = AndroidAgent._mesh_heartbeat_tick

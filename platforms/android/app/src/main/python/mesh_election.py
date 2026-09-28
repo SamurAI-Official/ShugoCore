@@ -168,7 +168,8 @@ class MeshElection:
     def local_heartbeat(self, thermal_status: int = 0,
                         mem_available_bytes: int = 0,
                         rpc_endpoint: str = "",
-                        paired: bool = True) -> Dict[str, Any]:
+                        paired: bool = True,
+                        caps: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         self._seq += 1
         with self._lock:
             claim = self._primary_id or ""
@@ -184,6 +185,11 @@ class MeshElection:
             # for itself, and only the *refused* sender ever learns otherwise.
             "primary": claim,
             "role": self.node_role,
+            # What this node offers the hive (capabilities.py). Advertised here because the
+            # heartbeat is the one channel every node already reads; the *consumer*
+            # sanitises it, so an unknown or oversized claim is dropped there rather than
+            # carried around.
+            "caps": dict(caps) if isinstance(caps, dict) else {},
             "seq": self._seq,
         }
         self.observe_heartbeat(payload)
@@ -225,6 +231,10 @@ class MeshElection:
             "role": ("follower"
                      if str(payload.get("role", "") or "").strip().lower()
                      == "follower" else "primary-capable"),
+            # Carried as sent; capabilities.normalise() is what decides what is usable, so
+            # the election does not have to know the vocabulary.
+            "caps": dict(payload.get("caps")) if isinstance(payload.get("caps"), dict)
+            else {},
             "seq": payload.get("seq", 0), "last_seen": ts,
         }
         with self._lock:

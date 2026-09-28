@@ -174,10 +174,77 @@ class MemoryV1TestCase(unittest.TestCase):
             recovered = EpisodicMemory(max_events=50, journal_path=journal)
             self.assertEqual(len(recovered), 3)
             self.assertEqual(recovered.recent()[0]["payload"]["n"], 1)
-            # Drain compacts the journal.
-            recovered.drain()
+            # Draining is not durability: the batch is still only in this process
+            # until consolidation stores it, so its journal copy stays.
+            self.assertEqual(len(recovered.drain()), 3)
+            self.assertEqual(len(EpisodicMemory(max_events=50, journal_path=journal)), 3)
+            # Acknowledged: the copy may go and a restart replays nothing.
+            recovered.mark_consolidated()
+            self.assertEqual(len(EpisodicMemory(max_events=50, journal_path=journal)), 0)
             with open(journal, "r", encoding="utf-8") as handle:
                 self.assertEqual(handle.read().strip(), "")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_a_batch_recorded_after_a_drain_survives_the_acknowledgement(self):
+        """Compaction keeps what the drain did not consume; it must not blank the file."""
+        tmp = tempfile.mkdtemp(prefix="shugocore_journal_")
+        try:
+            journal = os.path.join(tmp, "episodic.jsonl")
+            memory = EpisodicMemory(max_events=50, journal_path=journal)
+            memory.record("consolidated", {"n": 1})
+            memory.drain()
+            memory.record("unconsumed", {"n": 2})
+            memory.mark_consolidated()
+            recovered = EpisodicMemory(max_events=50, journal_path=journal)
+            self.assertEqual(len(recovered), 1)
+            self.assertEqual(recovered.recent()[0]["type"], "unconsumed")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_a_second_drain_without_an_acknowledgement_loses_nothing(self):
+        """An unacknowledged batch survives a later drain (consolidation kept failing)."""
+        tmp = tempfile.mkdtemp(prefix="shugocore_journal_")
+        try:
+            journal = os.path.join(tmp, "episodic.jsonl")
+            memory = EpisodicMemory(max_events=50, journal_path=journal)
+            memory.record("first", {"n": 1})
+            memory.drain()
+            memory.record("second", {"n": 2})
+            memory.drain()
+            recovered = EpisodicMemory(max_events=50, journal_path=journal)
+            self.assertEqual([e["type"] for e in recovered.recent()],
+                             ["first", "second"])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_consolidation_releases_the_journal_once_the_batch_is_stored(self):
+        tmp = tempfile.mkdtemp(prefix="shugocore_journal_")
+        try:
+            journal = os.path.join(tmp, "episodic.jsonl")
+            manager = MemoryManager(agent_id="journal", auto_start=False,
+                                    episodic_journal_path=journal)
+            for n in range(4):
+                manager.tier1.record("step", {"n": n})
+            manager.consolidate_now()
+            # Stored in Tier 2, so the copy is released and a restart replays nothing.
+            self.assertEqual(len(EpisodicMemory(max_events=50, journal_path=journal)), 0)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_a_failed_consolidation_keeps_the_batch_for_replay(self):
+        tmp = tempfile.mkdtemp(prefix="shugocore_journal_")
+        try:
+            journal = os.path.join(tmp, "episodic.jsonl")
+            manager = MemoryManager(agent_id="journal", auto_start=False,
+                                    episodic_journal_path=journal)
+            manager.tier1.record("step", {"n": 1})
+            with mock.patch.object(manager, "_consolidate_impl",
+                                   side_effect=RuntimeError("tier 2 unavailable")):
+                with self.assertRaises(RuntimeError):
+                    manager.consolidate_now()
+            # Tier 2 never saw it, so the episode must still be there to replay.
+            self.assertEqual(len(EpisodicMemory(max_events=50, journal_path=journal)), 1)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

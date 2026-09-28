@@ -128,7 +128,9 @@ class EpisodicMemory:
     bounded by capacity and by age (``max_age_hours``). When
     ``journal_path`` is set the log is crash-safe: every event is appended
     to a JSONL write-ahead journal before entering the ring buffer, and
-    un-consumed events are replayed on startup.
+    un-consumed events are replayed on startup. A drained batch keeps its
+    journal copy until consolidation acknowledges that Tier 2 stored it, so
+    a crash between the two is recoverable rather than silent loss.
     """
 
     def __init__(self, max_events: int = 1000,
@@ -139,6 +141,8 @@ class EpisodicMemory:
         self._seq = 0
         self._journal_path = str(journal_path) if journal_path else None
         self._max_age_hours = max_age_hours
+        # A drained batch stays in the journal until consolidation acknowledges it.
+        self._batch_in_flight = False
         if self._journal_path:
             self._replay_journal()
 
@@ -219,18 +223,45 @@ class EpisodicMemory:
         return dict(counts)
 
     def drain(self) -> List[Dict[str, Any]]:
-        """Atomically snapshot and clear all events (used by consolidation)."""
+        """Atomically snapshot and clear all events (used by consolidation).
+
+        The journal is deliberately *not* truncated here. Draining hands the events to
+        consolidation, but handing them over does not make them durable -- Tier 2 does --
+        so a crash in between would lose exactly the episodes the journal exists to
+        guard. The batch is marked in flight instead, and its copy is dropped once
+        consolidation acknowledges it (``mark_consolidated``). Replaying a batch that was
+        in fact acknowledged is harmless: Tier 2 ignores content it already holds.
+        """
         with self._lock:
+            if self._journal_path and not self._batch_in_flight:
+                self._compact_journal()
             events = list(self._events)
             self._events.clear()
-            if self._journal_path:
-                # Drained events are handed to consolidation; the journal
-                # only guards un-consumed events, so compact it here.
-                try:
-                    open(self._journal_path, "w", encoding="utf-8").close()
-                except OSError as exc:
-                    logger.warning(f"Episodic journal compaction failed: {exc}")
+            self._batch_in_flight = bool(events) and bool(self._journal_path)
             return events
+
+    def mark_consolidated(self) -> None:
+        """Acknowledge a drained batch: it is durable, so its journal copy may go."""
+        with self._lock:
+            self._batch_in_flight = False
+            if self._journal_path:
+                self._compact_journal()
+
+    def _compact_journal(self) -> None:
+        """Rewrite the journal to hold exactly the events still in the ring.
+
+        Rewriting (atomically, through a temporary file) rather than truncating keeps
+        two properties at once: events consolidation has not stored yet keep their copy,
+        and events it has already stored stop being replayed on the next start.
+        """
+        try:
+            temp = self._journal_path + ".compact"
+            with open(temp, "w", encoding="utf-8") as handle:
+                for event in self._events:
+                    handle.write(json.dumps(event, sort_keys=True, default=str) + "\n")
+            os.replace(temp, self._journal_path)
+        except OSError as exc:
+            logger.warning(f"Episodic journal compaction failed: {exc}")
 
     def __len__(self) -> int:
         with self._lock:
@@ -1465,6 +1496,10 @@ class MemoryManager:
                 "memory.consolidate", {"agent": sanitize_text(self.agent_id, 32)}) as span:
             events = self.tier1.drain()
             stats = self._consolidate_impl(events)
+            # The batch is durable now (or deliberately dropped): release its journal
+            # copy. If _consolidate_impl raised above, nothing is released and the
+            # batch is replayed on the next start.
+            self.tier1.mark_consolidated()
             span.set_attribute("facts_stored", stats.get("facts_stored", 0))
         return stats
 

@@ -8,6 +8,7 @@ look identical to an operator.
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -83,6 +84,57 @@ class CapabilityMapTestCase(unittest.TestCase):
             caps.address_of("http://mac:11434/v1/chat/completions"), "mac:11434")
         self.assertEqual(caps.address_of("mac:11434"), "mac:11434")
         self.assertEqual(caps.address_of(""), "")
+
+
+class _Conn:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+class AdvertisedLocatorTestCase(unittest.TestCase):
+    """A locator must be usable by a *peer*, or not advertised at all."""
+
+    def test_a_loopback_locator_is_rewritten_to_the_reachable_address(self):
+        self.assertEqual(
+            caps.advertised_locator("http://127.0.0.1:11434", host="10.0.0.5"),
+            "http://10.0.0.5:11434")
+        self.assertEqual(
+            caps.advertised_locator("127.0.0.1:11434/v1", host="10.0.0.5"),
+            "10.0.0.5:11434/v1")
+
+    def test_an_already_reachable_locator_is_left_exactly_as_configured(self):
+        self.assertEqual(caps.advertised_locator("http://192.168.1.162:11434"),
+                         "http://192.168.1.162:11434")
+        self.assertEqual(caps.advertised_locator(""), "")
+
+    def test_a_loopback_claim_with_no_learnable_address_is_dropped(self):
+        """Better no claim than an unusable one."""
+        with mock.patch.object(caps, "local_address", return_value=""):
+            self.assertEqual(caps.advertised_locator("http://127.0.0.1:11434"), "")
+
+    def test_serving_a_backend_is_told_apart_from_calling_one(self):
+        self.assertTrue(caps.is_local_locator("http://127.0.0.1:11434"))
+        self.assertTrue(caps.is_local_locator("localhost:11434"))
+        self.assertFalse(caps.is_local_locator("http://192.168.1.162:11434"))
+
+    def test_a_peers_loopback_claim_is_read_at_the_address_it_is_dialled(self):
+        seen = []
+
+        def _connect(address, **_kwargs):
+            seen.append(address)
+            return _Conn()
+
+        resolved = caps.CapabilityMap(
+            [{"node_id": "shugo-mac", "mem_available_bytes": 10 ** 9,
+              "caps": {"persona": "http://127.0.0.1:11434"}}],
+            verify=True, connect=_connect,
+            hosts={"shugo-mac": "192.168.1.162:9000"}).resolve("persona")
+        self.assertEqual(resolved["locator"], "http://192.168.1.162:11434")
+        self.assertEqual(seen, [("192.168.1.162", 11434)])
+        self.assertIn("at the peer's own address", resolved["reason"])
 
 
 if __name__ == "__main__":

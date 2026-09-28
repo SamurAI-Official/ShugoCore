@@ -511,6 +511,20 @@ def _phrase_line(agent, text: str) -> str:
     return spoken
 
 
+def _peer_hosts(agent) -> Dict[str, str]:
+    """``node_id -> the address its peers dial``, from the mesh peer map.
+
+    A locator that says "here" (loopback) only means something read alongside the address
+    that node is actually reached at.
+    """
+    try:
+        return {str(entry[0]): str(entry[1])
+                for entry in (agent.mesh_peer_endpoints() or [])
+                if len(entry) >= 2 and entry[0] and entry[1]}
+    except Exception:
+        return {}
+
+
 def _resolve_persona(agent, shaper, *, announce: bool = False) -> bool:
     """Point the shaper at whichever live peer advertises the phrasing service.
 
@@ -524,7 +538,7 @@ def _resolve_persona(agent, shaper, *, announce: bool = False) -> bool:
         peers = list(agent.mesh_election.live_peers())
     except Exception:
         peers = []
-    resolved = CapabilityMap(peers, verify=True).resolve("persona")
+    resolved = CapabilityMap(peers, verify=True, hosts=_peer_hosts(agent)).resolve("persona")
     locator = str(resolved.get("locator") or "")
     if locator:
         endpoint = _persona_endpoint(locator)

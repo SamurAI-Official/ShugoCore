@@ -59,6 +59,60 @@ def normalise(caps: Any) -> Dict[str, str]:
     return out
 
 
+def local_address() -> str:
+    """This host's address as a peer would reach it. Sends nothing.
+
+    The UDP "connect" only asks the routing table which source address would be used for
+    an outbound route; TEST-NET-1 is routeless, so no packet is sent and nothing is
+    contacted.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("192.0.2.1", 9))
+            return str(probe.getsockname()[0] or "")
+    except Exception:
+        return ""
+
+
+def advertised_locator(url: str, *, host: Optional[str] = None) -> str:
+    """Rewrite a locator so a *peer* can use it: loopback becomes this host's address.
+
+    A node configured to call ``127.0.0.1:11434`` is describing where its own backend
+    listens, and a peer that adopts that verbatim calls *itself*. The address is therefore
+    rewritten to the one peers actually reach, while the port and path stay exactly as
+    configured -- and when the address cannot be learned, the claim is dropped rather than
+    published unusable.
+    """
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    prefix = ""
+    if "//" in text:
+        head, text = text.split("//", 1)
+        prefix = head + "//"
+    host_part, sep, tail = text.partition(":")
+    if host_part.strip().lower() in ("127.0.0.1", "localhost", "::1", "0.0.0.0"):
+        reachable = str(host or "").strip() or local_address()
+        if not reachable:
+            return ""
+        host_part = reachable
+    return f"{prefix}{host_part}{sep}{tail}"
+
+
+def is_local_locator(url: str) -> bool:
+    """True when a URL points at this node itself.
+
+    The distinction that matters for advertisement: a node *serving* a model points at its
+    own loopback, while a node *calling* someone else's points at theirs -- and only the
+    first can offer that service to the hive.
+    """
+    text = str(url or "").strip()
+    if "//" in text:
+        text = text.split("//", 1)[1]
+    host = text.partition(":")[0].strip().lower()
+    return host in ("127.0.0.1", "localhost", "::1", "0.0.0.0", "")
+
+
 def claim(*, reasoning: bool = False, persona: str = "", perception: bool = False,
           capacity: bool = False) -> Dict[str, str]:
     """Build this node's own advertisement out of what it is actually running."""
@@ -100,12 +154,33 @@ class CapabilityMap:
     """The fleet's advertised capabilities, resolvable by name with a reason."""
 
     def __init__(self, peers: Optional[Iterable[Dict[str, Any]]] = None, *,
-                 verify: bool = True, timeout: float = 2.0, connect=None):
+                 verify: bool = True, timeout: float = 2.0, connect=None,
+                 hosts: Optional[Dict[str, str]] = None):
         self.timeout = float(timeout or 2.0)
         self.verify = bool(verify)
         self._connect = connect
+        # node_id -> the address its peers dial (from the mesh peer map). Used to make
+        # sense of a locator that says "here", which means nothing to anyone else.
+        self.hosts: Dict[str, str] = {str(k): str(v) for k, v in (hosts or {}).items()}
         self.peers: List[Dict[str, Any]] = [dict(p) for p in (peers or [])
                                             if isinstance(p, dict)]
+
+    def _reachable_locator(self, locator: str, node: str) -> Dict[str, Any]:
+        """A locator a peer can dial, saying so when its host had to be substituted."""
+        text = str(locator or "").strip()
+        # Work on the address, not the URL: partitioning on the first colon of
+        # "http://127.0.0.1:11434" gives the scheme's colon, not the port's.
+        address = address_of(text)
+        host, _, tail = address.partition(":")
+        if host.strip().lower() not in ("127.0.0.1", "localhost", "::1", "0.0.0.0"):
+            return {"locator": text, "substituted": False}
+        known_host, _, known_port = address_of(self.hosts.get(node, "")).rpartition(":")
+        if not known_host:
+            return {"locator": text, "substituted": False}
+        port = tail.split("/", 1)[0] or known_port
+        path = "/" + tail.split("/", 1)[1] if "/" in tail else ""
+        prefix = text.split("//", 1)[0] + "//" if "//" in text else ""
+        return {"locator": f"{prefix}{known_host}:{port}{path}", "substituted": True}
 
     def offers(self, capability: str) -> List[Dict[str, Any]]:
         """Live peers that advertise ``capability``, best first, with its locator.
@@ -125,9 +200,14 @@ class CapabilityMap:
                      "locator": locator,
                      "mem_available_bytes": peer.get("mem_available_bytes") or 0,
                      "role": str(peer.get("role") or "")}
-            if locator and self.verify:
-                entry["reachable"] = _resolve_addr(address_of(locator), self.timeout,
-                                                   self._connect)
+            entry["substituted"] = False
+            if entry["locator"]:
+                usable = self._reachable_locator(entry["locator"], entry["node"])
+                entry["locator"] = usable["locator"]
+                entry["substituted"] = usable["substituted"]
+                entry["reachable"] = (_resolve_addr(address_of(entry["locator"]),
+                                                    self.timeout, self._connect)
+                                      if self.verify else True)
             else:
                 entry["reachable"] = True
             found.append(entry)
@@ -153,8 +233,9 @@ class CapabilityMap:
                               f"({', '.join(e['node'] for e in offered)})",
                     "offered": offered}
         best = usable[0]
+        note = " (at the peer's own address)" if best.get("substituted") else ""
         return {"node": best["node"], "locator": best["locator"],
-                "reason": f"{best['node']} offers '{name}'"
+                "reason": f"{best['node']} offers '{name}'{note}"
                           f"{'' if best['locator'] else ' (no locator needed)'}",
                 "offered": offered}
 

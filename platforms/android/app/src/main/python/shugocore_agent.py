@@ -956,13 +956,17 @@ class AndroidAgent:
         when there is an address to give.
         """
         try:
-            from capabilities import claim
+            from capabilities import advertised_locator, claim, is_local_locator
         except Exception:
             return {}
         persona_url = ""
-        shaper = getattr(self, "persona_shaper", None)
-        if shaper is not None and getattr(shaper, "enabled", False):
-            persona_url = str(getattr(shaper, "url", "") or "")
+        # "Can phrase" is a property of *serving* a model, not of calling one: a node whose
+        # backend is its own loopback offers that backend to the hive, at the address peers
+        # can reach. A node pointed at someone else's backend is a client and offers
+        # nothing -- which is exactly the difference between the Mac and the phones.
+        if bool(getattr(self, "local_model", True)) \
+                and is_local_locator(getattr(self, "api_url", "")):
+            persona_url = advertised_locator(getattr(self, "api_url", ""))
         declared = getattr(self, "capabilities", None)
         return claim(
             # A node with no `local_model` attribute was written before the flag existed,

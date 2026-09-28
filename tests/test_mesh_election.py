@@ -291,6 +291,15 @@ class FollowerPostureTestCase(unittest.TestCase):
         self.assertIn("capacity", advertised)           # it can hold layers for the host
         self.assertIn("reasoning", self._agent().hive_capabilities())
 
+    def test_a_node_offers_its_own_backend_and_not_someone_elses(self):
+        server = self._agent(api_url="http://127.0.0.1:11434")
+        advertised = server.hive_capabilities()
+        if advertised.get("persona"):
+            # Reachable by a peer, or not claimed at all -- never this node's loopback.
+            self.assertNotIn("127.0.0.1", advertised["persona"])
+        client = self._agent(api_url="http://192.168.1.162:11434")
+        self.assertNotIn("persona", client.hive_capabilities())
+
 
 class TestElectionRules(unittest.TestCase):
     def test_lowest_priority_wins(self):

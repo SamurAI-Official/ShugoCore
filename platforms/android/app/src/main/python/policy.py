@@ -98,14 +98,17 @@ def model_posture_decision(*, hive_url: str = "", node_role: str = "primary-capa
     """Whether THIS node may load a model of its own, and why. Returns (allowed, reason).
 
     A desktop hive holds the model. A phone in that hive provides sensors and memory, and a
-    second copy of the weights is exactly what this posture exists to avoid: measured on an A51
-    with the microphone off, a resident 0.5B model costs more than a full core -- an order of
-    magnitude above what continuous acoustic perception costs (0.24 of a core).
+    second copy of the weights is exactly what this posture exists to avoid -- it is memory the
+    device does not have (the mobile posture is written for a phone with ~100 MB free), and it
+    is generation capacity the hive already owns.
 
-    Decided here rather than from the preference alone, because the preference is a wish and
-    this is a rule. Order: an operator who configured no local model is already there; a
-    configured desktop hive settles it; a follower posture settles it; otherwise a standalone
-    node keeps the model it was given.
+    An earlier version of this comment claimed the resident model costs more than a full core.
+    Measurement says otherwise, so the record is corrected rather than left standing: idle CPU
+    was indistinguishable with the model loaded (102.8 mean) versus without it (104.0), and
+    105.5 with *everything* off -- a loaded GGUF is memory, not CPU, and it costs when it
+    generates. What those same runs did measure is the acoustic perception layer's own cost,
+    +24 points of one core (126.4 and 131.9 listening against 102.8 speech, spreads
+    non-overlapping), which is a separate argument for keeping the microphone's work honest.
     """
     if not local_model:
         return False, "configured without a local model"

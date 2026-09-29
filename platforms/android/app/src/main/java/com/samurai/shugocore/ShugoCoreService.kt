@@ -596,6 +596,37 @@ class ShugoCoreService : Service() {
 
     
     /**
+     * Whether this node may run a model of its own.
+     *
+     * The same rule as policy.model_posture_decision, applied *where the weights are actually
+     * loaded*: Python decides the posture, but this service is what puts a GGUF into memory, and
+     * on the phones that happened regardless of the preference. The cost is memory on a device
+     * that has little of it -- not idle CPU, which measured the same with the model loaded and
+     * without it. A device attached to a desktop hive provides sensors and memory; the hive
+     * holds the model. Loopback is not a hive: the default api_url is 127.0.0.1, so "URL is set"
+     * would strip the model from every standalone node.
+     */
+    private fun localModelAllowed(): Pair<Boolean, String> {
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        if (!prefs.getBoolean("local_model", false)) {
+            return false to "configured without a local model"
+        }
+        val hiveUrl = (prefs.getString("desktop_api_url", null) ?: "").trim()
+        if (hiveUrl.isNotEmpty()) {
+            val host = hiveUrl.substringAfter("//").substringBefore("/")
+                .substringBefore(":").lowercase()
+            if (host.isNotEmpty() && host != "127.0.0.1" && host != "localhost" && host != "::1") {
+                return false to "a desktop hive is configured: the hive holds the model"
+            }
+        }
+        val role = (prefs.getString("node_role", "follower") ?: "follower").lowercase()
+        if (role == "follower") {
+            return false to "follower posture: this node provides sensors and memory, not inference"
+        }
+        return true to "standalone node with a local model configured"
+    }
+
+    /**
      * Starts the on-device llama.cpp stack (bridge + loopback API server) when a
      * model file is available. Safe to call repeatedly — no-ops while running.
      * Returns the active model path, or null when nothing is loaded. Must be
@@ -603,6 +634,14 @@ class ShugoCoreService : Service() {
      */
     private fun startLlamaIfModelAvailable(soc: String): String? {
         if (apiServer != null) return llamaBridge?.modelPath
+        val (allowed, postureReason) = localModelAllowed()
+        if (!allowed) {
+            // Say it out loud: a node that quietly declines to serve a model looks exactly like
+            // one that failed to load it, and this decision is the difference between a phone
+            // that is a sensor and a phone that is a second-rate inference node.
+            Log.i(TAG, "not loading a local model: $postureReason")
+            return null
+        }
         val modelPath = findModelFile() ?: return null
         llamaBridge?.close()
         val bridge = LlamaCppBridge(modelPath, applicationInfo.nativeLibraryDir).apply {

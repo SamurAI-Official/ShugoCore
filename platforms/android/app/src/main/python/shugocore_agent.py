@@ -1258,6 +1258,22 @@ class AndroidAgent:
             return _json.dumps({"available": False,
                                 "reason": "sound probe failed: %s" % str(exc)[:120]})
 
+    def sound_worker(self) -> Any:
+        """Build the sound worker bound to the registered native runtime.
+
+        Returns None when the runtime is unavailable, so callers keep the fail-closed
+        ``worker_stub`` path instead of degrading silently -- the same rule as
+        ``nrr_worker``. Nothing is inferred here: the mode comes from the device, which is
+        the authority on who holds the microphone, and a node whose mode cannot be read gets
+        no worker rather than a guess.
+        """
+        try:
+            from sound.adapter import android_native_worker
+        except Exception:
+            return None
+        return android_native_worker(getattr(self, "_sound_analyzer", None),
+                                     audit=getattr(self, "audit", None))
+
     def _log_speak_failure(self, detail: str) -> None:
         """Record a speech-output failure where an operator can read it.
 

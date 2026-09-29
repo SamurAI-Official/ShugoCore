@@ -1289,6 +1289,18 @@ class SoundAnalyzerBridge(
 
     /** "" when nothing has been heard yet: absence, which is not the same as silence. */
     fun lastSoundEventJson(): String = PerceptionState.soundEvent.value ?: ""
+
+    /**
+     * How old the last measurement is, in ms, or -1 when there is none.
+     *
+     * A summary from minutes ago is not "what the room sounds like now". Python needs this
+     * to refuse a stale window rather than re-reporting it as fresh, so the age is published
+     * alongside the payload instead of being inferred from it.
+     */
+    fun soundEventAgeMs(): Long {
+        val stamp = PerceptionState.soundEvent.tsMs
+        return if (stamp <= 0L) -1L else System.currentTimeMillis() - stamp
+    }
 }
 
 class NrrRendererBridge(private val bridge: NRRBridge) {

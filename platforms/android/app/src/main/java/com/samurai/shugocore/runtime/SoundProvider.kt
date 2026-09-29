@@ -214,11 +214,12 @@ class SoundProvider(
                     if (prob >= 0f) prob.toDouble() else JSONObject.NULL))
             }
             rollWindow(floats, read)
-            // Classify only when the window is full, something was heard, and the last
-            // analysis is over a second old. This gate is the power budget: silence costs one
-            // VAD per 32 ms and no classifier at all.
+            // Publish on a fixed cadence so "quiet" is a measured fact rather than an
+            // absence -- but consult the classifier only when something was actually heard.
+            // That split is the power budget: silence costs one VAD per 32 ms and no
+            // classifier at all.
             val gapOk = lastAnalysisMs == 0L || now - lastAnalysisMs >= ANALYSIS_MIN_GAP_MS
-            if (windowFill == WINDOW_SAMPLES && gapOk && worthClassifying()) analyze(now)
+            if (windowFill == WINDOW_SAMPLES && gapOk) analyze(now)
         }
         Log.i(TAG, "capture loop ended")
     }
@@ -246,14 +247,16 @@ class SoundProvider(
 
     /** Classify the window and publish what was heard. Never invents a label. */
     private fun analyze(now: Long) {
+        val classified = worthClassifying()
         val payload = JSONObject()
-            .put("status", "no_model")
+            .put("status", if (classified) "no_model" else "level_only")
+            .put("classified", classified)
             .put("frame_ms", FRAME_MS)
             .put("frames", JSONArray(frames.toList()))
             .put("labels", JSONArray())
             .put("speech_prob", loudestProb.toDouble())
             .put("window_ms", Math.round(windowFill * 1000.0 / SAMPLE_RATE).toInt())
-        val snd = bridge
+        val snd = if (classified) bridge else null
         if (snd != null) {
             val reply = try { snd.analyze(window, false) } catch (t: Throwable) {
                 Log.w(TAG, "analyze failed: ${t.message}")

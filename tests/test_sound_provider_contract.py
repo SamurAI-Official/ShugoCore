@@ -163,6 +163,64 @@ class TestArbiterHonesty:
         assert "snd.resetVad()" in src
 
 
+class TestDeviceJsonContract:
+    """The JSON the phone writes and the keys Python reads must stay the same set.
+
+    This is the one seam no unit test on either side can see: Kotlin serialises the window,
+    Python consumes it, and if a key is renamed on one side the other silently reports "no
+    fresh measurement" -- honest, but wrong and invisible. The fixtures in
+    tests/test_sound_android_backend.py pin the *shape*; this pins the *names*.
+    """
+
+    PUBLISHED_KEYS = ("status", "classified", "frame_ms", "frames", "labels",
+                      "speech_prob", "window_ms")
+    READ_KEYS = ("status", "frames", "labels", "speech_prob", "frame_ms")
+    FRAME_KEYS = ("rms", "speech_prob")
+    LABEL_KEYS = ("index", "score")
+
+    def _provider_analyze(self):
+        """The whole provider: payload keys are written in analyze(), but the per-frame keys
+        are written in captureLoop(), where the frames are actually collected."""
+        return _read(RUNTIME / "SoundProvider.kt")
+
+    def _backend_source(self) -> str:
+        adapter = _read(ROOT / "sound" / "adapter.py")
+        return adapter[adapter.index("class AndroidSoundBackend"):]
+
+    def _reads(self, key: str) -> bool:
+        """Any of the access patterns the backend legitimately uses for a key.
+
+        Matching the opening quote only: `payload.get("status", "")` is a correct read with
+        a default, and a guard that rejects it would be testing style rather than the seam.
+        """
+        source = self._backend_source()
+        return any('%s.get("%s"' % (holder, key) in source
+                   for holder in ("payload", "entry", "raw", "caps"))
+
+    def test_the_provider_publishes_every_key_python_reads(self):
+        body = self._provider_analyze()
+        for key in self.PUBLISHED_KEYS:
+            assert '.put("%s"' % key in body, "SoundProvider no longer publishes %r" % key
+        for key in self.FRAME_KEYS:
+            assert '.put("%s"' % key in body, "a published frame lost %r" % key
+        for key in self.LABEL_KEYS:
+            assert '.put("%s"' % key in body, "a published label lost %r" % key
+
+    def test_the_backend_only_reads_keys_the_provider_publishes(self):
+        for key in self.READ_KEYS + self.FRAME_KEYS + self.LABEL_KEYS:
+            assert self._reads(key), "AndroidSoundBackend no longer reads %r" % key
+
+    def test_a_capability_payload_is_read_where_the_device_writes_it(self):
+        """capabilitiesJson() is produced by sound_jni.cpp and consumed by this backend."""
+        native = _read(ROOT / "platforms" / "android" / "app" / "src" / "main" / "cpp"
+                       / "sound_jni.cpp")
+        caps = native[native.index("nativeCapabilitiesJson"):]
+        adapter = _read(ROOT / "sound" / "adapter.py")
+        for key in ("execution_provider", "vad", "classifier", "classes"):
+            assert "\\\"%s\\\"" % key in caps, "native capabilities lost %r" % key
+            assert '"%s"' % key in adapter, "the backend stopped reading %r" % key
+
+
 class TestVersionTruth:
     """The artifact must not disagree with the repo about what it is.
 

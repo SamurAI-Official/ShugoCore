@@ -58,6 +58,9 @@ class TestAndroidTreeSync(unittest.TestCase):
                      "nrr/__init__.py", "nrr/schema.py",
                      "nrr/descriptor.py", "nrr/result.py",
                      "nrr/protocol.py", "nrr/adapter.py",
+                     "sound/__init__.py", "sound/schema.py", "sound/descriptor.py",
+                     "sound/result.py", "sound/adapter.py", "sound/models.py",
+                     "sound/descriptors.py",
                      "mobile_nodes.py", "attention_layer.py"):
             self.assertTrue(
                 os.path.isfile(os.path.join(BUNDLED, name)),

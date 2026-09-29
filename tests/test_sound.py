@@ -375,5 +375,71 @@ class LicenceManifestTestCase(unittest.TestCase):
                         "stay visible")
 
 
+class _MicBackend(_FakeBackend):
+    """A backend that also reports who holds the microphone."""
+
+    def __init__(self, state, **kwargs):
+        super().__init__(**kwargs)
+        self._state = state
+
+    def mic_state(self):
+        return self._state
+
+
+class MicOwnershipTestCase(unittest.TestCase):
+    """A microphone we do not hold is never reported as a quiet room.
+
+    Android gives audio to one capture at a time, and the device's AudioProvider keeps an
+    on-device speech recognizer holding the mic continuously. A classifier that opened a
+    second stream would read silence -- so ownership is explicit here, and the worker
+    refuses to answer rather than inventing a quiet window.
+    """
+
+    def test_a_busy_microphone_names_the_owner_and_is_not_a_quiet_room(self):
+        worker = SoundPerceptionWorker(_MicBackend("busy_speech",
+                                                  frames=[{"rms": 0.0}] * 5))
+        result = worker.analyze({"window_id": "w"})
+        self.assertEqual(result["status"], "not_supported")
+        self.assertIn("speech recognizer holds the microphone", result["reason"])
+        self.assertNotIn("summary", result)          # no fabricated quiet window
+
+    def test_a_denied_microphone_says_permission_not_silence(self):
+        worker = SoundPerceptionWorker(_MicBackend("denied"))
+        self.assertIn("permission is not granted",
+                      worker.analyze({"window_id": "w"})["reason"])
+
+    def test_the_capability_is_withheld_while_another_consumer_has_the_mic(self):
+        worker = SoundPerceptionWorker(_MicBackend("busy_speech"))
+        self.assertEqual(worker.compute_caps(), {})
+
+    def test_listening_off_withholds_the_capability_and_refuses_to_answer(self):
+        worker = SoundPerceptionWorker(_MicBackend("available"), listen_mode="off")
+        self.assertEqual(worker.compute_caps(), {})
+        self.assertIn("off by configuration",
+                      worker.analyze({"window_id": "w"})["reason"])
+
+    def test_holding_the_mic_advertises_the_mode_and_the_state(self):
+        worker = SoundPerceptionWorker(_MicBackend("available",
+                                                  frames=[{"rms": 0.02}] * 5))
+        caps = worker.compute_caps()
+        self.assertEqual(caps["listen_mode"], "sound")
+        self.assertEqual(caps["mic_state"], "available")
+
+    def test_an_unrecognised_mic_state_is_treated_as_absent(self):
+        worker = SoundPerceptionWorker(_MicBackend("someone-elses-mic"))
+        self.assertEqual(worker.mic_state, "absent")
+        self.assertEqual(worker.analyze({"window_id": "w"})["status"], "not_supported")
+
+    def test_a_backend_that_never_reports_mic_state_still_works(self):
+        """Backwards compatible: ownership is reported by backends that know about it."""
+        worker = SoundPerceptionWorker(_FakeBackend(frames=[{"rms": 0.02}] * 5))
+        self.assertEqual(worker.mic_state, "available")
+        self.assertEqual(worker.analyze({"window_id": "w"})["status"], "ok")
+
+    def test_an_unknown_listen_mode_is_refused_at_construction(self):
+        with self.assertRaises(ValueError):
+            SoundPerceptionWorker(_MicBackend("available"), listen_mode="broadcast")
+
+
 if __name__ == "__main__":
     unittest.main()

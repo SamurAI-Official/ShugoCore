@@ -35,6 +35,15 @@ rule.
 - **Fail-closed and honest.** A worker with no backend advertises *nothing* in
   `compute_caps` and answers `not_supported` with a reason, because "the device did not
   hear anything" and "the device cannot hear" are different facts.
+- **The microphone has one owner, and the contract says which.** Android gives audio to one
+  capture at a time, and the device's `AudioProvider` keeps an on-device speech recognizer
+  holding the mic continuously — a sound classifier opening a second stream would read
+  *silence*, not an error. So ownership is explicit: `sound.schema` names the states
+  (`available`, `busy_speech`, `denied`, `absent`) and the modes (`sound`, `speech`, `off`),
+  a busy microphone answers `not_supported` **naming the owner** instead of a fabricated
+  "quiet", and the workload is withheld from the capability manifest while another consumer
+  holds the mic. `sound` and `speech` are modes an operator chooses between, not concurrent
+  consumers.
 - **Bus contract.** `HumanObservation` gains `type="sound"`, and `observation_payload()`
   flattens a result to seven keys, inside the bus's 12-key / 160-char budget.
 - **Licences recorded, not assumed.** `MODELS.md` gives every model its licence and a

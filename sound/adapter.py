@@ -16,10 +16,20 @@ from typing import Any, Callable, Dict, List
 
 from sound.descriptors import FrameStat, summarize, top_labels
 from sound.result import not_supported, ok_result
-from sound.schema import MAX_LABELS, MIN_LABEL_CONFIDENCE, SAMPLE_RATE
+from sound.schema import (KNOWN_LISTEN_MODES, KNOWN_MIC_STATES, MAX_LABELS,
+                          MIN_LABEL_CONFIDENCE, SAMPLE_RATE)
 
 # The workload name a pairing manifest advertises (same idea as nrr_render).
 SOUND_WORKLOAD = "sound_events"
+
+# Why a microphone is not ours, said plainly -- because "the recognizer is using it",
+# "permission was never granted" and "this device has no microphone" are three different
+# facts, and none of them is "the room is quiet".
+MIC_REFUSAL_REASONS = {
+    "busy_speech": "the on-device speech recognizer holds the microphone",
+    "denied": "microphone permission is not granted",
+    "absent": "no microphone is available",
+}
 
 
 class SoundPerceptionWorker:
@@ -27,11 +37,36 @@ class SoundPerceptionWorker:
 
     def __init__(self, backend: Any = None, *, audit: Any = None,
                  max_labels: int = MAX_LABELS,
-                 min_confidence: float = MIN_LABEL_CONFIDENCE) -> None:
+                 min_confidence: float = MIN_LABEL_CONFIDENCE,
+                 listen_mode: str = "sound") -> None:
         self._backend = backend
         self._audit = audit
         self.max_labels = max(1, int(max_labels))
         self.min_confidence = min(max(float(min_confidence), 0.0), 1.0)
+        self.listen_mode = str(listen_mode or "sound").strip().lower()
+        if self.listen_mode not in KNOWN_LISTEN_MODES:
+            # Configuration errors should be loud, not silently treated as "off".
+            raise ValueError("unknown listen_mode " + repr(listen_mode))
+
+    @property
+    def mic_state(self) -> str:
+        """Who holds the microphone right now (see sound.schema).
+
+        A device backend answers this, because only it can see whether the recognizer is
+        listening. A backend that does not implement it is trusted to the extent it
+        already claimed to be available, and an unrecognised answer counts as absent:
+        fail closed, never "quiet by default".
+        """
+        if self._backend is None:
+            return "absent"
+        reader = getattr(self._backend, "mic_state", None)
+        if reader is None:
+            return "available" if self.available else "absent"
+        try:
+            state = str(reader() or "").strip().lower()
+        except Exception:
+            return "absent"
+        return state if state in KNOWN_MIC_STATES else "absent"
 
     @property
     def available(self) -> bool:
@@ -63,9 +98,22 @@ class SoundPerceptionWorker:
                               {"window_id": window_id, "reason": str(exc)})
             return not_supported(window_id, "invalid descriptor: " + str(exc))
 
+        if self.listen_mode == "off":
+            return not_supported(request.window_id,
+                                 "acoustic listening is off by configuration")
+
         if not self.available:
             return not_supported(request.window_id,
                                  "no audio backend: models absent or unsupported")
+
+        state = self.mic_state
+        if state != "available":
+            # Never a quiet room: we were not listening, and that is a different fact.
+            self._audit_event("sound_refused_mic_unavailable",
+                              {"window_id": request.window_id, "mic_state": state})
+            return not_supported(
+                request.window_id,
+                "microphone unavailable: " + MIC_REFUSAL_REASONS.get(state, state))
 
         try:
             raw = dict(self._backend.analyze(request.to_dict()) or {})
@@ -117,10 +165,14 @@ class SoundPerceptionWorker:
         like it can hear. ``execution_provider`` is whatever the backend reports, never
         assumed -- the same discipline as NRR refusing to claim NNAPI it does not append.
         """
-        if not self.available:
+        if self.listen_mode == "off" or not self.available or self.mic_state != "available":
+            # No false advertisement: a node that cannot hear right now does not claim
+            # the workload, and a manifest is where that must be visible.
             return {}
         caps: Dict[str, Any] = {"workloads": [SOUND_WORKLOAD],
-                                "sample_rate": SAMPLE_RATE}
+                                "sample_rate": SAMPLE_RATE,
+                                "listen_mode": self.listen_mode,
+                                "mic_state": "available"}
         try:
             extra = dict(self._backend.capabilities() or {})
         except Exception:

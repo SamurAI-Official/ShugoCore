@@ -50,3 +50,18 @@ SILENCE_DBFS = -55.0
 # A jump this large between consecutive frames counts as an onset (a discrete event,
 # a door, a glass) rather than a level drift.
 ONSET_RISE_DB = 9.0
+
+# Who holds the microphone, and what this node is listening for.
+#
+# This matters more than it looks. Android gives audio to one capture at a time: the
+# device's AudioProvider keeps a persistent on-device SpeechRecognizer holding the mic
+# continuously (v1.18 -- "the recognizer IS the listener"), so a sound classifier that
+# opened a second stream would receive silence, not an error. Reporting that silence as
+# "quiet" would be a confident lie of exactly the kind this contract refuses, so the state
+# is explicit: a busy microphone produces `not_supported` naming the owner, and the
+# capability is withheld while another consumer has the mic.
+#
+# `sound` and `speech` are modes an operator chooses between rather than concurrent
+# consumers; `off` means this node offers no acoustic perception at all.
+KNOWN_MIC_STATES = ("available", "busy_speech", "denied", "absent")
+KNOWN_LISTEN_MODES = ("sound", "speech", "off")

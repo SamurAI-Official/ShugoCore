@@ -47,12 +47,16 @@ class SoundEventResult:
         out: Dict[str, Any] = {
             "window_id": self.window_id,
             "status": self.status,
-            "summary": dict(self.summary),
-            "labels": [dict(label) for label in self.labels],
             "schema_version": self.schema_version,
         }
-        if self.speech_prob is not None:
-            out["speech_prob"] = round(float(self.speech_prob), 3)
+        if self.status == "ok":
+            # Only a real analysis carries a summary. "We could not listen" must never be
+            # shaped like "we listened and the room was empty" -- that difference is the
+            # whole point of this contract, so it is structural rather than conventional.
+            out["summary"] = dict(self.summary)
+            out["labels"] = [dict(label) for label in self.labels]
+            if self.speech_prob is not None:
+                out["speech_prob"] = round(float(self.speech_prob), 3)
         if self.reason:
             out["reason"] = self.reason
         return out

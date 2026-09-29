@@ -1266,6 +1266,74 @@ class AndroidAgent:
         self.log("AGENT", f"sound: device listen_mode {current or 'unknown'} -> {applied}")
         return applied
 
+    def set_sound_mode(self, mode: str, granted_by: str = "") -> str:
+        """Hand the microphone to the sound layer, or take it back, on an operator's behalf.
+
+        The live switch, for an operator surface rather than a restart. It refuses without
+        ``granted_by`` naming the external actor that asked -- the whole purpose of the consent
+        registry is that the agent cannot decide this for itself -- and it records the grant
+        *before* applying the mode, so the device is never told to listen on the strength of
+        nothing. Returns the mode the device ends up in.
+        """
+        wanted = str(mode or "").strip().lower()
+        granter = str(granted_by or "").strip()
+        if wanted not in ("sound", "speech", "off"):
+            self.log("ERROR", f"sound: unknown mode {wanted!r}; ignoring", level="WARN")
+            return "speech"
+        if not granter:
+            self.log("ERROR", "sound: set_sound_mode refused -- granted_by is required "
+                              "(an external actor must ask)", level="WARN")
+            return "speech"
+        try:
+            from policy import MIC_CONSENT_ACTION
+            self.capability_registry.sound_listen_mode = wanted
+            if wanted in ("sound", "off"):
+                # Both are deliberate operator choices; "speech" is the fleet default and
+                # needs no configuration to be the answer.
+                self.capability_registry.sound_enabled = True
+            self.consent_registry.grant(MIC_CONSENT_ACTION, granted_by=granter,
+                                        scope="node", note="set_sound_mode")
+            self.log("AGENT", f"sound: mode {wanted} requested by {granter}")
+        except Exception as exc:
+            self.log("ERROR", f"sound: could not record consent for {wanted}: {exc}",
+                     level="WARN")
+            return "speech"
+        return self.apply_sound_policy()
+
+    def sound_listen_status_json(self) -> str:
+        """Why this node is, or is not, listening for sound -- in one honest object.
+
+        Four different facts can hold the layer off: no configuration, no consent grant, the
+        device's own chosen mode, and a microphone the speech pipeline already owns. An
+        operator looking at a silent node cannot tell them apart by listening, so this says
+        which one it is, and whether an operator consent file is present at all.
+        """
+        import json as _json
+        import os as _os
+        mode, reason = self._sound_mode_decision()
+        base = getattr(self, "data_dir", None) or _os.getcwd()
+        consent_file = _os.path.join(str(base), "sound_consent.json")
+        status = {"policy_mode": mode, "policy_reason": reason,
+                  "consent_file": consent_file if _os.path.isfile(consent_file) else "",
+                  "consent_granted": False, "device": {}}
+        try:
+            from policy import MIC_CONSENT_ACTION
+            status["consent_granted"] = bool(
+                self.consent_registry.has_grant(MIC_CONSENT_ACTION))
+        except Exception:
+            pass
+        analyzer = getattr(self, "_sound_analyzer", None)
+        if analyzer is not None:
+            for key, getter in (("listen_mode", "listenMode"), ("mic_owner", "micOwner"),
+                                ("listening", "isListening")):
+                reader = getattr(analyzer, getter, None)
+                if callable(reader):
+                    try:
+                        status["device"][key] = reader()
+                    except Exception:
+                        pass
+        return _json.dumps(status)
+
     def _load_sound_consent(self) -> None:
         """Adopt an operator-written consent file, if the node has one.
 
@@ -4006,6 +4074,32 @@ class AndroidAgent:
                 self.shugonet_runtime.stop()
         except Exception:
             pass
+        # Release the memory tiers this agent owns. close() is preferred over shutdown()
+        # deliberately: shutdown() closes every tier it can reach, including shared Tier 2/3
+        # instances other managers were handed by design, and one agent's teardown must not
+        # close a database a peer is still using. Until this existed, the sqlite handle
+        # outlived the agent and Windows kept semantic_memory.db locked -- 48 test failures
+        # whose bodies had passed.
+        for attr in ("memory", "user_memory"):
+            manager = getattr(self, attr, None)
+            closer = getattr(manager, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception as exc:
+                    logger.error("Memory close error (%s): %s", attr, exc)
+            # The agent creates the SemanticMemory it lends to the manager, so by the same rule
+            # the manager must not close it and the agent must: exactly one side closes what it
+            # created. Without this the handle still outlived the agent -- which is how a first
+            # attempt at this fix left the file locked and the regression test caught it.
+            tier = getattr(manager, "tier2", None)
+            if tier is not None and not getattr(manager, "_owns_tier2", True):
+                tier_closer = getattr(tier, "close", None)
+                if callable(tier_closer):
+                    try:
+                        tier_closer()
+                    except Exception as exc:
+                        logger.error("Lent semantic memory close error: %s", exc)
         logger.info("Agent cleaned up")
 
     def shutdown(self) -> None:

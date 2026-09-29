@@ -1206,6 +1206,15 @@ class MemoryManager:
             self.tier2 = semantic if semantic is not None else SemanticMemory()
             self.tier3 = core if core is not None else CoreIdentity()
 
+        # Ownership, for close(). The class docstring is explicit that Tier 2/3 are *meant* to
+        # be shared ("pass the same objects into multiple MemoryManagers so planning nodes see
+        # one consistent world model"), so one agent's teardown must never close a database a
+        # peer is still using. Deciding it by comparing what is *held* against what was *lent*
+        # also covers the policy branch above, where a lent object is deliberately ignored and
+        # a fresh one takes its place: that fresh one is this manager's to close.
+        self._owns_tier2 = semantic is None or self.tier2 is not semantic
+        self._owns_tier3 = core is None or self.tier3 is not core
+
         self.consolidation_interval = max(0.05, float(consolidation_interval))
         self.consolidation_threshold = max(1, int(consolidation_threshold))
         self.failure_promotion_threshold = max(1, int(failure_promotion_threshold))
@@ -1330,6 +1339,35 @@ class MemoryManager:
             daemon=True,
         )
         self._worker.start()
+
+    def close(self) -> None:
+        """Release this manager's own resources, and nothing that was lent to it.
+
+        Agents call this on teardown instead of :meth:`shutdown`, and the difference matters:
+        ``shutdown()`` closes every tier it can reach, including shared Tier 2/3 instances
+        that were handed in by design. Tier 0/1 are per-manager and always released here;
+        Tier 2/3 only when this manager created them. Safe to call more than once.
+
+        Why it exists at all: without it the semantic memory's sqlite connection outlived the
+        agent, and on Windows that kept ``semantic_memory.db`` locked -- which surfaced as 48
+        test failures whose bodies had actually passed.
+        """
+        self._stop_event.set()
+        if self._worker and self._worker.is_alive():
+            self._worker.join(timeout=2.0)
+        self._worker = None
+        for name, owned in (("tier0", True), ("tier1", True),
+                            ("tier2", getattr(self, "_owns_tier2", False)),
+                            ("tier3", getattr(self, "_owns_tier3", False))):
+            if not owned:
+                continue
+            tier = getattr(self, name, None)
+            closer = getattr(tier, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:
+                    pass
 
     def shutdown(self) -> None:
         """Stop the background worker and release tier resources (safe to

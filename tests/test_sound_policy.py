@@ -185,6 +185,45 @@ class TestAgentAppliesPolicy(unittest.TestCase):
         self.assertEqual(agent.apply_sound_policy(), "speech")
         self.assertEqual(agent._sound_analyzer.set_calls, [])
 
+    def test_a_granted_operator_can_hand_over_the_mic_live(self):
+        agent = _agent(CapabilityRegistry(), ConsentRegistry(), _Analyzer(mode="speech"))
+        self.assertEqual(agent.set_sound_mode("sound", granted_by="operator"), "sound")
+        self.assertEqual(agent._sound_analyzer.set_calls, ["sound"])
+        self.assertTrue(agent.consent_registry.has_grant(MIC_CONSENT_ACTION))
+
+    def test_the_live_switch_refuses_without_an_external_actor(self):
+        """No granter means no grant, and no device write -- the doctrine, kept live."""
+        agent = _agent(CapabilityRegistry(), ConsentRegistry(), _Analyzer(mode="speech"))
+        self.assertEqual(agent.set_sound_mode("sound"), "speech")
+        self.assertEqual(agent._sound_analyzer.set_calls, [])
+        self.assertFalse(agent.consent_registry.has_grant(MIC_CONSENT_ACTION))
+        self.assertTrue(any("granted_by" in message for _c, message in agent.logs))
+
+    def test_an_unknown_live_mode_is_refused(self):
+        agent = _agent(CapabilityRegistry(), ConsentRegistry(), _Analyzer(mode="speech"))
+        self.assertEqual(agent.set_sound_mode("broadcast", granted_by="operator"), "speech")
+        self.assertEqual(agent._sound_analyzer.set_calls, [])
+
+    def test_status_says_why_the_layer_is_idle(self):
+        import json
+        agent = _agent(CapabilityRegistry(), ConsentRegistry(), _Analyzer(mode="speech"))
+        agent.data_dir = None
+        status = json.loads(agent.sound_listen_status_json())
+        self.assertEqual(status["policy_mode"], "speech")
+        self.assertIn("configuration", status["policy_reason"])
+        self.assertFalse(status["consent_granted"])
+        self.assertEqual(status["device"]["listen_mode"], "speech")
+
+    def test_status_reflects_an_operator_handover(self):
+        import json
+        agent = _agent(CapabilityRegistry(), ConsentRegistry(), _Analyzer(mode="speech"))
+        agent.data_dir = None
+        agent.set_sound_mode("sound", granted_by="operator")
+        status = json.loads(agent.sound_listen_status_json())
+        self.assertEqual(status["policy_mode"], "sound")
+        self.assertTrue(status["consent_granted"])
+        self.assertEqual(status["device"]["listen_mode"], "sound")
+
     def test_registration_is_what_triggers_it(self):
         src = open(os.path.join(ROOT, "shugocore_agent.py"), encoding="utf-8").read()
         body = src[src.index("def register_sound_analyzer"):]
@@ -201,8 +240,14 @@ class TestAgentAppliesPolicy(unittest.TestCase):
         """
         src = open(os.path.join(ROOT, "shugocore_agent.py"), encoding="utf-8").read()
         decision = src[src.index("def apply_sound_policy"):]
-        decision = decision[:decision.index("def _load_sound_consent")]
+        decision = decision[:decision.index("def set_sound_mode")]
         self.assertNotIn(".grant(", decision)
+
+        # The live switch may record one, but only for a named external actor.
+        switch = src[src.index("def set_sound_mode"):]
+        switch = switch[:switch.index("def sound_listen_status_json")]
+        self.assertIn("if not granter:", switch)
+        self.assertLess(switch.index("if not granter:"), switch.index(".grant("))
 
         loader = src[src.index("def _load_sound_consent"):]
         loader = loader[:loader.index("def _sound_mode_decision")]

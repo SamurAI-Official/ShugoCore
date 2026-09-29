@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Fetch the audio-perception models, pinned by sha256. Never commits them.
 
-Licences live in MODELS.md: Silero VAD is MIT; YAMNet is Apache-2.0 per Google's model
-page (confirm that line at source before shipping it in a product); the AudioSet class
-map is CC BY 4.0 and requires attribution. All three land in the app's asset directory,
-which is gitignored -- so NC-licensed or unverified weights cannot end up in an MIT
-repository by accident.
+Licences live in MODELS.md: Silero VAD is MIT; YAMNet is Apache-2.0 (verified on the Kaggle
+model page); the AudioSet class map is CC BY 4.0 and requires attribution. All three land in
+the app's asset directory, which is gitignored -- so unverified weights cannot end up in an
+MIT repository by accident.
 
     python3 scripts/fetch_audio_models.py           # fetch what is missing
     python3 scripts/fetch_audio_models.py --check    # verify, download nothing
@@ -37,7 +36,7 @@ MODELS = (
         "name": "yamnet.tflite",
         "bytes": 4126810,
         "sha256": "4d8b4a53282dc83ef04e3e7dbc4fbc98082e34e44ed798e16c3a0cdd4c584faf",
-        "licence": "Apache-2.0 (confirm at source)",
+        "licence": "Apache-2.0 (verified)",
         "url": ("https://storage.googleapis.com/mediapipe-models/audio_classifier/"
                 "yamnet/float32/1/yamnet.tflite"),
     },

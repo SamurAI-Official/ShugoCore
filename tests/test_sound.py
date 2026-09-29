@@ -9,6 +9,7 @@ samples in and 521 scores out). The model tests skip rather than fail without th
 weights, because the weights are fetched and never committed.
 """
 import os
+import re
 import sys
 import unittest
 
@@ -300,6 +301,78 @@ class RealModelContractTestCase(unittest.TestCase):
         labels = models.load_class_map()
         self.assertEqual(len(labels), YAMNET_CLASSES)
         self.assertEqual(labels.get(0), "Speech")
+
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MODELS_PATH = os.path.join(ROOT, "MODELS.md")
+FETCH_SCRIPT = os.path.join(ROOT, "scripts", "fetch_audio_models.py")
+
+
+def read_file(path):
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def plain(cell):
+    """A table cell without markdown emphasis, lower-cased (for comparisons)."""
+    return cell.replace("*", "").replace("_", "").strip().lower()
+
+
+def table_rows(heading=None, stop=None):
+    """The `| **name** | ...` rows of a MODELS.md table (optionally one section)."""
+    text = read_file(MODELS_PATH)
+    if heading:
+        text = text.split(heading, 1)[1]
+    if stop:
+        text = text.split(stop, 1)[0]
+    return [[cell.strip() for cell in line.strip().strip("|").split("|")]
+            for line in text.splitlines() if line.strip().startswith("| **")]
+
+
+class LicenceManifestTestCase(unittest.TestCase):
+    """Every model the code fetches has a licence decision on the record.
+
+    The point is not the table formatting: it is that "may I ship this, and on what terms"
+    is answered in the repository rather than in someone's memory, and that a new model
+    cannot arrive without answering it. This is the licence twin of the packaging guard.
+    """
+
+    LICENCE_TOKENS = ("MIT", "Apache-2.0", "CC BY")
+
+    def test_every_shipped_model_names_a_licence_and_a_ship_decision(self):
+        shipped = table_rows("Model licences (what may ship, and what may not)",
+                             "## Considered and rejected")
+        self.assertGreaterEqual(len(shipped), 3, "the shipped-model table shrank")
+        names = " ".join(row[0] for row in shipped)
+        for expected in ("Silero", "YAMNet", "AudioSet"):
+            self.assertIn(expected, names)
+        for row in shipped:
+            self.assertGreaterEqual(len(row), 4, "row missing columns: %r" % row)
+            licence = row[2]
+            self.assertTrue(any(token in licence for token in self.LICENCE_TOKENS),
+                            "no licence named for %s: %r" % (row[0], licence))
+            self.assertNotIn("confirm", plain(licence),
+                             "a shipped row still hedges its licence: %r" % licence)
+            self.assertTrue(plain(row[3]).startswith("yes"),
+                            "ship decision is not a plain yes/no: %r" % row[3])
+
+    def test_every_model_the_fetch_script_downloads_is_in_the_manifest(self):
+        fetched = re.findall(r'"name": "([^"]+)"', read_file(FETCH_SCRIPT))
+        self.assertTrue(fetched, "no models parsed out of the fetch script")
+        manifest = read_file(MODELS_PATH)
+        for name in fetched:
+            self.assertIn(name, manifest,
+                          "%s is downloaded but has no licence row in MODELS.md" % name)
+
+    def test_what_was_rejected_says_why_and_the_reason_is_about_licence(self):
+        rejected = table_rows("## Considered and rejected", "## Attribution")
+        self.assertTrue(rejected, "the rejected-model table disappeared")
+        for row in rejected:
+            self.assertGreaterEqual(len(row), 3, "row missing columns: %r" % row)
+        reasons = " ".join(row[1] for row in rejected)
+        self.assertTrue("NC" in reasons or "NonCommercial" in reasons,
+                        "no row records a NonCommercial rejection — that decision should "
+                        "stay visible")
 
 
 if __name__ == "__main__":

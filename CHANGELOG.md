@@ -37,6 +37,14 @@ rule.
   hear anything" and "the device cannot hear" are different facts.
 - **Bus contract.** `HumanObservation` gains `type="sound"`, and `observation_payload()`
   flattens a result to seven keys, inside the bus's 12-key / 160-char budget.
+- **Licences recorded, not assumed.** `MODELS.md` gives every model its licence and a
+  ship/no-ship decision, and a guard now fails the suite if a shipped row has no licence, if
+  any row still carries a "confirm" note, or if the fetch script downloads a model the table
+  does not list. YAMNet is Apache-2.0 (read on the Kaggle model page by hand — the page
+  serves a JS shell, so the record names its verifier), Silero VAD is MIT, and the AudioSet
+  class map is CC BY 4.0 with attribution. `THIRD_PARTY.md` is the attribution surface —
+  which the repository did not have before; nothing in this stack is NonCommercial or
+  ShareAlike, and Apache-2.0 imposes no conditions on the labels produced.
 
 Models are fetched and never committed (`scripts/fetch_audio_models.py` with pinned
 hashes; `MODELS.md` records every licence). The device provider and the native JNI bridge

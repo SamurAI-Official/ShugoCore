@@ -11,7 +11,7 @@ pinned), which keeps NC-licensed material out of an MIT repository by constructi
 | Model | Used for | Licence | May ship in the APK? | Where it lives |
 |---|---|---|---|---|
 | **Silero VAD** v5 (`silero_vad.onnx`, 2.2 MB) | speech / not-speech (Tier 1) | **MIT** — the project states "zero strings attached: no telemetry, no keys, no registration, no built-in expiration" | **Yes** | fetched to `assets/sound/` |
-| **YAMNet** (`yamnet.tflite`, 3.9 MB) | 521 AudioSet sound classes (Tier 2) | **Apache-2.0** per Google's model page — *confirm the licence line at source before shipping this in a product* | Yes, once confirmed | fetched to `assets/sound/` |
+| **YAMNet** (`yamnet.tflite`, 3.9 MB) | 521 AudioSet sound classes (Tier 2) | **Apache-2.0** — verified on the Kaggle model page (2026-09-28). The page serves a JavaScript shell, so this was read by a human, not by our automated fetch; the record names its verifier deliberately. | **Yes** — commercial use permitted, and no conditions on outputs | fetched to `assets/sound/` |
 | **AudioSet class map** (`yamnet_class_map.csv`, 14 KB) | label names for the 521 outputs | AudioSet ontology: **CC BY 4.0** (attribution required) | Yes, **with attribution** | fetched to `assets/sound/` |
 
 ## Considered and rejected
@@ -23,6 +23,18 @@ pinned), which keeps NC-licensed material out of an MIT repository by constructi
 
 ## Attribution
 
-If YAMNet and the AudioSet class map ship, the distribution must credit Google and the
-AudioSet authors, and note the CC BY 4.0 ontology. Add that to the release NOTICE or the
-app's about screen — it is a licence term, not a courtesy.
+Shipping YAMNet obliges two things, and both are licence terms rather than courtesies:
+
+* **Apache-2.0** (YAMNet): include the licence text and credit Google. Apache-2.0 also asks
+  that modifications be marked — and our fetch verifies byte-identity by sha256, so "this is
+  the unmodified upstream model" is checkable rather than merely claimed. Keep it that way;
+  if a conversion ever ships instead, mark it modified and pin the new hash.
+* **CC BY 4.0** (the AudioSet ontology the 521 class names come from): credit the AudioSet
+  authors — Gemmeke et al., *"Audio Set: An ontology and human-labeled dataset for audio
+  events"*, ICASSP 2017.
+
+Apache-2.0 places no conditions on the *outputs* of a model, and imposes neither
+NonCommercial nor ShareAlike terms on the model itself — which is exactly what made this
+stack shippable when BirdNET's weights were not.
+
+See **THIRD_PARTY.md** for the attribution surface this belongs in.

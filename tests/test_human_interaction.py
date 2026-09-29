@@ -280,7 +280,11 @@ class TestAgentIngestion(unittest.TestCase):
         for name in _CLEAN_FILES:
             try:
                 os.remove(name)
-            except FileNotFoundError:
+            except OSError:
+                # Covers FileNotFoundError (nothing left to clean) and, on Windows,
+                # PermissionError while an agent still holds its sqlite handle. This loop is
+                # hygiene for files that used to land in the repo; conftest.py now runs each
+                # test in its own directory, so a locked leftover here is not a failure.
                 pass
 
     def _make(self):
@@ -362,7 +366,7 @@ class TestProviderRule(unittest.TestCase):
     def test_contract_types_are_complete(self):
         self.assertEqual(
             OBSERVATION_TYPES,
-            ("visual", "speech", "presence", "gesture", "interaction"))
+            ("visual", "speech", "presence", "gesture", "interaction", "sound"))
         self.assertEqual(
             RESPONSE_TYPES,
             ("speech", "visual", "action", "acknowledgement"))

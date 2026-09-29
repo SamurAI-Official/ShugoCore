@@ -74,7 +74,8 @@ class TestRegistry(unittest.TestCase):
         h = _Harness()
         h.registry.pair("pixel8")
         self.assertTrue(h.registry.alive("pixel8"))
-        h.registry._last_heartbeat["pixel8"] = time.monotonic() - 1.0
+        h.registry._last_heartbeat["pixel8"] = (
+            time.monotonic() - h.registry.heartbeat_timeout - 1.0)
         self.assertFalse(h.registry.alive("pixel8"))
         self.assertTrue(h.registry.heartbeat("pixel8"))
         self.assertTrue(h.registry.alive("pixel8"))
@@ -165,7 +166,8 @@ class TestManagerIngestion(unittest.TestCase):
     def test_check_liveness_reports_lost_nodes(self):
         h = _Harness()
         h.registry.pair("pixel8")
-        h.registry._last_heartbeat["pixel8"] = time.monotonic() - 1.0
+        h.registry._last_heartbeat["pixel8"] = (
+            time.monotonic() - h.registry.heartbeat_timeout - 1.0)
         lost = h.manager.check_liveness()
         self.assertEqual(lost, ["pixel8"])
         self.assertEqual(h.fallbacks.mode, "paused")
@@ -180,7 +182,8 @@ class TestComputeBroker(unittest.TestCase):
     def test_dead_device_refused(self):
         h = _Harness()
         h.registry.pair("pixel8")
-        h.registry._last_heartbeat["pixel8"] = time.monotonic() - 1.0
+        h.registry._last_heartbeat["pixel8"] = (
+            time.monotonic() - h.registry.heartbeat_timeout - 1.0)
         result = h.broker.request_compute("pixel8", "vision", {})
         self.assertEqual(result["status"], "refused")
         self.assertIn("heartbeat", result["reason"])

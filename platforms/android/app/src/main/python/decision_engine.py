@@ -360,7 +360,18 @@ class DecisionEngine:
 
         # Enable CUDA if available (requires torch)
         if _HAS_TORCH:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            # A CUDA probe must never sink the engine: on a host with a mismatched CUDA
+            # runtime -- or a torch/numpy ABI it cannot live with -- is_available() raises,
+            # and an unguarded call takes every agent construction down with it. Falling
+            # back to CPU costs speed and says so; failing costs the node.
+            try:
+                self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            except Exception as exc:
+                self.device = torch.device("cpu")
+                try:
+                    logger.warning("CUDA probe failed (%s); running on CPU", exc)
+                except Exception:
+                    pass
             logging.info(f"Using device: {self.device}")
         else:
             self.device = "cpu"

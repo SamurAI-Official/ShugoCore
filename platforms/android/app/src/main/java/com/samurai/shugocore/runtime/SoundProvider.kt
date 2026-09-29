@@ -121,6 +121,10 @@ class SoundProvider(
         lastAnalysisMs = 0L
         // Announce before recording: a reader must never see a frame of audio that arrived
         // while the owner still said "none".
+        // A gap in the audio is not context for what follows: after a handover the VAD's
+        // carried RNN state and 64-sample context belong to whoever held the mic before,
+        // so they are dropped rather than blended into the new room.
+        snd.resetVad()
         PerceptionState.micOwner = "sound"
         PerceptionState.micActive = true
         try {

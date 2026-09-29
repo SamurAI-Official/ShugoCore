@@ -471,7 +471,7 @@ class ShugoCoreService : Service() {
                             }
                             soundProvider = SoundProvider(this, snd).also { it.start() }
                             pyAgent?.callAttr("register_sound_analyzer",
-                                              SoundAnalyzerBridge(snd, soundProvider))
+                                              SoundAnalyzerBridge(snd, soundProvider, this))
                             LogBus.log(LogBus.Category.AGENT,
                                 "Sound runtime ready (vad=${snd.isVadReady}, " +
                                 "classifier=${snd.isClassifierReady}, " +
@@ -1114,6 +1114,30 @@ class ShugoCoreService : Service() {
         }
     }
 
+    /**
+     * Decide which perception layer owns the microphone: "sound" (the acoustic classifier),
+     * "speech" (the on-device recogniser, the default) or "off".
+     *
+     * There is one microphone, so there is one owner, and this is the switch that decides
+     * rather than a race between providers. "speech" keeps precedence by default because
+     * that is the behaviour the fleet already has; selecting "sound" stops the speech
+     * pipeline (barge-in needs it, so that is the trade) and hands the mic to SoundProvider
+     * on its next sync. The mode is what the Python contract calls `mic_state`/mode, and it
+     * is the switch the operator consent surface will drive.
+     *
+     * @return the mode actually applied (unknown values fall back to "speech").
+     */
+    fun setPerceptionMode(mode: String): String {
+        val wanted = if (mode == "sound" || mode == "speech" || mode == "off") mode else "speech"
+        audioProvider?.listenMode = if (wanted == "sound") "off" else wanted
+        soundProvider?.listenMode = if (wanted == "sound") "sound" else "off"
+        LogBus.log(LogBus.Category.SENSOR,
+            "perception mode: $wanted (was delivered to both providers)")
+        audioProvider?.sync()
+        soundProvider?.sync()
+        return wanted
+    }
+
     fun getPairedDevices(): List<android.bluetooth.BluetoothDevice> {
         return meshManager?.getPairedDevices() ?: emptyList()
     }
@@ -1241,8 +1265,9 @@ class ShugoCoreService : Service() {
  * the microphone itself, which is what keeps exactly one owner in the process.
  */
 class SoundAnalyzerBridge(
-    private val bridge: com.samurai.shugocore.inference.SoundBridge,
+    private val bridge: SoundBridge,
     private val provider: SoundProvider?,
+    private val service: ShugoCoreService? = null,
 ) {
     fun isAvailable(): Boolean = bridge.isReady
 
@@ -1251,6 +1276,13 @@ class SoundAnalyzerBridge(
     fun listenMode(): String = provider?.listenMode ?: "off"
 
     fun isListening(): Boolean = provider?.holdsMic == true
+
+    /**
+     * The switch this arbiter exists for. Python can ask for "sound", "speech" or "off";
+     * the decision and its side effects stay in Kotlin, where the providers live.
+     * Returns the mode actually applied.
+     */
+    fun setListenMode(mode: String): String = service?.setPerceptionMode(mode) ?: "speech"
 
     fun capabilitiesJson(): String =
         org.json.JSONObject(bridge.capabilities()).toString()

@@ -105,3 +105,90 @@ class TestRegistrationNames:
         assert "soundProvider = null" in src
         assert "soundBridge?.close()" in src
         assert "soundBridge = null" in src
+
+
+class TestModeSwitch:
+    """One microphone, one owner: the switch that decides, rather than a race.
+
+    Without this, the recogniser holds the microphone for the service's whole life on any
+    device with on-device STT, and the sound layer would never run there at all.
+    """
+
+    def test_both_providers_have_a_mode_and_it_defaults_to_speech(self):
+        audio = _read(RUNTIME / "AudioProvider.kt")
+        assert 'var listenMode: String = "speech"' in audio
+        assert 'var listenMode: String = "sound"' in _read(RUNTIME / "SoundProvider.kt")
+
+    def test_speech_yields_when_the_mode_says_sound(self):
+        audio = _read(RUNTIME / "AudioProvider.kt")
+        assert 'if (listenMode != "speech")' in audio          # refuses to start
+        assert '&& listenMode == "speech"' in audio            # and will not restart
+        assert 'if (isRunning && (!granted || listenMode != "speech")) stop()' in audio
+
+    def test_service_delivers_the_mode_to_both_providers(self):
+        src = _read(SERVICE)
+        assert "fun setPerceptionMode(mode: String): String" in src
+        assert 'audioProvider?.listenMode = if (wanted == "sound") "off" else wanted' in src
+        assert 'soundProvider?.listenMode = if (wanted == "sound") "sound" else "off"' in src
+        # The release has to happen before the sound provider asks for the mic.
+        assert src.index("audioProvider?.sync()", src.index("fun setPerceptionMode")) < \
+            src.index("soundProvider?.sync()", src.index("fun setPerceptionMode"))
+
+    def test_python_can_ask_for_the_switch_through_the_bridge(self):
+        assert "fun setListenMode(mode: String): String" in _read(SERVICE)
+
+    def test_speech_waits_instead_of_stomping_the_mic(self):
+        """A second capture beside the sound layer would read silence -- and say 'quiet'."""
+        audio = _read(RUNTIME / "AudioProvider.kt")
+        assert 'if (PerceptionState.micOwner == "sound") {' in audio
+        assert "scheduleRestartVad(5_000L)" in audio
+
+
+class TestArbiterHonesty:
+    def test_the_mic_is_claimed_only_where_it_is_really_held(self):
+        """A claim with no mic behind it starves the sound layer for the service's life."""
+        audio = _read(RUNTIME / "AudioProvider.kt")
+        start = audio.index("fun start()")
+        body = audio[start:audio.index("fun stop()", start)]
+        # The unconditional claim must be gone: it now sits inside the recogniser branch
+        # and in startVad(), where the AudioRecord actually exists.
+        claim = 'PerceptionState.micOwner = "speech"'
+        assert claim in body
+        assert "if (startPersistentRecognition()) {" in body
+        assert audio.count(claim) == 2, "claim belongs to the two paths that take the mic"
+        assert claim in audio[audio.index("private fun startVad()"):]
+
+    def test_vad_context_is_dropped_across_a_handover(self):
+        src = _read(RUNTIME / "SoundProvider.kt")
+        assert "snd.resetVad()" in src
+
+
+class TestVersionTruth:
+    """The artifact must not disagree with the repo about what it is.
+
+    runtime/deploy_*.py reads versionName off the built APK, so a stale APK does not
+    merely look untidy -- it deploys a version the tree says does not exist.
+    """
+
+    def test_gradle_version_matches_version_py(self):
+        import sys as _sys
+        _sys.path.insert(0, str(ROOT))
+        import version as _version
+        gradle = _read(ROOT / "platforms" / "android" / "app" / "build.gradle")
+        name = re.search(r'versionName\s+"([^"]+)"', gradle).group(1)
+        assert name == _version.__version__, (
+            "build.gradle says %s, version.py says %s" % (name, _version.__version__))
+
+    def test_built_apk_metadata_matches_the_tree(self):
+        meta = (ROOT / "platforms" / "android" / "app" / "build" / "outputs" / "apk"
+                / "debug" / "output-metadata.json")
+        if not meta.exists():
+            import pytest
+            pytest.skip("no debug APK built on this host")
+        import json
+        element = json.loads(meta.read_text(encoding="utf-8"))["elements"][0]
+        gradle = _read(ROOT / "platforms" / "android" / "app" / "build.gradle")
+        name = re.search(r'versionName\s+"([^"]+)"', gradle).group(1)
+        code = int(re.search(r"versionCode\s+(\d+)", gradle).group(1))
+        assert (element["versionName"], element["versionCode"]) == (name, code), (
+            "the APK on disk is stale -- rebuild before deploying")

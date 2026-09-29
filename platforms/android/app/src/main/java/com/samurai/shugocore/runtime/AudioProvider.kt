@@ -103,22 +103,44 @@ class AudioProvider(private val context: Context) {
      * so playback can stop before it competes with the user. */
     @Volatile var onSpeechOnset: (() -> Unit)? = null
 
+    /**
+     * Which layer owns the microphone by policy: "speech" (the default), "sound" or "off".
+     *
+     * One microphone means one owner, so this is a switch rather than a race: selecting
+     * "sound" releases the mic here -- and costs barge-in, which needs the recogniser --
+     * so SoundProvider can take it on its next sync. The default is unchanged, so the
+     * fleet behaves exactly as it did before this existed.
+     */
+    @Volatile var listenMode: String = "speech"
+
     @Synchronized
     fun start() {
         val granted = ContextCompat.checkSelfPermission(
             context, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
         if (!granted || isRunning) return
+        if (listenMode != "speech") {
+            // Policy gives the microphone to another layer (or to nobody).
+            LogBus.log(LogBus.Category.SENSOR, "hearing: mode=$listenMode, not listening")
+            return
+        }
         isRunning = true
         handler.post {
             mode = Mode.IDLE
             // Primary: the persistent recognizer IS the listener (v1.18).
             // Fallback: VAD-only when the device has no on-device STT.
-            if (!startPersistentRecognition()) startVad()
-            // Whichever path took the mic, the speech pipeline owns it now. The sound
-            // provider reads this instead of guessing, because on this path we may hold
-            // no AudioRecord of our own while the recogniser still has the microphone.
-            PerceptionState.micOwner = "speech"
+            //
+            // Claim the mic only when a path really takes it. A recogniser that starts
+            // holds the microphone on our behalf; otherwise the VAD claims it if -- and
+            // only if -- its AudioRecord actually starts. Claiming unconditionally here
+            // would strand the arbiter on "speech" with nobody holding the microphone,
+            // and SoundProvider, which refuses to open a capture while the speech
+            // pipeline owns it, would then be starved for the life of the service.
+            if (startPersistentRecognition()) {
+                PerceptionState.micOwner = "speech"
+            } else {
+                startVad()
+            }
         }
     }
 
@@ -146,8 +168,8 @@ class AudioProvider(private val context: Context) {
         val granted = ContextCompat.checkSelfPermission(
             context, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
-        if (granted && !isRunning) start()
-        if (!granted && isRunning) stop()
+        if (granted && !isRunning && listenMode == "speech") start()
+        if (isRunning && (!granted || listenMode != "speech")) stop()
     }
 
     // -- VAD: hold the mic, watch energy, hand off on speech onset ------------
@@ -155,6 +177,14 @@ class AudioProvider(private val context: Context) {
     @SuppressLint("MissingPermission")  // start() gates on RECORD_AUDIO
     private fun startVad() {
         if (!isRunning || mode == Mode.VAD) return
+        // Speech outranks sound, but it waits its turn rather than stomping: opening a
+        // second capture beside SoundProvider would read silence, and silence reported
+        // as "quiet" is the lie this whole arbiter exists to prevent. Retry, and the
+        // sound layer yields on its own next sync once the owner says "speech".
+        if (PerceptionState.micOwner == "sound") {
+            scheduleRestartVad(5_000L)
+            return
+        }
         val minBuf = AudioRecord.getMinBufferSize(
             SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT)
@@ -182,6 +212,9 @@ class AudioProvider(private val context: Context) {
         audioRecord = record
         mode = Mode.VAD
         record.startRecording()
+        // Claimed here, where the record really exists -- see the note in start().
+        PerceptionState.micOwner = "speech"
+        PerceptionState.micActive = true
         handler.post { vadLoop(record) }
     }
 

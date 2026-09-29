@@ -149,6 +149,42 @@ class TestAgentAppliesPolicy(unittest.TestCase):
         self.assertEqual(agent.apply_sound_policy(), "speech")
         self.assertTrue(any("could not set" in message for _c, message in agent.logs))
 
+    def test_a_consent_file_is_what_lets_an_operator_enable_sound(self):
+        """The agent cannot grant itself consent; an operator can write it down."""
+        import json
+        import tempfile
+        path = tempfile.mkdtemp(prefix="shugo_consent_")
+        with open(os.path.join(path, "sound_consent.json"), "w", encoding="utf-8") as handle:
+            json.dump({"sound_enabled": True, "listen_mode": "sound",
+                       "granted_by": "operator"}, handle)
+        agent = _agent(CapabilityRegistry(), ConsentRegistry(), _Analyzer(mode="speech"))
+        agent.data_dir = path
+        self.assertEqual(agent.apply_sound_policy(), "sound")
+        self.assertEqual(agent._sound_analyzer.set_calls, ["sound"])
+
+    def test_a_malformed_consent_file_changes_nothing(self):
+        import tempfile
+        path = tempfile.mkdtemp(prefix="shugo_consent_")
+        with open(os.path.join(path, "sound_consent.json"), "w", encoding="utf-8") as handle:
+            handle.write("{not json")
+        agent = _agent(CapabilityRegistry(), ConsentRegistry(), _Analyzer(mode="speech"))
+        agent.data_dir = path
+        self.assertEqual(agent.apply_sound_policy(), "speech")
+        self.assertEqual(agent._sound_analyzer.set_calls, [])
+        self.assertTrue(any("unusable consent file" in message for _c, message in agent.logs))
+
+    def test_a_consent_file_without_a_granter_gives_nothing(self):
+        """Keys without an external actor behind them are not consent."""
+        import json
+        import tempfile
+        path = tempfile.mkdtemp(prefix="shugo_consent_")
+        with open(os.path.join(path, "sound_consent.json"), "w", encoding="utf-8") as handle:
+            json.dump({"sound_enabled": True, "listen_mode": "sound"}, handle)
+        agent = _agent(CapabilityRegistry(), ConsentRegistry(), _Analyzer(mode="speech"))
+        agent.data_dir = path
+        self.assertEqual(agent.apply_sound_policy(), "speech")
+        self.assertEqual(agent._sound_analyzer.set_calls, [])
+
     def test_registration_is_what_triggers_it(self):
         src = open(os.path.join(ROOT, "shugocore_agent.py"), encoding="utf-8").read()
         body = src[src.index("def register_sound_analyzer"):]
@@ -157,13 +193,24 @@ class TestAgentAppliesPolicy(unittest.TestCase):
         self.assertIn("self.apply_sound_policy()", body)
 
     def test_the_agent_has_no_path_to_consent_itself(self):
-        """The doctrine: grants come from outside. Nothing in the mic path writes one."""
+        """The doctrine: grants come from outside.
+
+        The decision path may never write one. The consent-file loader may -- on the
+        operator's behalf -- but only when that file names who granted it, which is what the
+        behavioural tests around it pin down.
+        """
         src = open(os.path.join(ROOT, "shugocore_agent.py"), encoding="utf-8").read()
-        body = src[src.index("def apply_sound_policy"):]
-        body = body[:body.index("def _log_speak_failure")]
-        self.assertNotIn(".grant(", body)
-        tail = src[src.index("def register_sound_analyzer"):]
-        self.assertNotIn("consent_registry.grant", tail)
+        decision = src[src.index("def apply_sound_policy"):]
+        decision = decision[:decision.index("def _load_sound_consent")]
+        self.assertNotIn(".grant(", decision)
+
+        loader = src[src.index("def _load_sound_consent"):]
+        loader = loader[:loader.index("def _sound_mode_decision")]
+        self.assertIn(".grant(", loader)
+        self.assertIn('if payload.get("granted_by"):', loader)
+        self.assertLess(loader.index('if payload.get("granted_by"):'),
+                        loader.index(".grant("),
+                        "the granter must be required before any grant is recorded")
 
 
 if __name__ == "__main__":

@@ -1245,6 +1245,7 @@ class AndroidAgent:
         from CapabilityRegistry (operator configuration) plus ConsentRegistry (an external
         grant), and there is deliberately no path here that writes a grant.
         """
+        self._load_sound_consent()
         mode, reason = self._sound_mode_decision()
         self.log("AGENT", f"sound: policy says listen_mode={mode} ({reason})")
         analyzer = getattr(self, "_sound_analyzer", None)
@@ -1264,6 +1265,49 @@ class AndroidAgent:
             return current or mode
         self.log("AGENT", f"sound: device listen_mode {current or 'unknown'} -> {applied}")
         return applied
+
+    def _load_sound_consent(self) -> None:
+        """Adopt an operator-written consent file, if the node has one.
+
+        The agent cannot grant itself consent -- that is the whole point of the consent
+        registry -- but an operator can, by putting ``sound_consent.json`` where the node's
+        data lives, the same shape as mesh_token.txt:
+
+            {"sound_enabled": true, "listen_mode": "sound", "granted_by": "operator"}
+
+        This is deliberately explicit rather than implicit: nothing enables the microphone by
+        accident, and this file is the switch an operator (or a measurement run) uses to hand
+        the mic to the sound layer. Anything missing, unreadable or malformed is reported and
+        ignored -- never guessed at.
+        """
+        import json as _json
+        import os as _os
+        base = getattr(self, "data_dir", None) or _os.getcwd()
+        path = _os.path.join(str(base), "sound_consent.json")
+        if not _os.path.isfile(path):
+            return
+        try:
+            with open(path, encoding="utf-8") as handle:
+                payload = _json.load(handle)
+        except Exception as exc:
+            self.log("ERROR", f"sound: unusable consent file {path}: {exc}", level="WARN")
+            return
+        if not isinstance(payload, dict):
+            self.log("ERROR", f"sound: consent file {path} is not an object", level="WARN")
+            return
+        try:
+            from policy import MIC_CONSENT_ACTION
+            if payload.get("listen_mode"):
+                self.capability_registry.sound_listen_mode = str(payload["listen_mode"])
+            if bool(payload.get("sound_enabled")):
+                self.capability_registry.sound_enabled = True
+            if payload.get("granted_by"):
+                self.consent_registry.grant(
+                    MIC_CONSENT_ACTION, granted_by=str(payload["granted_by"]),
+                    scope="node", note="operator consent file")
+            self.log("AGENT", f"sound: operator consent file read ({path})")
+        except Exception as exc:
+            self.log("ERROR", f"sound: consent file rejected: {exc}", level="WARN")
 
     def _sound_mode_decision(self) -> Any:
         """The (mode, reason) pair from policy, failing closed to "speech" on any error."""

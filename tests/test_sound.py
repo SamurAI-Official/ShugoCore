@@ -45,8 +45,13 @@ class Tier0DescriptionTestCase(unittest.TestCase):
         self.assertAlmostEqual(summary.longest_silence_ms, 1000.0, delta=1.0)
 
     def test_a_conversation_and_a_loud_room_are_told_apart(self):
-        self.assertEqual(summarize(frames_of([0.01] * 20)).level, "conversational")
-        self.assertEqual(summarize(frames_of([0.2] * 20)).level, "loud")
+        # Stated in dBFS rather than hand-picked rms, so re-tuning the bands cannot silently
+        # turn this into a test of a magic number: -28 is speech across a room, -15 is a shout
+        # or a slammed door.
+        conversation = [10 ** (-28 / 20.0)] * 20
+        shout = [10 ** (-15 / 20.0)] * 20
+        self.assertEqual(summarize(frames_of(conversation)).level, "conversational")
+        self.assertEqual(summarize(frames_of(shout)).level, "loud")
 
     def test_mean_energy_does_not_overstate_a_mostly_quiet_window(self):
         """Averaging dBFS would call one loud frame out of twenty 'loud'."""
@@ -181,7 +186,8 @@ class WorkerTestCase(unittest.TestCase):
 
     def test_a_backed_worker_summarises_and_bounds_what_it_publishes(self):
         backend = _FakeBackend(
-            frames=[{"rms": 0.02, "speech_prob": 0.9}] * 20,
+            # -28 dBFS: speech across a room, under the bands re-tuned from device captures.
+            frames=[{"rms": 0.04, "speech_prob": 0.9}] * 20,
             labels=[{"name": "Speech", "confidence": 0.98},
                     {"name": "Music", "confidence": 0.30},
                     {"name": "Rattle", "confidence": 0.02}],

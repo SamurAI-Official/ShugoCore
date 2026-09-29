@@ -43,8 +43,21 @@ MAX_LABEL_CHARS = 48
 
 # dBFS bands for the level vocabulary. Chosen so "conversational" covers normal speech
 # from a phone across a room, not a calibrated SPL.
-QUIET_MAX_DBFS = -45.0
-LOUD_MIN_DBFS = -25.0
+#
+# Re-tuned against real device captures (A51, 319 windows, one room):
+#   quiet tail min -45.5, p25 -31.3, p50 -26.7, p75 -25.3, max -13.5 dBFS
+# The old -45 QUIET_MAX put a steady fan-and-desk room at -31 dBFS into "conversational",
+# which is not how a person in that room would describe it: steady ambient noise is quiet,
+# and the old threshold only fired for a room that was silent in the acoustically-treated
+# sense. -33 keeps room tone quiet while ordinary speech (-26..-24 here) stays conversational,
+# and -22 reserves "loud" for something that actually stands out. SILENCE_DBFS is unchanged:
+# it means "nearly nothing at all", and the quietest window this device produced was -45.5,
+# so nothing observed is being relabelled as silence.
+#
+# One room, one device. These are anchors, not constants of nature: a second room should be
+# measured before the vocabulary travels to the hive as a claim about a place.
+QUIET_MAX_DBFS = -33.0
+LOUD_MIN_DBFS = -22.0
 SILENCE_DBFS = -55.0
 
 # A jump this large between consecutive frames counts as an onset (a discrete event,

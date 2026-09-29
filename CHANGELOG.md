@@ -44,6 +44,17 @@ rule.
   "quiet", and the workload is withheld from the capability manifest while another consumer
   holds the mic. `sound` and `speech` are modes an operator chooses between, not concurrent
   consumers.
+- **YAMNet ships as ONNX, so the phone runs one inference runtime.** The TFLite bundle
+  cannot be converted directly — its graph uses a `GATHER` that `tflite2onnx` does not
+  implement — so the canonical Keras weights are converted with `tf2onnx` and int8-quantized
+  with ONNX Runtime, the runtime the APK already links. `scripts/convert_yamnet_to_onnx.py`
+  is the recipe: 16 MB fp32 → **4.9 MB int8**, a flat `[15600]` waveform in, and **521
+  scores plus the 1024-d embedding** out (the embedding the MediaPipe bundle does not
+  expose, so Tier 3's novelty fingerprint comes free). Verified against the reference bundle
+  rather than assumed: both return `Speech` as the top class (TFLite 0.984, ONNX 0.993), and
+  the recipe prints the shipped artifact's sha256. Measured caveat, stated in the script's
+  own output: the two builds' scores differ by up to 0.13 because they compute mel features
+  differently, so thresholds get calibrated against the build that ships.
 - **Bus contract.** `HumanObservation` gains `type="sound"`, and `observation_payload()`
   flattens a result to seven keys, inside the bus's 12-key / 160-char budget.
 - **Licences recorded, not assumed.** `MODELS.md` gives every model its licence and a

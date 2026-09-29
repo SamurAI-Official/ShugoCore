@@ -14,7 +14,8 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # The names are part of the contract with the fetch script and the native layer.
 SILERO_VAD = "silero_vad.onnx"
-YAMNET = "yamnet.tflite"
+YAMNET = "yamnet.tflite"                 # the reference build, for cross-checking
+YAMNET_ONNX = "yamnet_int8.onnx"         # what the app ships (see MODELS.md)
 CLASS_MAP = "yamnet_class_map.csv"
 
 SEARCH_DIRS = (
@@ -40,8 +41,13 @@ def find_model(name: str) -> Optional[str]:
 
 
 def have_models() -> bool:
-    """True when both models are present (the class map is required for labels)."""
-    return all(find_model(name) for name in (SILERO_VAD, YAMNET))
+    """True when the models this node would actually run are present.
+
+    Either YAMNet artifact counts: the shipped one is the int8 ONNX, and the TFLite bundle
+    is kept as the reference the conversion is verified against.
+    """
+    return all(find_model(name) for name in (SILERO_VAD, CLASS_MAP)) and any(
+        find_model(name) for name in (YAMNET_ONNX, YAMNET))
 
 
 def load_class_map(path: Optional[str] = None) -> dict:

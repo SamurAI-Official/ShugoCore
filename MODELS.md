@@ -12,7 +12,16 @@ pinned), which keeps NC-licensed material out of an MIT repository by constructi
 |---|---|---|---|---|
 | **Silero VAD** v5 (`silero_vad.onnx`, 2.2 MB) | speech / not-speech (Tier 1) | **MIT** — the project states "zero strings attached: no telemetry, no keys, no registration, no built-in expiration" | **Yes** | fetched to `assets/sound/` |
 | **YAMNet** (`yamnet.tflite`, 3.9 MB) | 521 AudioSet sound classes (Tier 2) | **Apache-2.0** — verified on the Kaggle model page (2026-09-28). The page serves a JavaScript shell, so this was read by a human, not by our automated fetch; the record names its verifier deliberately. | **Yes** — commercial use permitted, and no conditions on outputs | fetched to `assets/sound/` |
+| **YAMNet, as shipped** (`yamnet_int8.onnx`, ~4.9 MB) | the same 521 classes *and* the 1024-d embedding | **Apache-2.0** — a **derived** artifact: built from the canonical weights (`yamnet.h5`) with tf2onnx, then int8-quantized. Apache-2.0 permits this and asks that the modification be marked, which is why it is stated here; the recipe is `scripts/convert_yamnet_to_onnx.py` and the inputs are hash-pinned, so the derivation is reproducible. | **Yes** — no conditions on outputs | built into `assets/sound/` |
 | **AudioSet class map** (`yamnet_class_map.csv`, 14 KB) | label names for the 521 outputs | AudioSet ontology: **CC BY 4.0** (attribution required) | Yes, **with attribution** | fetched to `assets/sound/` |
+
+## Conversion inputs (fetched too, so the derivation stays reproducible)
+
+`yamnet.h5` (the canonical weights), `yamnet.py`, `params.py` and `features.py` (its graph
+definition and log-mel frontend) are fetched hash-pinned and are **Apache-2.0** (TensorFlow
+Authors). `yamnet.tflite` is fetched as well, purely as the reference the converted model is
+checked against: the two builds must agree on the top class, which is what stops a converter
+silently reordering 521 classes.
 
 ## Considered and rejected
 

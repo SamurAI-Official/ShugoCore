@@ -41,6 +41,40 @@ MODELS = (
                 "yamnet/float32/1/yamnet.tflite"),
     },
     {
+        # The canonical weights and graph the shipped ONNX is built from. Apache-2.0 allows
+        # the derivative; these are fetched so the derivation stays reproducible, and the
+        # tflite above stays as the reference the result is checked against.
+        "name": "yamnet.h5",
+        "bytes": 15296092,
+        "sha256": "13c3308955bbfaef262f175ac9c40e47b134573a93984f009220dd7cc12a1744",
+        "licence": "Apache-2.0 (canonical weights)",
+        "url": "https://storage.googleapis.com/audioset/yamnet.h5",
+    },
+    {
+        "name": "yamnet.py",
+        "bytes": 5541,
+        "sha256": "7ef3df32b7ecb782490b5a04d7581a23cfcf701dbf476bc4d03deefe22cdb040",
+        "licence": "Apache-2.0 (graph definition)",
+        "url": ("https://raw.githubusercontent.com/tensorflow/models/master/"
+                "research/audioset/yamnet/yamnet.py"),
+    },
+    {
+        "name": "params.py",
+        "bytes": 1847,
+        "sha256": "925bb1e62461016031f98aea09aeac28975dd516f5747513767de5d1b06b6145",
+        "licence": "Apache-2.0 (hyperparameters)",
+        "url": ("https://raw.githubusercontent.com/tensorflow/models/master/"
+                "research/audioset/yamnet/params.py"),
+    },
+    {
+        "name": "features.py",
+        "bytes": 7490,
+        "sha256": "e6cd53f81d072c7c43be4c7fff2b9dd0c5ccc7d64f2fbcfc85b44013d6d2ed5e",
+        "licence": "Apache-2.0 (log-mel frontend)",
+        "url": ("https://raw.githubusercontent.com/tensorflow/models/master/"
+                "research/audioset/yamnet/features.py"),
+    },
+    {
         "name": "yamnet_class_map.csv",
         "bytes": 14096,
         "sha256": "cdf24d193e196d9e95912a2667051ae203e92a2ba09449218ccb40ef787c6df2",

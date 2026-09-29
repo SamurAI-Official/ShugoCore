@@ -93,6 +93,36 @@ SOUND_MODES = ("sound", "speech", "off")
 MIC_CONSENT_ACTION = "listen_microphone"
 
 
+def model_posture_decision(*, hive_url: str = "", node_role: str = "primary-capable",
+                           local_model: bool = False, hive_peers: int = 0) -> Tuple[bool, str]:
+    """Whether THIS node may load a model of its own, and why. Returns (allowed, reason).
+
+    A desktop hive holds the model. A phone in that hive provides sensors and memory, and a
+    second copy of the weights is exactly what this posture exists to avoid: measured on an A51
+    with the microphone off, a resident 0.5B model costs more than a full core -- an order of
+    magnitude above what continuous acoustic perception costs (0.24 of a core).
+
+    Decided here rather than from the preference alone, because the preference is a wish and
+    this is a rule. Order: an operator who configured no local model is already there; a
+    configured desktop hive settles it; a follower posture settles it; otherwise a standalone
+    node keeps the model it was given.
+    """
+    if not local_model:
+        return False, "configured without a local model"
+    hive = str(hive_url or "").strip()
+    if hive:
+        # The default api_url is loopback, not a hive: "127.0.0.1" means "no desktop here", and
+        # treating a non-empty URL as a hive would strip the model from every standalone node.
+        host = hive.split("//", 1)[-1].split("/", 1)[0].split(":", 1)[0].strip().lower()
+        if host not in ("", "127.0.0.1", "localhost", "::1"):
+            return False, "a desktop hive is configured: the hive holds the model"
+    if str(node_role or "").strip().lower() == "follower":
+        return False, "follower posture: this node provides sensors and memory, not inference"
+    if int(hive_peers or 0) > 0:
+        return False, "a hive peer is live on the mesh: the hive holds the model"
+    return True, "standalone node with a local model configured"
+
+
 def sound_listen_decision(capabilities: Any = None, consent: Any = None,
                           node_role: str = "primary-capable") -> Tuple[str, str]:
     """Which layer may hold the microphone on this node, and why. Returns (mode, reason).

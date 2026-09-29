@@ -14,7 +14,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from policy import (MIC_CONSENT_ACTION, MICROPHONE_STATES, SOUND_MODES,  # noqa: E402
-                    CapabilityRegistry, ConsentRegistry, sound_listen_decision)
+                    CapabilityRegistry, ConsentRegistry, model_posture_decision,
+                    sound_listen_decision)
 
 
 def _granted():
@@ -304,6 +305,53 @@ class TestAgentAppliesPolicy(unittest.TestCase):
         self.assertLess(loader.index('if payload.get("granted_by"):'),
                         loader.index(".grant("),
                         "the granter must be required before any grant is recorded")
+
+
+class TestModelPosture(unittest.TestCase):
+    """A hive-attached device provides sensors and memory, not a second copy of the model."""
+
+    def test_a_configured_desktop_hive_stops_the_local_model(self):
+        allowed, reason = model_posture_decision(
+            hive_url="http://192.168.1.5:11434", node_role="primary-capable", local_model=True)
+        self.assertFalse(allowed)
+        self.assertIn("hive", reason)
+
+    def test_loopback_is_not_a_hive(self):
+        """The default api_url is loopback, so a naive "URL set" rule would strip every
+        standalone node of its model."""
+        for url in ("http://127.0.0.1:11434", "http://localhost:11434", ""):
+            allowed, _reason = model_posture_decision(
+                hive_url=url, node_role="primary-capable", local_model=True)
+            self.assertTrue(allowed, url)
+
+    def test_a_follower_does_not_run_a_model_even_alone(self):
+        allowed, reason = model_posture_decision(
+            hive_url="http://127.0.0.1:11434", node_role="follower", local_model=True)
+        self.assertFalse(allowed)
+        self.assertIn("follower", reason)
+
+    def test_a_live_hive_peer_stops_it_too(self):
+        allowed, reason = model_posture_decision(
+            hive_url="http://127.0.0.1:11434", node_role="primary-capable",
+            local_model=True, hive_peers=2)
+        self.assertFalse(allowed)
+        self.assertIn("mesh", reason)
+
+    def test_nothing_configured_is_already_the_posture(self):
+        allowed, reason = model_posture_decision(local_model=False, node_role="follower",
+                                                 hive_url="http://10.0.0.9:11434")
+        self.assertFalse(allowed)
+        self.assertIn("configured without", reason)
+
+    def test_the_agent_enforces_it_rather_than_trusting_the_preference(self):
+        """End to end: asked for a model while attached to a hive, the node has none."""
+        from shugocore_agent import create_agent
+        agent = create_agent(device_caps="Exynos-1380", api_url="http://192.168.1.5:11434",
+                             local_model=True)
+        try:
+            self.assertFalse(agent.local_model)
+        finally:
+            agent.cleanup()
 
 
 if __name__ == "__main__":

@@ -353,6 +353,34 @@ class AndroidAgent:
             except Exception as exc:
                 self.init_error = f"policy surface: {exc}"
                 self.log("ERROR", f"policy surface failed: {exc}", level="ERROR")
+            # Posture, decided before the engine is built: a node attached to a desktop hive
+            # provides sensors and memory, never a second copy of the model. Enforced here
+            # rather than trusted to the preference, because the preference is a wish and this
+            # is a rule -- and because a resident model costs more than a core (measured on an
+            # A51 with the microphone off), which is an order of magnitude above the whole
+            # acoustic perception layer.
+            try:
+                from policy import model_posture_decision
+                allowed, posture_reason = model_posture_decision(
+                    hive_url=str(getattr(self, "api_url", "") or ""),
+                    node_role=str(getattr(self, "node_role", "")),
+                    local_model=bool(getattr(self, "local_model", False)),
+                    hive_peers=len(getattr(self, "mesh_peers", {}) or {}))
+                if not allowed and bool(getattr(self, "local_model", False)):
+                    self.log("AGENT", f"posture: no local model on this node ({posture_reason})")
+                    # Also where adb can read it: the LOG tab is for the operator, but the
+                    # decision to demote a node from inference to sensing has to be visible in
+                    # logcat too, or a silent CPU saving looks like a silent failure.
+                    import logging as _logging
+                    _logging.getLogger(__name__).warning(
+                        "posture: not loading a local model (%s)", posture_reason)
+                self.local_model = bool(allowed)
+            except Exception as exc:
+                # Fail closed: without a policy answer, this node does not load weights. A hive
+                # that is present will serve the model; a standalone node will notice and say so.
+                self.local_model = False
+                self.log("ERROR", f"posture: policy unavailable ({exc}); no local model",
+                         level="WARN")
             self.engine = self._initialize_engine()
             # The device can register the sound analyzer before this bootstrap reaches the
             # policy registries above, in which case the first apply_sound_policy resolved

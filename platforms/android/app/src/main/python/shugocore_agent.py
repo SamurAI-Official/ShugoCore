@@ -354,6 +354,15 @@ class AndroidAgent:
                 self.init_error = f"policy surface: {exc}"
                 self.log("ERROR", f"policy surface failed: {exc}", level="ERROR")
             self.engine = self._initialize_engine()
+            # The device can register the sound analyzer before this bootstrap reaches the
+            # policy registries above, in which case the first apply_sound_policy resolved
+            # against None and (correctly) answered "speech". Re-apply now that the policy
+            # surface exists: idempotent, and it is the difference between a node honouring an
+            # operator's consent file and one silently ignoring it.
+            try:
+                self.apply_sound_policy()
+            except Exception as exc:
+                self.log("ERROR", f"sound: re-apply after bootstrap failed: {exc}", level="WARN")
             if self.engine is None and not self.engine_error:
                 self.engine_error = "engine initialization returned None"
             # Keep a direct handle on the real engine's task manager: tests
@@ -1248,6 +1257,12 @@ class AndroidAgent:
         self._load_sound_consent()
         mode, reason = self._sound_mode_decision()
         self.log("AGENT", f"sound: policy says listen_mode={mode} ({reason})")
+        # Also to the module logger: on a device the LOG tab is the operator surface, but
+        # adb can only see python.stderr, and a decision nobody can observe is a decision
+        # nobody can check -- which is how this chain stayed unexplained through a deploy.
+        import logging as _logging
+        _logging.getLogger(__name__).info("sound: policy says listen_mode=%s (%s)",
+                                          mode, reason)
         analyzer = getattr(self, "_sound_analyzer", None)
         if analyzer is None:
             return mode
@@ -1359,6 +1374,9 @@ class AndroidAgent:
                 payload = _json.load(handle)
         except Exception as exc:
             self.log("ERROR", f"sound: unusable consent file {path}: {exc}", level="WARN")
+            import logging as _logging
+            _logging.getLogger(__name__).warning("sound: unusable consent file %s: %s",
+                                                 path, exc)
             return
         if not isinstance(payload, dict):
             self.log("ERROR", f"sound: consent file {path} is not an object", level="WARN")

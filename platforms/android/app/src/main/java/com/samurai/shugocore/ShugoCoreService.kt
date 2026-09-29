@@ -470,8 +470,23 @@ class ShugoCoreService : Service() {
                                 Log.w(TAG, "sound self-test FAILED (no reply)")
                             }
                             soundProvider = SoundProvider(this, snd).also { it.start() }
-                            pyAgent?.callAttr("register_sound_analyzer",
-                                              SoundAnalyzerBridge(snd, soundProvider, this))
+                            // Register with logcat as well as the LOG tab: a silent "?." here is
+                            // exactly how the consent chain became unobservable from adb, and a
+                            // reverse callback can also throw (the Python GIL) -- the same
+                            // hazard the NRR block above documents -- which must be visible
+                            // rather than swallowed.
+                            val agent = pyAgent
+                            if (agent == null) {
+                                Log.w(TAG, "sound: no Python agent yet; analyzer not registered")
+                            } else {
+                                try {
+                                    agent.callAttr("register_sound_analyzer",
+                                                   SoundAnalyzerBridge(snd, soundProvider, this))
+                                    Log.i(TAG, "sound: analyzer registered with the agent")
+                                } catch (t: Throwable) {
+                                    Log.w(TAG, "sound: analyzer registration failed: ${t.message}")
+                                }
+                            }
                             LogBus.log(LogBus.Category.AGENT,
                                 "Sound runtime ready (vad=${snd.isVadReady}, " +
                                 "classifier=${snd.isClassifierReady}, " +

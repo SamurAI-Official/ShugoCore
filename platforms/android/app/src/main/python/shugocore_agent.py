@@ -1231,6 +1231,51 @@ class AndroidAgent:
         registration can never start a second capture.
         """
         self._sound_analyzer = analyzer
+        # Apply the operator's microphone decision immediately: the sound layer is the one
+        # sensor that stays invisible when it is running, so consent belongs at the moment
+        # the runtime appears rather than in a later "remember to configure me" step.
+        self.apply_sound_policy()
+
+    def apply_sound_policy(self) -> str:
+        """Ask policy which layer may hold the microphone, and tell the device.
+
+        Returns the mode the device ends up in. Anything unreadable or refused resolves to
+        "speech" -- the fleet's existing behaviour -- so a node with nothing configured never
+        starts listening for sound. The agent cannot grant this to itself: the answer comes
+        from CapabilityRegistry (operator configuration) plus ConsentRegistry (an external
+        grant), and there is deliberately no path here that writes a grant.
+        """
+        mode, reason = self._sound_mode_decision()
+        self.log("AGENT", f"sound: policy says listen_mode={mode} ({reason})")
+        analyzer = getattr(self, "_sound_analyzer", None)
+        if analyzer is None:
+            return mode
+        try:
+            current = str(analyzer.listenMode() or "")
+        except Exception:
+            current = ""
+        if current == mode:
+            return mode
+        try:
+            applied = str(analyzer.setListenMode(mode) or mode)
+        except Exception as exc:
+            # A runtime too old to switch modes must not take the agent down with it.
+            self.log("ERROR", f"sound: could not set listen_mode={mode}: {exc}", level="WARN")
+            return current or mode
+        self.log("AGENT", f"sound: device listen_mode {current or 'unknown'} -> {applied}")
+        return applied
+
+    def _sound_mode_decision(self) -> Any:
+        """The (mode, reason) pair from policy, failing closed to "speech" on any error."""
+        try:
+            from policy import sound_listen_decision
+        except Exception as exc:
+            return "speech", f"policy unavailable: {exc}"
+        try:
+            return sound_listen_decision(getattr(self, "capability_registry", None),
+                                         getattr(self, "consent_registry", None))
+        except Exception as exc:
+            return "speech", f"policy error: {exc}"
 
     def sound_analyzer_status_json(self) -> str:
         """JSON form of the sound runtime state (primitive-only for Chaquopy).

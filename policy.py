@@ -81,6 +81,49 @@ KNOWN_ACTION_TYPES = (SIDE_EFFECTING_ACTION_TYPES | EXTERNAL_READ_ACTION_TYPES
 
 
 
+# Acoustic perception (v1.30.24). The microphone is a resource with exactly ONE owner:
+# Android gives audio to a single capture at a time, so "may this node listen for sound?"
+# is a consent question rather than a runtime race between providers. States and modes
+# mirror sound/schema.py; they are repeated here deliberately, so the policy layer keeps no
+# import dependency on the contract module.
+MICROPHONE_STATES = ("available", "busy_speech", "denied", "absent")
+SOUND_MODES = ("sound", "speech", "off")
+# The action type an operator grants to allow *sound* perception (not speech recognition,
+# which is already covered by the platform's own RECORD_AUDIO permission).
+MIC_CONSENT_ACTION = "listen_microphone"
+
+
+def sound_listen_decision(capabilities: Any = None, consent: Any = None) -> Tuple[str, str]:
+    """Which layer may hold the microphone on this node, and why. Returns (mode, reason).
+
+    The microphone is the one sensor whose misuse an operator cannot see for themselves: a
+    node that listens and says nothing looks exactly like a node that is switched off. So
+    the default is "speech" -- precisely the behaviour the fleet already has -- and "sound"
+    requires BOTH the operator's configuration and an external consent grant that the agent
+    cannot issue to itself.
+
+    ``capabilities`` is a :class:`CapabilityRegistry` and ``consent`` a
+    :class:`ConsentRegistry`; anything missing or unreadable falls back to "speech", because
+    a node that cannot prove it is allowed to listen should not be listening.
+    """
+    if capabilities is None or not bool(getattr(capabilities, "sound_enabled", False)):
+        return "speech", "sound perception is not enabled in configuration"
+    mode = str(getattr(capabilities, "sound_listen_mode", "sound") or "sound").lower()
+    if mode not in SOUND_MODES:
+        return "speech", f"unknown configured sound mode {mode!r}"
+    if mode == "off":
+        return "off", "operator configured acoustic perception off"
+    if consent is None:
+        return "speech", f"no consent registry, so no grant for '{MIC_CONSENT_ACTION}'"
+    try:
+        granted = bool(consent.has_grant(MIC_CONSENT_ACTION))
+    except Exception:
+        granted = False
+    if not granted:
+        return "speech", f"no external consent grant for '{MIC_CONSENT_ACTION}'"
+    return mode, "operator enabled sound perception and consent is on record"
+
+
 # ---------------------------------------------------------------------------
 # Capability registry
 # ---------------------------------------------------------------------------
@@ -121,7 +164,7 @@ class CapabilityRegistry:
             config.get("mobile_devices_allowlist", []))
         self.mobile_max_publish_hz = max(0.1, float(config.get("mobile_max_publish_hz", 30.0)))
         self.mobile_sensor_topics = list(config.get("mobile_sensor_topics", [
-            "camera", "imu", "gps", "battery", "heartbeat",
+            "camera", "imu", "gps", "battery", "heartbeat", "microphone",
             "compute_result", "teleop"]))
         self.mobile_compute_timeout = max(0.5, float(config.get("mobile_compute_timeout", 30.0)))
         # Loopback model endpoints permitted for on-device inference
@@ -129,6 +172,15 @@ class CapabilityRegistry:
         # generic local servers 5000/8000).
         self.local_model_ports = set(
             int(p) for p in config.get("local_model_ports", [11434, 8080, 8081, 1234, 5000, 8000]))
+        # Acoustic perception (v1.30.24). See sound_listen_decision(): the microphone has one
+        # owner, and sound classification stays off unless an operator enables it here *and*
+        # records an external consent grant for MIC_CONSENT_ACTION.
+        self.sound_enabled = bool(config.get("sound_enabled", False))
+        self.sound_listen_mode = str(config.get("sound_listen_mode", "sound")).lower()
+        if self.sound_listen_mode not in SOUND_MODES:
+            self.sound_listen_mode = "sound"
+        self.sound_max_windows_per_minute = max(
+            1, int(config.get("sound_max_windows_per_minute", 60)))
 
     def validate_mobile_topic(self, device_id: str, topic_tail: str) -> Tuple[bool, str]:
         """

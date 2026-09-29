@@ -437,9 +437,9 @@ class ShugoCoreService : Service() {
                 // without the assets simply does not hear, and says so.
                 try {
                     val vadPath = SoundBridge.extractAssetModel(
-                        this@ShugoCoreService, "silero_vad.onnx")
+                        this@ShugoCoreService, "sound/silero_vad.onnx")
                     val yamnetPath = SoundBridge.extractAssetModel(
-                        this@ShugoCoreService, "yamnet_int8.onnx")
+                        this@ShugoCoreService, "sound/yamnet_int8.onnx")
                     if (vadPath != null && yamnetPath != null) {
                         val snd = SoundBridge(vadPath, yamnetPath)
                         if (snd.initialize()) {

@@ -163,6 +163,42 @@ class TestArbiterHonesty:
         assert "snd.resetVad()" in src
 
 
+class TestShippedAssets:
+    """Every asset path the service asks for must exist in the app's assets tree.
+
+    This is the seam that shipped broken once: `extractAssetModel(context, "silero_vad.onnx")`
+    compiled, reviewed and deployed cleanly, and on the phone it silently returned null --
+    the asset is at ``assets/sound/silero_vad.onnx`` -- so the service reported "sound model
+    assets missing; listening off" while every other check stayed green. Nothing in the Kotlin
+    type system connects a string literal to a file, so the test does.
+    """
+
+    ASSETS = ROOT / "platforms" / "android" / "app" / "src" / "main" / "assets"
+
+    def _requested_paths(self) -> set:
+        src = _read(SERVICE)
+        return set(re.findall(r'extractAssetModel\(\s*(?:this@ShugoCoreService|[A-Za-z.]+),\s*"([^"]+)"',
+                              src, re.DOTALL))
+
+    def test_the_service_asks_for_assets_that_exist(self):
+        if not (self.ASSETS / "sound").is_dir():
+            import pytest
+            pytest.skip("audio model assets not fetched on this host")
+        requested = self._requested_paths()
+        assert requested, "no extractAssetModel() call found in the service"
+        missing = [path for path in sorted(requested)
+                   if not (self.ASSETS / path).is_file()]
+        assert not missing, ("the service asks for assets that are not in the app: %s"
+                            % missing)
+
+    def test_both_sound_models_are_requested_with_their_directory(self):
+        requested = self._requested_paths()
+        for name in ("silero_vad.onnx", "yamnet_int8.onnx"):
+            assert "sound/" + name in requested, (
+                "%s must be requested as sound/%s (the asset lives under assets/sound/)"
+                % (name, name))
+
+
 class TestDeviceJsonContract:
     """The JSON the phone writes and the keys Python reads must stay the same set.
 

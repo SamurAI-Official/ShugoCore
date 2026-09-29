@@ -55,11 +55,41 @@ class TestConsentGating(unittest.TestCase):
         self.assertEqual(mode, "speech")
         self.assertIn("configuration", reason)
 
-    def test_both_together_allow_sound(self):
-        caps = CapabilityRegistry({"sound_enabled": True, "sound_listen_mode": "sound"})
-        mode, reason = sound_listen_decision(caps, _granted())
+    def test_a_follower_with_consent_takes_acoustic_sensor_duty(self):
+        """The posture rule: a sensor provider for a hive has no local speech duty."""
+        caps = CapabilityRegistry({"sound_enabled": True})
+        mode, reason = sound_listen_decision(caps, _granted(), node_role="follower")
         self.assertEqual(mode, "sound")
-        self.assertIn("consent", reason)
+        self.assertIn("follower posture", reason)
+
+    def test_a_standalone_node_with_consent_keeps_speech(self):
+        """The node that talks to the person in the room keeps the microphone for voice."""
+        caps = CapabilityRegistry({"sound_enabled": True})
+        mode, reason = sound_listen_decision(caps, _granted(), node_role="primary-capable")
+        self.assertEqual(mode, "speech")
+        self.assertIn("standalone posture", reason)
+
+    def test_a_pinned_mode_beats_the_posture_both_ways(self):
+        """An operator's per-node choice wins, and the reason says so."""
+        follower = CapabilityRegistry({"sound_enabled": True, "sound_listen_mode": "speech",
+                                       "sound_mode_pinned": True})
+        mode, reason = sound_listen_decision(follower, _granted(), node_role="follower")
+        self.assertEqual(mode, "speech")
+        self.assertIn("pinned", reason)
+
+        standalone = CapabilityRegistry({"sound_enabled": True, "sound_listen_mode": "sound",
+                                         "sound_mode_pinned": True})
+        mode, reason = sound_listen_decision(standalone, _granted(),
+                                             node_role="primary-capable")
+        self.assertEqual(mode, "sound")
+        self.assertIn("pinned", reason)
+
+    def test_the_posture_still_needs_consent(self):
+        """Sensor duty is not a loophole: without an external grant, nothing listens."""
+        caps = CapabilityRegistry({"sound_enabled": True})
+        mode, reason = sound_listen_decision(caps, ConsentRegistry(), node_role="follower")
+        self.assertEqual(mode, "speech")
+        self.assertIn(MIC_CONSENT_ACTION, reason)
 
     def test_an_expired_grant_stops_counting_immediately(self):
         consent = ConsentRegistry()
@@ -133,6 +163,7 @@ class TestAgentAppliesPolicy(unittest.TestCase):
     def test_registration_applies_the_decision_to_the_device(self):
         caps = CapabilityRegistry({"sound_enabled": True})
         agent = _agent(caps, _granted(), _Analyzer(mode="speech"))
+        agent.node_role = "follower"     # the posture decides: sensor duty
         self.assertEqual(agent.apply_sound_policy(), "sound")
         self.assertEqual(agent._sound_analyzer.set_calls, ["sound"])
 
@@ -146,6 +177,7 @@ class TestAgentAppliesPolicy(unittest.TestCase):
         caps = CapabilityRegistry({"sound_enabled": True})
         analyzer = _Analyzer(mode="speech", raises=True)
         agent = _agent(caps, _granted(), analyzer)
+        agent.node_role = "follower"     # so the decision differs and the call is really made
         self.assertEqual(agent.apply_sound_policy(), "speech")
         self.assertTrue(any("could not set" in message for _c, message in agent.logs))
 
@@ -236,6 +268,7 @@ class TestAgentAppliesPolicy(unittest.TestCase):
         caps = CapabilityRegistry({"sound_enabled": True})
         analyzer = _Analyzer(mode="sound")
         agent = _agent(caps, _granted(), analyzer)
+        agent.node_role = "follower"
         self.assertEqual(agent.apply_sound_policy(), "sound")
         self.assertEqual(analyzer.set_calls, [])
 

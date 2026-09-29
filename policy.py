@@ -93,26 +93,33 @@ SOUND_MODES = ("sound", "speech", "off")
 MIC_CONSENT_ACTION = "listen_microphone"
 
 
-def sound_listen_decision(capabilities: Any = None, consent: Any = None) -> Tuple[str, str]:
+def sound_listen_decision(capabilities: Any = None, consent: Any = None,
+                          node_role: str = "primary-capable") -> Tuple[str, str]:
     """Which layer may hold the microphone on this node, and why. Returns (mode, reason).
 
-    The microphone is the one sensor whose misuse an operator cannot see for themselves: a
-    node that listens and says nothing looks exactly like a node that is switched off. So
-    the default is "speech" -- precisely the behaviour the fleet already has -- and "sound"
-    requires BOTH the operator's configuration and an external consent grant that the agent
-    cannot issue to itself.
+    The microphone is the one sensor whose misuse an operator cannot see for themselves: a node
+    that listens and says nothing looks exactly like a node that is switched off. So the
+    precedence is explicit, and "what this node is" is part of it:
 
-    ``capabilities`` is a :class:`CapabilityRegistry` and ``consent`` a
-    :class:`ConsentRegistry`; anything missing or unreadable falls back to "speech", because
-    a node that cannot prove it is allowed to listen should not be listening.
+    1. ``off`` -- acoustic perception is switched off here. Restrictive, so it needs nothing
+       else to justify itself.
+    2. Not permitted (``sound_enabled`` false) -> ``speech``: the behaviour the fleet has.
+    3. No external consent grant -> ``speech``. The agent cannot issue this to itself.
+    4. An explicitly pinned mode -> that mode. A per-node operator choice beats the posture.
+    5. Otherwise the posture decides. A **follower** is a sensor provider for a hive that holds
+       the model, so acoustic sensing *is* its microphone duty -> ``sound``. A standalone or
+       primary-capable node speaks with the person in the room -> ``speech``.
+
+    The returned reason names the rule that applied, because a silent node has to be able to say
+    why it is silent -- and an override has to be visible *as* an override.
     """
-    if capabilities is None or not bool(getattr(capabilities, "sound_enabled", False)):
-        return "speech", "sound perception is not enabled in configuration"
     mode = str(getattr(capabilities, "sound_listen_mode", "sound") or "sound").lower()
     if mode not in SOUND_MODES:
         return "speech", f"unknown configured sound mode {mode!r}"
     if mode == "off":
         return "off", "operator configured acoustic perception off"
+    if capabilities is None or not bool(getattr(capabilities, "sound_enabled", False)):
+        return "speech", "sound perception is not enabled in configuration for this node"
     if consent is None:
         return "speech", f"no consent registry, so no grant for '{MIC_CONSENT_ACTION}'"
     try:
@@ -121,7 +128,12 @@ def sound_listen_decision(capabilities: Any = None, consent: Any = None) -> Tupl
         granted = False
     if not granted:
         return "speech", f"no external consent grant for '{MIC_CONSENT_ACTION}'"
-    return mode, "operator enabled sound perception and consent is on record"
+    if bool(getattr(capabilities, "sound_mode_pinned", False)):
+        return mode, f"operator pinned listen_mode={mode} for this node"
+    if str(node_role or "").strip().lower() == "follower":
+        return "sound", ("follower posture (sensor provider): acoustic sensor duty, "
+                         "consent on record")
+    return "speech", "standalone posture: the microphone stays with speech recognition"
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +191,10 @@ class CapabilityRegistry:
         self.sound_listen_mode = str(config.get("sound_listen_mode", "sound")).lower()
         if self.sound_listen_mode not in SOUND_MODES:
             self.sound_listen_mode = "sound"
+        # True when an operator named a mode for THIS node ("sound"/"speech"/"off"), as opposed
+        # to the mode merely being a default. A pin beats the posture; without one, a follower
+        # falls to its sensor duty and a standalone node keeps speech recognition.
+        self.sound_mode_pinned = bool(config.get("sound_mode_pinned", False))
         self.sound_max_windows_per_minute = max(
             1, int(config.get("sound_max_windows_per_minute", 60)))
 

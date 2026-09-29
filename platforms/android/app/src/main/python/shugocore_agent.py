@@ -1330,6 +1330,7 @@ class AndroidAgent:
         try:
             from policy import MIC_CONSENT_ACTION
             self.capability_registry.sound_listen_mode = wanted
+            self.capability_registry.sound_mode_pinned = True
             if wanted in ("sound", "off"):
                 # Both are deliberate operator choices; "speech" is the fleet default and
                 # needs no configuration to be the answer.
@@ -1364,6 +1365,10 @@ class AndroidAgent:
         base = getattr(self, "data_dir", None) or _os.getcwd()
         consent_file = _os.path.join(str(base), "sound_consent.json")
         status = {"policy_mode": mode, "policy_reason": reason,
+                  "node_role": str(getattr(self, "node_role", "primary-capable")),
+                  "override": (str(getattr(self.capability_registry, "sound_listen_mode", ""))
+                               if getattr(self.capability_registry, "sound_mode_pinned", False)
+                               and mode not in ("speech",) else ""),
                   "consent_file": consent_file if _os.path.isfile(consent_file) else "",
                   "consent_granted": False, "device": {}}
         try:
@@ -1419,7 +1424,10 @@ class AndroidAgent:
         try:
             from policy import MIC_CONSENT_ACTION
             if payload.get("listen_mode"):
+                # An operator naming a mode for this node is a *pin*: it beats the posture,
+                # and the status surface reports it as the override it is.
                 self.capability_registry.sound_listen_mode = str(payload["listen_mode"])
+                self.capability_registry.sound_mode_pinned = True
             if bool(payload.get("sound_enabled")):
                 self.capability_registry.sound_enabled = True
             if payload.get("granted_by"):
@@ -1438,7 +1446,9 @@ class AndroidAgent:
             return "speech", f"policy unavailable: {exc}"
         try:
             return sound_listen_decision(getattr(self, "capability_registry", None),
-                                         getattr(self, "consent_registry", None))
+                                         getattr(self, "consent_registry", None),
+                                         node_role=str(getattr(self, "node_role",
+                                                               "primary-capable")))
         except Exception as exc:
             return "speech", f"policy error: {exc}"
 

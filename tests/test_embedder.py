@@ -64,8 +64,12 @@ class MakeEmbedderTestCase(unittest.TestCase):
         self.assertIsInstance(e, HashingEmbedder)
 
     def test_sentence_transformer_falls_back_when_missing(self):
-        # sentence_transformers is not installed in the test env -> falls back.
-        e = make_embedder("sentence-transformer", dimension=384)
+        # Force the missing state instead of assuming it. This host may well have
+        # sentence_transformers installed, and a test that depends on the host cannot tell a
+        # working fallback from a library that merely happened to be absent. A None entry in
+        # sys.modules is the documented way to make an import fail.
+        with mock.patch.dict("sys.modules", {"sentence_transformers": None}):
+            e = make_embedder("sentence-transformer", dimension=384)
         self.assertIsInstance(e, HashingEmbedder)
 
     def test_sentence_transformer_constructed_when_available(self):

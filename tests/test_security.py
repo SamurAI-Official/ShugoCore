@@ -432,8 +432,14 @@ class MemoryAndQueueTestCase(unittest.TestCase):
             self.assertNotIn("\x00", fact["content"])
             self.assertNotIn("\n", fact["content"])
             self.assertLessEqual(len(fact["content"]), 2000)
-            mode = os.stat(db_path).st_mode & 0o777
-            self.assertEqual(mode, 0o600)
+            if os.name == "posix":
+                # The database holds agent knowledge and is created 0600. Windows has no
+                # POSIX permission bits -- os.chmod there only toggles the read-only flag --
+                # so asserting 0o600 would be testing the platform, not this code.
+                mode = os.stat(db_path).st_mode & 0o777
+                self.assertEqual(mode, 0o600)
+            else:
+                self.assertTrue(os.path.exists(db_path))
             memory.close()
         finally:
             shutil.rmtree(tmp, ignore_errors=True)

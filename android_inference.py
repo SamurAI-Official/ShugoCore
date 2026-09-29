@@ -223,7 +223,7 @@ def find_llama_server(prefix: Optional[str] = None,
         return env_override
     prefix = os.environ.get("PREFIX", "") if prefix is None else str(prefix)
     if prefix:
-        candidate = os.path.join(prefix, "bin", "llama-server")
+        candidate = prefix.rstrip("/") + "/bin/llama-server"  # a device path: never host-joined
         try:
             if os.path.exists(candidate) and os.access(candidate, os.X_OK):
                 return candidate

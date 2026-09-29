@@ -20,8 +20,11 @@ import sys
 import urllib.request
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_DIR = os.path.join(REPO_ROOT, "platforms", "android", "app", "src", "main",
-                           "assets", "sound")
+# Working directory, NOT the app assets: the conversion inputs (yamnet.h5 is 15 MB) and the
+# fp32 intermediate would otherwise be packaged into every APK. The three files that ship
+# (silero_vad.onnx, yamnet_int8.onnx, yamnet_class_map.csv) are what belongs in
+# platforms/android/app/src/main/assets/sound -- see scripts/convert_yamnet_to_onnx.py.
+DEFAULT_DIR = os.path.join(REPO_ROOT, "runtime", "audio_models")
 
 MODELS = (
     {

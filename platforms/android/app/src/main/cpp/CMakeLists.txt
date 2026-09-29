@@ -370,3 +370,52 @@ if(SHUGOCORE_NRR)
     endif()
 endif()
 
+# ---------------------------------------------------------------------------
+# sound_jni — the audio-perception bridge the app loads (SoundBridge.kt).
+#
+# Silero VAD (512-sample chunks) and YAMNet (15600-sample windows) run through the SAME
+# ONNX Runtime the NRR path links, which is why this is one more small library rather than
+# a second inference runtime. The models are assets, extracted to filesDir by Kotlin.
+#
+# Deliberately self-contained: it re-derives the ORT paths instead of reusing NRR's
+# variables, so configuring with -DSHUGOCORE_NRR=OFF cannot leave this target broken.
+# ---------------------------------------------------------------------------
+option(SHUGOCORE_SOUND "Build the audio-perception JNI bridge (VAD + YAMNet)" ON)
+
+if(SHUGOCORE_SOUND)
+    set(SOUND_ORT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/onnxruntime)
+    if(ANDROID)
+        set(SOUND_ORT_ABI ${ANDROID_ABI})
+    else()
+        set(SOUND_ORT_ABI ${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR})
+    endif()
+    set(SOUND_ORT_LIB ${SOUND_ORT_DIR}/lib/${SOUND_ORT_ABI}/libonnxruntime.so)
+
+    if(NOT EXISTS "${SOUND_ORT_DIR}/include/onnxruntime_c_api.h")
+        message(FATAL_ERROR
+            "ONNX Runtime headers missing at ${SOUND_ORT_DIR}/include. Run: "
+            "scripts/fetch_ort_android.sh")
+    endif()
+    if(NOT EXISTS "${SOUND_ORT_LIB}")
+        message(FATAL_ERROR
+            "ONNX Runtime library missing for ABI '${SOUND_ORT_ABI}' at "
+            "${SOUND_ORT_LIB}. Run: scripts/fetch_ort_android.sh")
+    endif()
+
+    add_library(sound_jni SHARED sound_jni.cpp)
+    target_include_directories(sound_jni PRIVATE ${SOUND_ORT_DIR}/include)
+    target_link_libraries(sound_jni PRIVATE ${SOUND_ORT_LIB})
+
+    if(ANDROID)
+        target_link_options(sound_jni PRIVATE -Wl,-z,max-page-size=16384)
+        find_library(soundjni_log-lib log)
+        target_link_libraries(sound_jni PRIVATE ${soundjni_log-lib})
+    else()
+        if(NOT EXISTS "${SHUGOCORE_JNI_INCLUDE}/jni.h")
+            message(FATAL_ERROR
+                "Host build requires SHUGOCORE_JNI_INCLUDE pointing at a directory with jni.h")
+        endif()
+        target_include_directories(sound_jni PRIVATE ${SHUGOCORE_JNI_INCLUDE})
+    endif()
+endif()
+

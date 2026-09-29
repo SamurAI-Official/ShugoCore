@@ -55,6 +55,18 @@ rule.
   the recipe prints the shipped artifact's sha256. Measured caveat, stated in the script's
   own output: the two builds' scores differ by up to 0.13 because they compute mel features
   differently, so thresholds get calibrated against the build that ships.
+- **The bridge exists, and it ships.** `sound_jni.cpp` (+ `SoundBridge.kt`) runs both models
+  on the ONNX Runtime the APK already links: `nativeCreate` builds one session per model,
+  `nativeSpeechProbability` takes exactly **512** new samples and keeps Silero's RNN state
+  and 64-sample context inside the native layer, and `nativeAnalyze` returns top-5 class
+  *indices* plus an optional 1024-d embedding — the label table stays in Python, so this
+  layer cannot reorder 521 classes by accident. A session with only one model still loads and
+  says which, because a node that cannot classify must not look like a node that heard
+  nothing. Verified by building the APK: `libsound_jni.so` (44 KB) for both ABIs, the three
+  model assets packaged (6.9 MB), and `tests/test_sound_jni_contract.py` reading the shipped
+  `.so` to confirm all six JNI entry points are exported — plus a check that Kotlin, C++ and
+  Python agree on 512 / 15600 / 16000, since that model contract is now stated in three
+  places and only one of them was previously tested.
 - **Bus contract.** `HumanObservation` gains `type="sound"`, and `observation_payload()`
   flattens a result to seven keys, inside the bus's 12-key / 160-char budget.
 - **Licences recorded, not assumed.** `MODELS.md` gives every model its licence and a

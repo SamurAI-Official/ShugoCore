@@ -1245,24 +1245,35 @@ class AndroidAgent:
         # the runtime appears rather than in a later "remember to configure me" step.
         self.apply_sound_policy()
 
-    def apply_sound_policy(self) -> str:
+    def apply_sound_policy(self, force: bool = False) -> str:
         """Ask policy which layer may hold the microphone, and tell the device.
 
-        Returns the mode the device ends up in. Anything unreadable or refused resolves to
+        Returns the mode the node ends up in. Anything unreadable or refused resolves to
         "speech" -- the fleet's existing behaviour -- so a node with nothing configured never
         starts listening for sound. The agent cannot grant this to itself: the answer comes
         from CapabilityRegistry (operator configuration) plus ConsentRegistry (an external
         grant), and there is deliberately no path here that writes a grant.
+
+        ``force`` is for a *deliberate* operator ask. The equality check below only means "the
+        node already reports the mode policy wants" -- with the bridge reporting the node's
+        decision rather than the provider's default, a matched mode can still accompany a
+        microphone the speech pipeline owns, so an explicit request must not be short-circuited.
         """
         self._load_sound_consent()
         mode, reason = self._sound_mode_decision()
         self.log("AGENT", f"sound: policy says listen_mode={mode} ({reason})")
-        # Also to the module logger: on a device the LOG tab is the operator surface, but
-        # adb can only see python.stderr, and a decision nobody can observe is a decision
-        # nobody can check -- which is how this chain stayed unexplained through a deploy.
+        # Make the decision observable, and make the refusal of an operator's own artefact
+        # loud: the LOG tab is the operator surface, but adb can only read python.stderr, and an
+        # unobservable chain is how this went unexplained through a whole deploy.
         import logging as _logging
-        _logging.getLogger(__name__).info("sound: policy says listen_mode=%s (%s)",
-                                          mode, reason)
+        module_log = _logging.getLogger(__name__)
+        if mode in ("speech", "off") and self._operator_artefact_present():
+            module_log.warning(
+                "sound: operator consent is present but policy says listen_mode=%s (%s)",
+                mode, reason)
+        else:
+            module_log.info("sound: policy says listen_mode=%s (%s)", mode, reason)
+
         analyzer = getattr(self, "_sound_analyzer", None)
         if analyzer is None:
             return mode
@@ -1270,7 +1281,7 @@ class AndroidAgent:
             current = str(analyzer.listenMode() or "")
         except Exception:
             current = ""
-        if current == mode:
+        if current == mode and not force:
             return mode
         try:
             applied = str(analyzer.setListenMode(mode) or mode)
@@ -1278,8 +1289,25 @@ class AndroidAgent:
             # A runtime too old to switch modes must not take the agent down with it.
             self.log("ERROR", f"sound: could not set listen_mode={mode}: {exc}", level="WARN")
             return current or mode
-        self.log("AGENT", f"sound: device listen_mode {current or 'unknown'} -> {applied}")
+        self.log("AGENT", f"sound: node listen_mode {current or 'unknown'} -> {applied}")
         return applied
+
+    def _operator_artefact_present(self) -> bool:
+        """True when an operator has left consent on this node: a file, or a recorded grant.
+
+        Used only to decide how loudly a decision gets reported. An operator who asked for the
+        microphone and was answered "speech" needs to be able to see why, in a place adb reads.
+        """
+        import os as _os
+        try:
+            from policy import MIC_CONSENT_ACTION
+            registry = getattr(self, "consent_registry", None)
+            if registry is not None and registry.has_grant(MIC_CONSENT_ACTION):
+                return True
+        except Exception:
+            pass
+        base = getattr(self, "data_dir", None) or _os.getcwd()
+        return _os.path.isfile(_os.path.join(str(base), "sound_consent.json"))
 
     def set_sound_mode(self, mode: str, granted_by: str = "") -> str:
         """Hand the microphone to the sound layer, or take it back, on an operator's behalf.
@@ -1313,7 +1341,14 @@ class AndroidAgent:
             self.log("ERROR", f"sound: could not record consent for {wanted}: {exc}",
                      level="WARN")
             return "speech"
-        return self.apply_sound_policy()
+        applied = self.apply_sound_policy(force=True)
+        if applied != wanted:
+            # Someone external asked and the node is not doing it: that belongs in a place adb
+            # can read, not only in the LOG tab.
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "sound: operator asked for %s but the node is in %s", wanted, applied)
+        return applied
 
     def sound_listen_status_json(self) -> str:
         """Why this node is, or is not, listening for sound -- in one honest object.

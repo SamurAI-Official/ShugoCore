@@ -77,6 +77,18 @@ object PerceptionState {
     @Volatile var micOwner: String = "none"
 
     /**
+     * The NODE's listening mode: what this service decided, not what any one provider would
+     * do by default. "speech" until someone asks otherwise, so nothing changes on its own.
+     *
+     * This exists because the bridge used to report the sound provider's own field here --
+     * which defaults to "sound" -- so Python compared "sound" against "sound", skipped the
+     * handover as unnecessary, and left the speech pipeline holding the microphone while the
+     * status surface reported the sound layer. The distinction between the node's decision and
+     * a provider's local default is the whole reason this is a service-owned value.
+     */
+    @Volatile var perceptionMode: String = "speech"
+
+    /**
      * Latest Silero VAD probability for the current frame (null = never measured,
      * which is different from 0.0 = "definitely not speech").
      */

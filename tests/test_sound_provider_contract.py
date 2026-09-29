@@ -199,6 +199,31 @@ class TestShippedAssets:
                 % (name, name))
 
 
+class TestNodeModeAuthority:
+    """The bridge must report the NODE's decision, never a provider's local default.
+
+    This is the bug that cost a deploy: the sound provider's own field defaults to "sound",
+    so Python compared "sound" with "sound", skipped the handover as already-done, and left
+    the speech pipeline holding the microphone while the status surface claimed sound.
+    """
+
+    def test_the_bridge_reports_the_node_mode_not_the_provider_default(self):
+        src = _read(SERVICE)
+        bridge = src[src.index("class SoundAnalyzerBridge("):]
+        assert "fun listenMode(): String = PerceptionState.perceptionMode" in bridge
+        assert "fun providerMode(): String = provider?.listenMode" in bridge
+        assert "PerceptionState.perceptionMode = wanted" in src
+        state = _read(RUNTIME / "PerceptionState.kt")
+        assert 'var perceptionMode: String = "speech"' in state
+
+    def test_the_handover_is_logged_where_adb_can_read_it(self):
+        src = _read(SERVICE)
+        assert "perception mode: requested=$mode applied=$wanted" in src
+        agent = _read(ROOT / "shugocore_agent.py")
+        assert "operator consent is present but policy says listen_mode" in agent
+        assert "force: bool = False" in agent
+
+
 class TestDeviceJsonContract:
     """The JSON the phone writes and the keys Python reads must stay the same set.
 

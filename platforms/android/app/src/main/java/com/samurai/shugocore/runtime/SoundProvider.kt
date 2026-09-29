@@ -241,9 +241,16 @@ class SoundProvider(
      * what the contract's onsets are for, and a VAD-only gate would throw it away. [baselineRms]
      * tracks the room, so "loud" means loud *here*.
      */
-    private fun worthClassifying(): Boolean =
-        loudestProb >= SOMETHING_HEARD ||
-            maxRms >= maxOf(baselineRms * 4.0, NOISE_FLOOR_RMS)
+    private fun worthClassifying(): Boolean {
+        // A steady room must be able to teach the baseline. The old rule only updated it when
+        // the window was already below a threshold derived from that same baseline, so a room
+        // with a fan could never qualify: the baseline stayed at zero and every second was
+        // classified as though a door had slammed. Speech is the honest "something is
+        // happening" signal; loudness only means something relative to a baseline that is
+        // allowed to converge.
+        val threshold = maxOf(baselineRms * 4.0, NOISE_FLOOR_RMS)
+        return loudestProb >= SOMETHING_HEARD || maxRms >= threshold
+    }
 
     /** Classify the window and publish what was heard. Never invents a label. */
     private fun analyze(now: Long) {
@@ -275,8 +282,10 @@ class SoundProvider(
             }
         }
         PerceptionState.soundEvent = PerceptionSignal(payload.toString(), now)
-        // The room's own baseline: quiet windows teach it, loud ones must not distort it.
-        if (maxRms <= maxOf(baselineRms * 4.0, NOISE_FLOOR_RMS)) {
+        // Teach the room's own level from any window the VAD did not call speech: a steady fan
+        // is the room, not an event. (Requiring a window to be "quiet" by a loudness test to
+        // qualify as the baseline is the chicken-and-egg that kept this gate open.)
+        if (loudestProb < SOMETHING_HEARD) {
             baselineRms = if (baselineRms <= 0.0) maxRms else baselineRms * 0.7 + maxRms * 0.3
         }
         Log.i(TAG, "heard: ${payload.optString("status")}, " +

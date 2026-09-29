@@ -1148,6 +1148,12 @@ class ShugoCoreService : Service() {
         soundProvider?.listenMode = if (wanted == "sound") "sound" else "off"
         LogBus.log(LogBus.Category.SENSOR,
             "perception mode: $wanted (was delivered to both providers)")
+        // The node's decision, in one place every reader can trust (the bridge reports this,
+        // not the provider's default), and in logcat as well as the LOG tab: an unobservable
+        // handover is how this went unexplained through a deploy.
+        PerceptionState.perceptionMode = wanted
+        Log.i(TAG, "perception mode: requested=$mode applied=$wanted " +
+            "(audio=${audioProvider?.listenMode}, sound=${soundProvider?.listenMode})")
         audioProvider?.sync()
         soundProvider?.sync()
         return wanted
@@ -1288,7 +1294,19 @@ class SoundAnalyzerBridge(
 
     fun micOwner(): String = PerceptionState.micOwner
 
-    fun listenMode(): String = provider?.listenMode ?: "off"
+    /**
+     * The NODE's mode -- what the service decided -- never what the provider would do by
+     * default.
+     *
+     * Reporting the provider's own field here was a real bug with a silent signature: the
+     * provider defaults to "sound", so Python compared "sound" against "sound", skipped the
+     * handover as already-done, and left the speech pipeline holding the microphone while the
+     * status surface claimed the sound layer.
+     */
+    fun listenMode(): String = PerceptionState.perceptionMode
+
+    /** What the sound provider itself is configured for. Diagnostics only, never policy. */
+    fun providerMode(): String = provider?.listenMode ?: "off"
 
     fun isListening(): Boolean = provider?.holdsMic == true
 

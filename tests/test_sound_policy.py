@@ -224,6 +224,21 @@ class TestAgentAppliesPolicy(unittest.TestCase):
         self.assertTrue(status["consent_granted"])
         self.assertEqual(status["device"]["listen_mode"], "sound")
 
+    def test_a_deliberate_ask_is_applied_even_when_the_node_already_says_so(self):
+        """The bug that cost a deploy: a matched mode is not proof the handover happened."""
+        caps = CapabilityRegistry({"sound_enabled": True})
+        analyzer = _Analyzer(mode="sound")          # the node already reports "sound"
+        agent = _agent(caps, _granted(), analyzer)
+        self.assertEqual(agent.set_sound_mode("sound", granted_by="operator"), "sound")
+        self.assertEqual(analyzer.set_calls, ["sound"])
+
+    def test_the_idle_recheck_does_not_re_announce_a_matching_mode(self):
+        caps = CapabilityRegistry({"sound_enabled": True})
+        analyzer = _Analyzer(mode="sound")
+        agent = _agent(caps, _granted(), analyzer)
+        self.assertEqual(agent.apply_sound_policy(), "sound")
+        self.assertEqual(analyzer.set_calls, [])
+
     def test_registration_is_what_triggers_it(self):
         src = open(os.path.join(ROOT, "shugocore_agent.py"), encoding="utf-8").read()
         body = src[src.index("def register_sound_analyzer"):]

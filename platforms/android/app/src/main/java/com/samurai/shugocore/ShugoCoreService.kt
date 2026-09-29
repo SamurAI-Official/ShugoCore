@@ -24,7 +24,9 @@ import com.samurai.shugocore.runtime.HumanInteractionBus
 import com.samurai.shugocore.runtime.LogBus
 import com.samurai.shugocore.runtime.PerceptionState
 import com.samurai.shugocore.runtime.ServerStats
+import com.samurai.shugocore.inference.SoundBridge
 import com.samurai.shugocore.runtime.SensorCapabilityManager
+import com.samurai.shugocore.runtime.SoundProvider
 import com.samurai.shugocore.runtime.DeviceMeshManager
 import com.samurai.shugocore.runtime.SensorPublisherService
 import com.samurai.shugocore.runtime.VisionProvider
@@ -51,6 +53,8 @@ class ShugoCoreService : Service() {
     private var capabilityManager: SensorCapabilityManager? = null
     private var visionProvider: VisionProvider? = null
     private var audioProvider: AudioProvider? = null
+    private var soundProvider: SoundProvider? = null
+    private var soundBridge: SoundBridge? = null
     private var ttsProvider: TtsProvider? = null
     private var meshManager: DeviceMeshManager? = null
     @Volatile private var agentRunning = false
@@ -210,6 +214,9 @@ class ShugoCoreService : Service() {
                 pushCapabilitiesIfChanged()
                 visionProvider?.sync()   // camera follows permission reality
                 audioProvider?.sync()    // microphone follows permission reality
+                // Sound waits its turn: sync() opens the mic only while the speech
+                // pipeline does not own it, so the arbiter decides, not this loop.
+                soundProvider?.sync()
                 if (agentRunning) {
                     val config = thermalMonitor?.getInferenceConfig()
                     if (config?.shouldShutdown == true) {
@@ -423,6 +430,61 @@ class ShugoCoreService : Service() {
                     }
                 } catch (t: Throwable) {
                     Log.w(TAG, "NRR setup failed: ${t.message}")
+                }
+                // Sound perception (v1.30.24): Silero VAD + YAMNet behind the native
+                // bridge, with the provider taking the mic only when the speech
+                // pipeline has released it. Same fail-open discipline as NRR: a phone
+                // without the assets simply does not hear, and says so.
+                try {
+                    val vadPath = SoundBridge.extractAssetModel(
+                        this@ShugoCoreService, "silero_vad.onnx")
+                    val yamnetPath = SoundBridge.extractAssetModel(
+                        this@ShugoCoreService, "yamnet_int8.onnx")
+                    if (vadPath != null && yamnetPath != null) {
+                        val snd = SoundBridge(vadPath, yamnetPath)
+                        if (snd.initialize()) {
+                            soundBridge = snd
+                            // Prove the native path before any Python call. A zero
+                            // window IS silence, so the classifier must say so (its
+                            // own silence class) rather than invent something, and
+                            // the VAD must read near zero. Logcat-verifiable.
+                            val probe = try {
+                                snd.analyze(FloatArray(SoundBridge.WINDOW_SAMPLES))
+                            } catch (t: Throwable) {
+                                Log.w(TAG, "sound self-test threw: ${t.message}")
+                                null
+                            }
+                            if (probe != null) {
+                                val status = probe.optString("status")
+                                val top = probe.optJSONArray("top")
+                                val first =
+                                    if (top != null && top.length() > 0) top.optJSONObject(0)
+                                    else null
+                                val vad = snd.speechProbability(
+                                    FloatArray(SoundBridge.CHUNK_SAMPLES))
+                                Log.i(TAG, "sound self-test ok: status=$status, " +
+                                    "top_index=${first?.optInt("index") ?: -1}, " +
+                                    "top_score=" + "%.3f".format(first?.optDouble("score") ?: 0.0) +
+                                    ", vad_on_silence=" + "%.4f".format(vad))
+                            } else {
+                                Log.w(TAG, "sound self-test FAILED (no reply)")
+                            }
+                            soundProvider = SoundProvider(this, snd).also { it.start() }
+                            pyAgent?.callAttr("register_sound_analyzer",
+                                              SoundAnalyzerBridge(snd, soundProvider))
+                            LogBus.log(LogBus.Category.AGENT,
+                                "Sound runtime ready (vad=${snd.isVadReady}, " +
+                                "classifier=${snd.isClassifierReady}, " +
+                                "owner=${PerceptionState.micOwner})")
+                        } else {
+                            snd.close()
+                            Log.w(TAG, "sound initialize failed; listening off")
+                        }
+                    } else {
+                        Log.w(TAG, "sound model assets missing; listening off")
+                    }
+                } catch (t: Throwable) {
+                    Log.w(TAG, "sound setup failed: ${t.message}")
                 }
                 // Bounded camera-frame probe. The camera provider starts on its
                 // own schedule (and only while the UI lifecycle is alive), so a
@@ -1101,6 +1163,8 @@ class ShugoCoreService : Service() {
         HumanInteractionBus.setPublisher(null)
         visionProvider?.stop()
         audioProvider?.stop()
+        soundProvider?.stop()
+        soundProvider = null
         ttsProvider?.shutdown()
         meshManager?.stop()
         Log.i(TAG, "Service destroyed")
@@ -1109,6 +1173,8 @@ class ShugoCoreService : Service() {
         apiServer?.stop()
         llamaBridge?.close()
         nrrBridge?.close()
+        soundBridge?.close()
+        soundBridge = null
         nrrBridge = null
         executor.shutdown()
         // Phase 4: full teardown — flush engine memory to disk so facts,
@@ -1168,7 +1234,32 @@ class ShugoCoreService : Service() {
      * and returns the rendered result in-process. Keep these names in sync
      * with nrr/adapter.py::android_native_worker.
      */
-    class NrrRendererBridge(private val bridge: NRRBridge) {
+    /**
+ * Primitive-only view of the sound runtime for Python (Chaquopy marshals
+ * primitives, not Kotlin types). Mirrors [NrrRendererBridge]: the agent can ask
+ * what is ready, who holds the mic and what was last heard -- and cannot open
+ * the microphone itself, which is what keeps exactly one owner in the process.
+ */
+class SoundAnalyzerBridge(
+    private val bridge: com.samurai.shugocore.inference.SoundBridge,
+    private val provider: SoundProvider?,
+) {
+    fun isAvailable(): Boolean = bridge.isReady
+
+    fun micOwner(): String = PerceptionState.micOwner
+
+    fun listenMode(): String = provider?.listenMode ?: "off"
+
+    fun isListening(): Boolean = provider?.holdsMic == true
+
+    fun capabilitiesJson(): String =
+        org.json.JSONObject(bridge.capabilities()).toString()
+
+    /** "" when nothing has been heard yet: absence, which is not the same as silence. */
+    fun lastSoundEventJson(): String = PerceptionState.soundEvent.value ?: ""
+}
+
+class NrrRendererBridge(private val bridge: NRRBridge) {
         fun isAvailable(): Boolean = bridge.isReady
 
         fun isModelLoaded(): Boolean = bridge.isModelLoaded

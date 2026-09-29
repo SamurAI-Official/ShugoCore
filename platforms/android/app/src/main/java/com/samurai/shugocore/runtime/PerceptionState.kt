@@ -57,6 +57,44 @@ object PerceptionState {
     @Volatile var gazeTowardCamera: Boolean = false
     @Volatile var speechDirectedAtAgent: Boolean = false
 
+    // -- v1.30.24 audio perception -------------------------------------------
+
+    /**
+     * Which consumer holds the microphone right now: "none", "speech" (the
+     * on-device recogniser's pipeline) or "sound" (the acoustic classifier).
+     *
+     * This is the arbiter, and it exists because Android gives audio to one
+     * capture at a time: while the recogniser is listening, a second capture
+     * reads silence — not an error. Reporting that silence as "quiet" is the
+     * exact lie the Python contract refuses to tell, so only one provider may
+     * hold the mic and this says which. Maps onto the contract's `mic_state`:
+     * "speech" is `busy_speech`, "sound" is `available`.
+     *
+     * Note it is NOT [micActive]: on a device with a recogniser, the speech
+     * pipeline owns the mic while *we* hold no AudioRecord at all, and a sound
+     * provider that only checked micActive would happily open a second capture.
+     */
+    @Volatile var micOwner: String = "none"
+
+    /**
+     * Latest Silero VAD probability for the current frame (null = never measured,
+     * which is different from 0.0 = "definitely not speech").
+     */
+    @Volatile var speechProbability: PerceptionSignal<Float> =
+        PerceptionSignal(null, 0L)
+
+    /**
+     * The phone's own description of what it heard, as compact JSON: the window's
+     * frames (rms, speech probability) and the classifier's top labels.
+     *
+     * Written by [SoundProvider] from the native bridge; consumed — never
+     * invented — by the agent's sound ingest, which is where labels get their
+     * names and the vocabulary (quiet/conversational/loud) is decided. Audio
+     * itself is never in here, and never leaves the device.
+     */
+    @Volatile var soundEvent: PerceptionSignal<String> =
+        PerceptionSignal(null, 0L)
+
     // -- v1.18 legacy compat (migration targets; callers migrate to the
     //    signal names above as the codebase is updated) -----------------------
 

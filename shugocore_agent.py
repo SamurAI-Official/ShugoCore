@@ -267,6 +267,10 @@ class AndroidAgent:
         # v1.29: native NRR renderer, attached by the Kotlin service via
         # register_nrr_renderer(); None when the runtime is absent.
         self._nrr_renderer: Optional[Any] = None
+        # v1.30.24: the Kotlin SoundAnalyzerBridge, registered by
+        # register_sound_analyzer(); None when the sound runtime is absent. It is
+        # a probe plus status surface only -- SoundProvider owns the microphone.
+        self._sound_analyzer: Optional[Any] = None
         # v1.29: conversation state + personality for responsive dialogue.
         self._last_transcript_ts: float = 0.0
         self._last_transcript: str = ""
@@ -1213,6 +1217,46 @@ class AndroidAgent:
         return android_native_worker(self._nrr_renderer,
                                      frame_source=frame_source,
                                      audit=getattr(self, "audit", None))
+
+    # -- sound perception (v1.30.24) -----------------------------------------
+
+    def register_sound_analyzer(self, analyzer: Any) -> None:
+        """Attach the native sound runtime (the Kotlin SoundAnalyzerBridge).
+
+        Construction stays on the Kotlin side because it needs a Context and the
+        packaged ONNX assets. What arrives here is a probe: it reports whether the
+        runtime is ready, who currently holds the microphone, and what the phone
+        last heard. It cannot open the microphone itself, which is the point --
+        SoundProvider owns the mic and the arbiter decides who gets it, so a
+        registration can never start a second capture.
+        """
+        self._sound_analyzer = analyzer
+
+    def sound_analyzer_status_json(self) -> str:
+        """JSON form of the sound runtime state (primitive-only for Chaquopy).
+
+        Safe when absent: reports available=false rather than raising, so the UI
+        and diagnostics can show the truth instead of an exception.
+        """
+        import json as _json
+        a = getattr(self, "_sound_analyzer", None)
+        if a is None:
+            return _json.dumps({"available": False,
+                                "reason": "no native sound analyzer registered"})
+        try:
+            if not a.isAvailable():
+                return _json.dumps({"available": False,
+                                    "reason": "native sound runtime not ready"})
+            return _json.dumps({
+                "available": True,
+                "mic_owner": str(a.micOwner()),
+                "listen_mode": str(a.listenMode()),
+                "listening": bool(a.isListening()),
+                "capabilities": _json.loads(str(a.capabilitiesJson())),
+            })
+        except Exception as exc:
+            return _json.dumps({"available": False,
+                                "reason": "sound probe failed: %s" % str(exc)[:120]})
 
     def _log_speak_failure(self, detail: str) -> None:
         """Record a speech-output failure where an operator can read it.

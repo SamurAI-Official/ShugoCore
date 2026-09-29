@@ -8,7 +8,10 @@ chroma_db/
 
 # Per-node state written by a running agent (memory db, audit chain,
 # personality files, local mesh_peers.json). Node-local, never committed.
-runtime/
+# Anchored to the repo root: an unanchored "runtime/" also swallowed the Android
+# source package com.samurai.shugocore.runtime (every new provider there was
+# silently ignored, while tracked files merely kept working) and cpp/nrr/runtime.
+/runtime/
 
 # Local memory databases
 *.db

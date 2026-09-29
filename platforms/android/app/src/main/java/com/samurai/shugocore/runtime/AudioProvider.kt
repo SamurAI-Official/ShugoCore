@@ -115,6 +115,10 @@ class AudioProvider(private val context: Context) {
             // Primary: the persistent recognizer IS the listener (v1.18).
             // Fallback: VAD-only when the device has no on-device STT.
             if (!startPersistentRecognition()) startVad()
+            // Whichever path took the mic, the speech pipeline owns it now. The sound
+            // provider reads this instead of guessing, because on this path we may hold
+            // no AudioRecord of our own while the recogniser still has the microphone.
+            PerceptionState.micOwner = "speech"
         }
     }
 
@@ -129,6 +133,7 @@ class AudioProvider(private val context: Context) {
             PerceptionState.lastMicActivityMs = 0L
             PerceptionState.lastPartialTranscript = ""
             PerceptionState.micActive = false  // v1.19
+            PerceptionState.micOwner = "none"  // v1.30.24: the arbiter is free again
             PerceptionState.voiceDetected = false
             PerceptionState.humanSpeech = false
             LogBus.log(LogBus.Category.SENSOR, "hearing provider stopped")

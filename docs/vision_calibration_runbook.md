@@ -17,9 +17,22 @@ here that no amount of desk work can supply:
 ## Preconditions
 
 - Build and install: `runtime/deploy_1_30_24.py` (the current version's script).
-- The camera binds **only while the UI lifecycle is alive**, so the app has to be
-  in the foreground for frames to arrive at all. A device sitting at a black
-  screen looks exactly like a dead camera.
+- **Both channels need the app in the foreground, and the measurement is blunt.** With the app
+  backgrounded (HOME) the A16's camera produced 1 presence line in the following 80 s and 0 in the
+  next 110 s, while its mic kept a metronomic 1 Hz heartbeat -- 110 lines, every one of them
+  `rms=0.0000`, against 0 zero-lines and ~0.045 medians on the two untouched devices in the same
+  window. A backgrounded device is therefore not "listening quietly", it is deaf: Android silences
+  background microphone capture, and the heartbeat makes that look like a quiet room.
+- **A window on top is enough to stop vision, and `am start` does not fix it.** A keyguard (or the
+  shade) holding focus pauses the activity, CameraX unbinds the camera, and presence stops silently
+  -- no error, no crash, process alive and `mFocusedApp` still naming the app. Only a fresh
+  `force-stop` + start restored it. The signal that noticed was the app's own
+  `NRR camera frame unavailable after 12 attempts`, three minutes late.
+- **Vision samples in bursts even while healthy**: median gap 0.2-0.3 s, but p90 8-32 s and a worst
+  case of 10-33 s per device over ~1 hour. "No presence line for N seconds" is not evidence of
+  absence; take absence and latency bounds from the tail of that distribution, never the median.
+- **`mCurrentFocus` and `isKeyguardShowing` are the readings to check, not `mFocusedApp`** -- the
+  last named the app while the keyguard was up and the activity was paused.
 - Raise the screen timeout on every device before anything else. The A51 shipped with a 60 s
   timeout: it would have slept a minute into the run, unbinding the camera while the capture
   carried on. `adb -s <serial> shell settings put system screen_off_timeout 1800000`, and put the

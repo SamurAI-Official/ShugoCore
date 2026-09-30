@@ -22,6 +22,9 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.media.FaceDetector
+import android.hardware.camera2.CaptureRequest
+import androidx.camera.camera2.interop.Camera2CameraControl
+import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -171,6 +174,12 @@ class VisionProvider(private val context: Context) {
     /** One-shot: whether the dark threshold has been logged yet. */
     private val darkThresholdLogged = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    /** Camera2 AE compensation steps; 0 means "leave exposure to the camera". */
+    @Volatile private var exposureSteps: Int = 0
+
+    /** One-shot: whether the exposure decision has been logged yet. */
+    private val exposureLogged = java.util.concurrent.atomic.AtomicBoolean(false)
+
     /** When true, log one line per analysed frame instead of one per change. */
     @Volatile var calibrationMode: Boolean = false
 
@@ -192,6 +201,64 @@ class VisionProvider(private val context: Context) {
                 " (raw above $STRETCH_LUMA_MAX is trusted as-is; stretch gain" +
                 " $CONTRAST_GAIN; motion floor $MOTION_MIN)" +
                 (if (value == null) " [default]" else ""))
+        }
+    }
+
+    /**
+     * Low-light exposure compensation, in Camera2 AE steps (0 = off, which is
+     * the default). Applied to the bound camera, and remembered so a camera bound
+     * later still gets it.
+     *
+     * This is the one night-vision lever that changes what NRR renders: the
+     * analysed frame IS the frame published for NRR, so raising exposure moves the
+     * pixels NRR sees, not just the ones the detector sees. That is why it is a
+     * preference rather than a policy, why every change is logged, and why the
+     * evidence of what it did is the NRR camera probe's distinct-byte count
+     * compared against a recording -- not an assumption that it only helped.
+     *
+     * Detection-side processing (the stretch) needs no such disclaimer: it cannot
+     * reach the published frame at all.
+     */
+    fun applyExposureCompensation(steps: Int?) {
+        val applied = (steps ?: 0).coerceIn(-12, 12)
+        val changed = applied != exposureSteps
+        exposureSteps = applied
+        applyExposureToCamera()
+        if (changed || exposureLogged.compareAndSet(false, true)) {
+            android.util.Log.i("VisionProvider",
+                if (applied == 0)
+                    "low-light exposure: off (AE auto; NRR frames unchanged)"
+                else
+                    "low-light exposure: AE compensation=$applied steps" +
+                    " (NRR renders this frame too, so its pixels change" +
+                    " -- compare the NRR camera probe's distinct bytes)")
+        }
+    }
+
+    /**
+     * Push the current exposure setting to the bound camera, if there is one.
+     *
+     * Uses the Camera2 interop rather than rebuilding the analysis use case, so
+     * the setting can change without a rebind. Fail-open: a device that refuses
+     * the option keeps auto exposure and the log says nothing changed.
+     */
+    private fun applyExposureToCamera() {
+        val camera = boundCamera ?: return
+        try {
+            val control = Camera2CameraControl.from(camera.cameraControl)
+            if (exposureSteps == 0) {
+                control.clearCaptureRequestOptions()
+            } else {
+                control.setCaptureRequestOptions(
+                    CaptureRequestOptions.Builder()
+                        .setCaptureRequestOption(
+                            CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
+                            exposureSteps)
+                        .build())
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w("VisionProvider",
+                "low-light exposure not applied: ${t.message}")
         }
     }
 
@@ -271,6 +338,8 @@ class VisionProvider(private val context: Context) {
                             lifecycleOwner, CameraSelector.DEFAULT_FRONT_CAMERA,
                             analysis)
                         boundCamera = camera
+                        // A camera bound after the setting arrived still gets it.
+                        applyExposureToCamera()
                         LogBus.log(LogBus.Category.SENSOR,
                             "vision provider: front camera bound " +
                                 "(~1 fps person presence)")

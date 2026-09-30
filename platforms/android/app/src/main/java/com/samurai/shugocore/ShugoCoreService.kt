@@ -621,6 +621,10 @@ class ShugoCoreService : Service() {
             visionProvider?.applyDarkLumaMax(if (threshold >= 0) threshold else null)
             visionProvider?.calibrationMode =
                 prefs.getBoolean("vision_calibration", false)
+            // 0 (the default) leaves exposure to the camera; anything else is the
+            // deliberate low-light raise, which also moves NRR's frame pixels.
+            visionProvider?.applyExposureCompensation(
+                prefs.getInt("vision_exposure_steps", 0))
         } catch (t: Throwable) {
             Log.w(TAG, "vision policy failed: ${t.message}")
         }

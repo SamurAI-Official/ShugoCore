@@ -132,6 +132,34 @@ class DeviceThresholdWinsTestCase(unittest.TestCase):
         self.assertEqual(result["dark_buckets"].get("a51"), 0)
 
 
+class ExposureIsOptInTestCase(unittest.TestCase):
+    """The one night-vision lever that also moves NRR's pixels, kept default-off."""
+
+    def test_default_is_off_and_clears_any_override(self):
+        provider = _read(VISION_PROVIDER)
+        self.assertRegex(provider, r"@Volatile private var exposureSteps: Int = 0")
+        self.assertIn("control.clearCaptureRequestOptions()", provider)
+
+    def test_the_override_is_a_camera2_ae_option_not_a_rebind(self):
+        provider = _read(VISION_PROVIDER)
+        self.assertIn("Camera2CameraControl.from(camera.cameraControl)", provider)
+        self.assertIn("CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION", provider)
+
+    def test_a_camera_bound_later_still_receives_the_setting(self):
+        provider = _read(VISION_PROVIDER)
+        bound = provider.index("boundCamera = camera")
+        applied = provider.index("applyExposureToCamera()", bound)
+        self.assertLess(
+            bound, applied,
+            "exposure is only applied to a camera that was already bound, so a "
+            "setting made before the camera came up would be silently ignored")
+
+    def test_the_pref_reaches_the_provider(self):
+        service = _read(KOTLIN_SERVICE)
+        self.assertIn('getInt("vision_exposure_steps", 0)', service)
+        self.assertIn("visionProvider?.applyExposureCompensation(", service)
+
+
 class PolicyWiringTestCase(unittest.TestCase):
     """The threshold and the calibration switch have to reach the provider."""
 

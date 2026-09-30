@@ -35,6 +35,17 @@ import java.util.concurrent.Executors
 
 class VisionProvider(private val context: Context) {
 
+    /**
+     * Presence on a timeline: the last face count logged and when.
+     *
+     * Face presence has always lived in PerceptionState for the UI and the agent, but a
+     * correlation between what a device *hears* and what it *sees* needs a series, and logcat is
+     * the only series a host can read. One line per change, plus a slow heartbeat so a steady
+     * count is still visible, at the existing ~1 fps analysis rate.
+     */
+    private var lastLoggedFaces = -2
+    private var lastPresenceLogMs = 0L
+
     companion object {
         private const val ANALYZE_INTERVAL_MS = 1_000L
         private const val ANALYZE_INTERVAL_ATTENTION_MS = 200L  // v1.20: higher rate for gaze tracking
@@ -282,6 +293,15 @@ class VisionProvider(private val context: Context) {
                 (faces[it]?.confidence() ?: 0f) >= MIN_FACE_CONFIDENCE
             }
             PerceptionState.lastFaceCount = faceCount
+            // The correlation series: what this device can see, when it saw it. Change-driven
+            // with a heartbeat, because a device that sees nobody for ten minutes has to be
+            // distinguishable from one whose camera is dead.
+            val presenceNow = System.currentTimeMillis()
+            if (faceCount != lastLoggedFaces || presenceNow - lastPresenceLogMs >= 30_000L) {
+                lastLoggedFaces = faceCount
+                lastPresenceLogMs = presenceNow
+                android.util.Log.i("VisionProvider", "presence faces=$faceCount")
+            }
 
             // v1.20: gaze extraction from FaceDetector pose (yaw toward camera).
             var gazeTowardCamera = false

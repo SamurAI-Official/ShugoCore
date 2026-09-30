@@ -212,6 +212,9 @@ class ShugoCoreService : Service() {
         Log.i(TAG, "Service started")
         startForeground(1, buildNotification("Initializing ShugoCore..."))
         executor.execute { maybeInitializeInference() }
+        // Vision policy before the first frame: a calibration run that relaunches
+        // should not spend its first 30s on the default threshold.
+        executor.execute { applyVisionPolicy() }
         executor.scheduleAtFixedRate({
             try {
                 // Control-plane housekeeping runs even while the agent is
@@ -239,6 +242,7 @@ class ShugoCoreService : Service() {
                     } catch (t: Throwable) {
                         Log.w(TAG, "NRR resolution advice failed: ${t.message}")
                     }
+                    applyVisionPolicy()
                 }
                 if (agentRunning) {
                     val config = thermalMonitor?.getInferenceConfig()
@@ -600,6 +604,28 @@ class ShugoCoreService : Service() {
      * returns true. Retries up to ~40 s at a 3 s cadence, or stops early
      * if TTS terminally fails — the greeting is never permanently consumed
      * because a flag is too eager. */
+    /**
+     * Push the vision policy prefs to the provider.
+     *
+     * `vision_dark_luma_max` is the mean-luma threshold below which this device
+     * is judged blind (absent/negative means "use the built-in default"), and
+     * `vision_calibration` turns on one-log-line-per-frame so a staged run gets
+     * the luma series rather than only its changes. Both are per-device by
+     * nature: the threshold belongs to a sensor and its exposure, so a staged
+     * calibration session sets it here and the app stops guessing.
+     */
+    private fun applyVisionPolicy() {
+        try {
+            val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+            val threshold = prefs.getInt("vision_dark_luma_max", -1)
+            visionProvider?.applyDarkLumaMax(if (threshold >= 0) threshold else null)
+            visionProvider?.calibrationMode =
+                prefs.getBoolean("vision_calibration", false)
+        } catch (t: Throwable) {
+            Log.w(TAG, "vision policy failed: ${t.message}")
+        }
+    }
+
     private fun scheduleBootGreeting() {
         if (!bootGreetingScheduled.compareAndSet(false, true)) return
         var attempts = 0

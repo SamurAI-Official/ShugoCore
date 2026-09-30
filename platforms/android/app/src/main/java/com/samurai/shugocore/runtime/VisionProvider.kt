@@ -47,6 +47,8 @@ class VisionProvider(private val context: Context) {
     private var lastPresenceLogMs = 0L
     /** Whether the last logged frame was too dark to see anything in. */
     private var lastLoggedDark = false
+    /** Verdict of the last logged frame, so a change to "motion" gets logged. */
+    private var lastLoggedVerdict = ""
 
     companion object {
 
@@ -72,6 +74,25 @@ class VisionProvider(private val context: Context) {
         /** NRR's `min_resolution_scale` (0.50) of [BASE_ANALYSIS_WIDTH]. Even too. */
         private const val MIN_ANALYSIS_WIDTH = 160
         private const val MIN_FACE_CONFIDENCE = 0.35f
+        /**
+         * Contrast gain applied to a COPY of the frame for a second detection
+         * pass when the frame is dim enough that contrast is the limiting factor.
+         * Detection-side only: the published NRR frame is the original bitmap.
+         */
+        private const val CONTRAST_GAIN = 3
+        /** Above this mean luma the raw pass is left to speak for itself. */
+        private const val STRETCH_LUMA_MAX = 48
+        /**
+         * Mean absolute luma difference between consecutive analysed frames that
+         * counts as movement.
+         *
+         * Motion is the one presence signal the dark does not take away -- a
+         * person in an unlit room still changes pixels -- so it is measured
+         * whether or not faces are visible. The floor is provisional until a
+         * staged dark run sets it from data; the measured value is logged either
+         * way, so the run has something to set it from.
+         */
+        private const val MOTION_MIN = 1.5
         private const val GAZE_YAW_THRESHOLD = 20  // v1.20: degrees off-center for "gaze toward camera"
     }
 
@@ -136,6 +157,43 @@ class VisionProvider(private val context: Context) {
      * for smaller ones.
      */
     @Volatile private var analysisWidth: Int = BASE_ANALYSIS_WIDTH
+
+    /**
+     * Mean luma at or below which this device is judged blind, so faces=0 means
+     * "cannot see" rather than "nobody there".
+     *
+     * Overridable because the threshold is a property of the sensor and its
+     * exposure, not of this code: [DARK_LUMA_MAX] is where a calibration run
+     * starts, not where it ends.
+     */
+    @Volatile private var darkLumaMax: Int = DARK_LUMA_MAX
+
+    /** One-shot: whether the dark threshold has been logged yet. */
+    private val darkThresholdLogged = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** When true, log one line per analysed frame instead of one per change. */
+    @Volatile var calibrationMode: Boolean = false
+
+    /** Sampled luma of the previous analysed frame, for the motion measure. */
+    private var previousLumaSamples: IntArray? = null
+
+    /**
+     * Set the mean-luma threshold below which this device is judged blind.
+     * `null` restores the built-in default. Logged on every change, because a
+     * threshold nobody can see in the log is not a calibrated one.
+     */
+    fun applyDarkLumaMax(value: Int?) {
+        val applied = (value ?: DARK_LUMA_MAX).coerceIn(0, 128)
+        val changed = applied != darkLumaMax
+        darkLumaMax = applied
+        if (changed || darkThresholdLogged.compareAndSet(false, true)) {
+            android.util.Log.i("VisionProvider",
+                "dark threshold=$applied luma" +
+                " (raw above $STRETCH_LUMA_MAX is trusted as-is; stretch gain" +
+                " $CONTRAST_GAIN; motion floor $MOTION_MIN)" +
+                (if (value == null) " [default]" else ""))
+        }
+    }
 
     /** One-shot: whether the width decision has been logged yet. */
     private val widthLogged = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -363,30 +421,84 @@ class VisionProvider(private val context: Context) {
             // unlit room can be told from an empty one. The face detector needs visible features,
             // so without this "faces=0" in the dark reads as "nobody there" -- a claim the camera
             // is in no position to make.
+            //
+            // The same samples give the motion measure, which is the presence signal the dark
+            // does NOT take away: a person in an unlit room still changes pixels. Both are read
+            // from the frame as published, so neither is affected by the detection-side contrast
+            // gain below.
             var lumaSum = 0L
             var lumaCount = 0
+            var motionSum = 0L
+            var motionCount = 0
             var cursor = 0
-            val pixels = bitmap.width * bitmap.height
-            while (cursor < pixels) {
+            val pixelCount = bitmap.width * bitmap.height
+            val samples = IntArray((pixelCount + 15) / 16)
+            val previousSamples = previousLumaSamples
+            while (cursor < pixelCount) {
                 val pixel = bitmap.getPixel(cursor % bitmap.width, cursor / bitmap.width)
-                lumaSum += (((pixel shr 16) and 0xFF) + ((pixel shr 8) and 0xFF)
+                val sample = (((pixel shr 16) and 0xFF) + ((pixel shr 8) and 0xFF)
                     + (pixel and 0xFF)) / 3
+                samples[lumaCount] = sample
+                lumaSum += sample
+                // Only comparable at the same frame size: NRR's power manager can ask
+                // for a different analysis width between frames.
+                if (previousSamples != null && previousSamples.size == samples.size) {
+                    motionSum += kotlin.math.abs(sample - previousSamples[lumaCount])
+                    motionCount++
+                }
                 lumaCount++
                 cursor += 16
             }
+            previousLumaSamples = samples
             val luma = if (lumaCount > 0) (lumaSum / lumaCount).toInt() else -1
-            val tooDark = luma in 0..DARK_LUMA_MAX
+            val motion = if (motionCount > 0) motionSum.toDouble() / motionCount else 0.0
+            val tooDark = luma in 0..darkLumaMax
+            // Night vision, detection-side: a dim frame is stretched on a COPY for a
+            // second detection pass. The copy is deliberate and load-bearing -- the
+            // published NRR frame above IS this bitmap, so stretching it in place
+            // would change what NRR renders, and NRR's power manager is the only
+            // thing allowed to decide that frame's size or content.
+            //
+            // The result is a hint, never a presence claim: a stretched dark frame
+            // can reveal a face or invent one, and only a staged run can tell those
+            // apart. `raw=` and `stretched=` carry both counts so the gain is
+            // measured per device rather than assumed.
+            var stretchedCount = faceCount
+            if (luma in 0..STRETCH_LUMA_MAX) {
+                stretchedCount = stretchAndDetect(bitmap) ?: faceCount
+            }
+            // The presence vocabulary: what this device can actually stand behind.
+            // `faces` is a claim (raw detection only, so the series means the same
+            // thing it always did), `motion` is evidence without identification, and
+            // a blind camera says `unavailable` instead of reporting an empty room.
+            val verdict = when {
+                faceCount > 0 -> "faces"
+                motion >= MOTION_MIN -> "motion"
+                tooDark -> "unavailable"
+                else -> "none"
+            }
             // The correlation series: what this device can see, when it saw it. Change-driven
             // with a heartbeat, because a device that sees nobody for ten minutes has to be
             // distinguishable both from one whose camera is dead and from one that cannot see.
+            // Calibration mode logs every analysed frame instead, because the point of that run
+            // is the luma series itself.
             val presenceNow = System.currentTimeMillis()
-            if (faceCount != lastLoggedFaces || tooDark != lastLoggedDark ||
+            if (calibrationMode || faceCount != lastLoggedFaces ||
+                    verdict != lastLoggedVerdict || tooDark != lastLoggedDark ||
                     presenceNow - lastPresenceLogMs >= 30_000L) {
                 lastLoggedFaces = faceCount
+                lastLoggedVerdict = verdict
                 lastLoggedDark = tooDark
                 lastPresenceLogMs = presenceNow
+                // The legacy tokens stay first and contiguous: fleet_correlation.py parses
+                // this line, so an existing series has to keep reading. New fields are
+                // appended, never inserted between them.
                 android.util.Log.i("VisionProvider", "presence faces=$faceCount luma=$luma" +
-                    (if (tooDark) " unavailable=too_dark" else ""))
+                    (if (tooDark) " unavailable=too_dark" else "") +
+                    " raw=$faceCount stretched=$stretchedCount" +
+                    " motion=${"%.1f".format(motion)}" +
+                    " width=${bitmap.width} dark=${if (tooDark) 1 else 0}" +
+                    " verdict=$verdict")
             }
 
             // v1.20: gaze extraction from FaceDetector pose (yaw toward camera).
@@ -463,6 +575,47 @@ class VisionProvider(private val context: Context) {
         } catch (e: Exception) {
             LogBus.log(LogBus.Category.SENSOR,
                 "vision frame conversion failed: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * Count faces in a contrast-stretched COPY of [source], or null when the
+     * copy could not be made or the detector threw.
+     *
+     * [source] is never modified. That is not tidiness: it is also the frame
+     * published for NRR, and the whole point of doing night vision detection-side
+     * is that NRR's input stays byte-identical. The stretch is a plain linear gain
+     * about mid-grey -- the coarsest thing that can work, chosen because it has no
+     * parameters to tune beyond the gain and a wrong gain can be seen in the logs
+     * rather than hidden in a histogram.
+     */
+    private fun stretchAndDetect(source: Bitmap): Int? {
+        return try {
+            val copy = source.copy(Bitmap.Config.RGB_565, true) ?: return null
+            val w = copy.width
+            val h = copy.height
+            val pixels = IntArray(w * h)
+            copy.getPixels(pixels, 0, w, 0, 0, w, h)
+            for (i in pixels.indices) {
+                val c = pixels[i]
+                val r = ((((c shr 16) and 0xFF) - 128) * CONTRAST_GAIN + 128)
+                    .coerceIn(0, 255)
+                val g = ((((c shr 8) and 0xFF) - 128) * CONTRAST_GAIN + 128)
+                    .coerceIn(0, 255)
+                val b = (((c and 0xFF) - 128) * CONTRAST_GAIN + 128).coerceIn(0, 255)
+                pixels[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+            }
+            copy.setPixels(pixels, 0, w, 0, 0, w, h)
+            val faces = arrayOfNulls<android.media.FaceDetector.Face>(MAX_FACES)
+            val found = android.media.FaceDetector(w, h, MAX_FACES)
+                .findFaces(copy, faces)
+            val count = (0 until found).count {
+                (faces[it]?.confidence() ?: 0f) >= MIN_FACE_CONFIDENCE
+            }
+            copy.recycle()
+            count
+        } catch (t: Throwable) {
             null
         }
     }

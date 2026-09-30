@@ -20,7 +20,12 @@ here that no amount of desk work can supply:
 - The camera binds **only while the UI lifecycle is alive**, so the app has to be
   in the foreground for frames to arrive at all. A device sitting at a black
   screen looks exactly like a dead camera.
-- Record the NRR baseline before changing anything, from a fresh launch:
+- Raise the screen timeout on every device before anything else. The A51 shipped with a 60 s
+  timeout: it would have slept a minute into the run, unbinding the camera while the capture
+  carried on. `adb -s <serial> shell settings put system screen_off_timeout 1800000`, and put the
+  originals back afterwards.
+- Record the NRR baseline before changing anything, from a fresh launch, somewhere that outlives
+  the log buffer (`runtime/vis_baseline.txt` in the first session):
   - `NRR self-test ok: 768 bytes, 17 distinct, 3.6-9.5ms`
   - `NRR camera frame render ok: 320x426 -> 408960 bytes, 88 distinct, 11.0ms`
   - `NRRBridge: power status: scale=... battery=... charging=...` (or the stub
@@ -96,6 +101,31 @@ python runtime/fleet_correlation.py --label vis --mark-phase "dark person a51"
 ...
 ```
 
+### Run a logcat tail per device as well
+
+`fleet_correlation.py` reads each device's ring once, at the end. The ring is 5 MiB on these
+devices and cannot be enlarged -- `logcat -G 8M` is refused with "MAX log buffer size is 5 MiB" --
+and a phase that rotates out reads as `samples=0`, which is exactly how an empty room reads. That
+is why the tool now warns when every phase comes back empty, which is also the symptom a units
+mistake produces.
+
+The tails are cheap insurance, and in the first session they *confirmed* rather than corrected the
+ring: all fifteen session phases came out with the same sample count from both sources. What did
+differ was the two reads' windows -- the tails' totals include the old ring content they dump at
+start, and the ring's `end` phase kept collecting past the tails' last line -- so compare phases,
+not totals.
+
+```
+adb -s <serial> logcat -v epoch -s SoundProvider:* VisionProvider:* > runtime/vis_tail_<tag>.txt
+```
+
+One per device, running for the whole capture. Then read the phase block from those files, with
+the offsets the capture measured in situ:
+
+```
+python runtime/vis_phase_check.py --label vis --out runtime/corr_vis
+```
+
 Two rules for the phases:
 
 - **One person, one device at a time**, and say where they stand. Two people in
@@ -106,8 +136,14 @@ Two rules for the phases:
 
 ## Reading the result
 
-`runtime/corr_vis_summary.json` carries a `phases` block: per phase, per device,
-`samples`, `faces_max`, `motion_max`, `dark`, and the `verdicts` seen. Then:
+`runtime/corr_vis_summary.json` carries a `phases` block, and `runtime/vis_phase_check.py` writes
+the same block from the tails; in the first session the two agreed phase for phase. Read whichever
+you have, but know that the summary's copy comes from the ring, and that until the units bug was
+fixed this code compared markers (seconds) against samples (milliseconds) and so reported every
+phase empty except the last, which collected the whole session -- so a phases block that is empty
+everywhere except `end` is the signature of that bug, not of an empty room. From either source the
+numbers are per phase, per device: `samples`, `faces_max`, `motion_max`, `dark`, and the
+`verdicts` seen. Then:
 
 - **Dark threshold**: the phase with the person present but `faces_max=0` gives the
   luma to set `vision_dark_luma_max` from -- the highest luma at which the camera
@@ -125,3 +161,29 @@ Two rules for the phases:
 - **Offsets**: the per-device clock offsets the tool prints are what the acoustic
   vote compares against the visual vote. The distance claim stays withdrawn until
   these are in-situ rather than grouped.
+
+### What the first staged session established
+
+Written down because the next session should not have to re-learn it.
+
+- **The in-situ offsets are measured** -- question 1 is answered: 992 ms / 1354 ms / 949 ms
+  (S9FE / A51 / A16), sampled as bursts with residuals of ±33 / ±16 / ±26 ms. That was the part
+  of the distance claim that was missing.
+- **The distance claim still does not hold, for a better reason.** 26 of 31 shared clap events
+  voted the A16 nearest regardless of where the claps were made, with its levels 7-15 dB above the
+  others' throughout: that is a per-device sensitivity difference, not geometry. Arrival time
+  cannot arbitrate either -- the differences cluster at 0.37-0.60 s, which is the 1 Hz publishing
+  quantum rather than sound propagation. Ranking by level needs per-device level calibration;
+  ranking by time needs a faster rate than the logger publishes at.
+- **The room never got dark.** All sixteen phases reported `dark=0`, with luma between 89 and
+  134 -- the "lights off" phases included. Faces were still detected at luma 43, so the dark
+  threshold is not measured; what is measured is that detection survives to luma 43, which is why
+  the default of 12 has not been contradicted. Note that with `vision_exposure_steps=0` (AE auto)
+  a dark room is brightened straight back up, so "dark" may not be observable at all until
+  exposure is pinned. Run the exposure A/B first, then another dark attempt.
+- **"Dark empty" has to mean nobody in frame.** The first session's wording was "nobody moving",
+  the operator reasonably stayed in view, and the phase recorded `faces_max=1` -- so it could not
+  serve as the empty reference the stretch-invention test needs.
+- **The A51 samples thinly**: 0.15 presence lines/s against the A16's 0.57 and the S9FE's 0.19,
+  and its own lit phase caught only 3 samples. Hold still longer in front of it, or accept that
+  its phase evidence is weaker than the others'.

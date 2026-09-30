@@ -175,6 +175,23 @@ Written down because the next session should not have to re-learn it.
   cannot arbitrate either -- the differences cluster at 0.37-0.60 s, which is the 1 Hz publishing
   quantum rather than sound propagation. Ranking by level needs per-device level calibration;
   ranking by time needs a faster rate than the logger publishes at.
+- **A second, better-controlled clap attempt measured why the distance claim fails.** Four claps at
+  each node, in a known order (A16 -> S9FE -> A51), done twice -- once with the lights off and once
+  with them on -- still could not be attributed, and the reasons are in the data rather than
+  inferred. A clap is a ~50 ms transient, but the provider publishes a ~1 s RMS about once a second,
+  which dilutes it by roughly 13 dB: only ten samples in 36 minutes stood clear of the median, with
+  no clustering. And the devices' dynamic ranges differ, which is what automatic gain control looks
+  like -- the A16's maximum sits 11.4 dB above its own median against the S9FE's 16.5 dB, so its
+  transients are squashed ~5 dB harder. Level cannot rank devices that AGC has normalised
+  differently, and time cannot rank anything at 1 Hz. What would work: publish the transient (peak)
+  level instead of a windowed RMS, capture with AGC and noise suppression off and record that
+  setting, and on the operator's side clap *continuously for ~10 s* per node rather than four sharp
+  claps -- a sustained sound survives a 1 Hz windowed level, a transient does not.
+- **A round with the lights off still was not dark, and the camera saw through it.** In the second
+  attempt as well, every phase reported `dark=0` with luma 89-134, and faces were still detected at
+  luma 45 -- including during the "in the dark" clap round. That is AE auto doing its job: with
+  `vision_exposure_steps=0` the camera brightens the frame back up, so the dark threshold cannot be
+  measured until exposure is pinned down. Pin it, then repeat the dark phases.
 - **The room never got dark.** All sixteen phases reported `dark=0`, with luma between 89 and
   134 -- the "lights off" phases included. Faces were still detected at luma 43, so the dark
   threshold is not measured; what is measured is that detection survives to luma 43, which is why

@@ -274,6 +274,30 @@ class MainActivity : AppCompatActivity(), ControlPlaneHost {
         svc.toggleCompanionMode()
     }
 
+    // -- night vision policy ---------------------------------------------------
+
+    override fun visionPolicy(): Map<String, Any> = mapOf(
+        "vision_dark_luma_max" to prefs().getInt("vision_dark_luma_max", -1),
+        "vision_calibration" to prefs().getBoolean("vision_calibration", false),
+        "vision_exposure_steps" to prefs().getInt("vision_exposure_steps", 0))
+
+    override fun onVisionPolicyChanged(key: String, value: Any) {
+        val editor = prefs().edit()
+        when (value) {
+            is Boolean -> editor.putBoolean(key, value)
+            is Int -> editor.putInt(key, value)
+            else -> return
+        }
+        editor.apply()
+        LogBus.log(LogBus.Category.POLICY, "vision policy $key=$value")
+        // Apply now rather than waiting for the 30s housekeeping recheck: during a
+        // calibration session somebody watching the camera should not have to
+        // wonder whether the change landed. The provider logs what it applied
+        // either way, and the SENSORS readout shows the applied value, not this
+        // request -- if the two differ, that is worth seeing.
+        service()?.applyVisionPolicyNow()
+    }
+
     private var lastHumanPingMs = 0L
 
     /**

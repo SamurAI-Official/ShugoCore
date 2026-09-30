@@ -35,6 +35,14 @@ class SensorsPane(context: Context, private val host: ControlPlaneHost) :
     // v1.28: visual-audio binding verdict row.
     private val speechSourceLabel: TextView
 
+    // -- night vision: policy controls + the numbers they act on --------------
+    private val darkValue: TextView
+    private val calibrationValue: TextView
+    private val exposureValue: TextView
+    private val nightInfo: TextView
+    /** The preview frame currently on screen, so it is not decoded twice. */
+    private var lastPreviewDecoded: ByteArray? = null
+
     init {
         orientation = VERTICAL
         // Ui.pane returns (ScrollView, inner column) with the column already
@@ -105,6 +113,43 @@ class SensorsPane(context: Context, private val host: ControlPlaneHost) :
         }
         col.addView(cameraInfo)
 
+        // Night vision, the half a calibration session has to drive from the
+        // device. The three values below are policy (stored as preferences and
+        // applied by the service); the readout under them is state, read back
+        // from what the provider actually did, not echoed from the request.
+        col.addView(Ui.section(context, "Night vision"))
+        val (darkRow, darkView) = Ui.kv(context, "Dark threshold (mean luma)")
+        darkValue = darkView
+        col.addView(darkRow)
+        col.addView(stepper(context, { delta -> nudgeVision("vision_dark_luma_max",
+                                                            delta, 12, 0, 128) },
+            { setVision("vision_dark_luma_max", 12) }))
+        val (calRow, calView) = Ui.kv(context, "Calibration log")
+        calibrationValue = calView
+        col.addView(calRow)
+        col.addView(Ui.button(context, "Toggle per-frame logging").apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT)
+            setOnClickListener {
+                val on = host.visionPolicy()["vision_calibration"] as? Boolean ?: false
+                setVision("vision_calibration", !on)
+            }
+        })
+        val (expRow, expView) = Ui.kv(context, "Exposure (Camera2 AE steps)")
+        exposureValue = expView
+        col.addView(expRow)
+        col.addView(stepper(context, { delta -> nudgeVision("vision_exposure_steps",
+                                                            delta, 0, -12, 12) },
+            { setVision("vision_exposure_steps", 0) }))
+        nightInfo = TextView(context).apply {
+            textSize = 12f
+            setTextColor(Ui.DIM)
+            setPadding(0, Ui.dp(context, 2), 0, Ui.dp(context, 4))
+            text = "Waiting for a camera frame."
+        }
+        col.addView(nightInfo)
+
         col.addView(Ui.section(context, "What Shugo hears"))
         micStatus = TextView(context).apply {
             textSize = 13f; setTextColor(Ui.DIM)
@@ -135,7 +180,84 @@ class SensorsPane(context: Context, private val host: ControlPlaneHost) :
         col.addView(transcript)
     }
 
+    /**
+     * A row of buttons for a numeric policy value: coarse and fine in both
+     * directions, plus a way back to the default.
+     *
+     * Coarse steps matter because the calibration range is wide (a dark threshold
+     * can land anywhere from single digits to the sixties) and fine ones because
+     * the interesting part is the transition, which is a couple of luma units.
+     */
+    private fun stepper(context: Context, onDelta: (Int) -> Unit,
+                        onReset: () -> Unit): LinearLayout {
+        val row = LinearLayout(context).apply {
+            orientation = HORIZONTAL
+            setPadding(0, 0, 0, Ui.dp(context, 4))
+        }
+        val steps = listOf("-10" to -10, "-1" to -1, "+1" to 1, "+10" to 10)
+        for ((label, delta) in steps) {
+            row.addView(Ui.button(context, label).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                setOnClickListener { onDelta(delta) }
+            })
+        }
+        row.addView(Ui.button(context, "reset").apply {
+            layoutParams = LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { onReset() }
+        })
+        return row
+    }
+
+    private fun nudgeVision(key: String, delta: Int, fallback: Int, min: Int, max: Int) {
+        val current = host.visionPolicy()[key] as? Int ?: fallback
+        setVision(key, (current + delta).coerceIn(min, max))
+    }
+
+    /** The one place a vision policy change leaves this pane. */
+    private fun setVision(key: String, value: Any) {
+        host.onVisionPolicyChanged(key, value)
+        refreshVisionLabels()
+    }
+
+    /**
+     * Restate the night-vision readout.
+     *
+     * Policy and state are shown together on purpose: "pref" is what was asked
+     * for, the number before it is what the device is running with. When those
+     * differ it is because the service has not applied it yet or the provider
+     * clamped it -- both of which the operator should see rather than infer.
+     */
+    private fun refreshVisionLabels() {
+        val policy = host.visionPolicy()
+        darkValue.text = "%d (pref %d)".format(
+            PerceptionState.visionDarkThreshold,
+            policy["vision_dark_luma_max"] as? Int ?: -1)
+        calibrationValue.text = if (PerceptionState.visionCalibration) "ON" else "off"
+        exposureValue.text = "%d (pref %d)".format(
+            PerceptionState.visionExposureSteps,
+            policy["vision_exposure_steps"] as? Int ?: 0)
+        nightInfo.text = if (PerceptionState.visionLuma < 0) {
+            "No analysed frame yet."
+        } else {
+            ("luma=%d · motion=%.1f · verdict=%s · faces/stretched=%d/%d · width=%d")
+                .format(PerceptionState.visionLuma, PerceptionState.visionMotion,
+                    PerceptionState.visionVerdict.ifEmpty { "-" },
+                    PerceptionState.lastFaceCount,
+                    PerceptionState.visionFacesStretched,
+                    PerceptionState.visionAnalysisWidth)
+        }
+        nightInfo.setTextColor(when (PerceptionState.visionVerdict) {
+            "faces" -> Ui.OK
+            "motion" -> Ui.WARN
+            "unavailable" -> Ui.BAD
+            else -> Ui.DIM
+        })
+    }
+
     fun bind(snap: Map<*, *>?) {
+        refreshVisionLabels()
         val caps = Ui.list(snap, "capabilities")
         val declared = mutableMapOf<String, Map<*, *>>()
         for (c in caps) {
@@ -225,12 +347,20 @@ class SensorsPane(context: Context, private val host: ControlPlaneHost) :
 
         // -- v1.24 sensor verification bind ---------------------------------
         // Camera preview: render the latest JPEG frame if available.
+        // Decode only when the provider published a new frame. The pane rebinds at
+        // 1 Hz and the provider publishes a preview at ~1 fps, so an unconditional
+        // decode burns the UI thread on frames nobody will see -- and it kept the
+        // pane busy enough that a tap could time out (seen on the S9FE as an ANR
+        // while this pane was visible).
         val jpeg: ByteArray? = PerceptionState.lastPreviewJpeg
-        if (jpeg != null && jpeg.size > 0) {
+        if (jpeg != null && jpeg.size > 0 && jpeg !== lastPreviewDecoded) {
             try {
                 val bmp = android.graphics.BitmapFactory.decodeByteArray(
                     jpeg, 0, jpeg.size)
-                if (bmp != null) cameraPreview.setImageBitmap(bmp)
+                if (bmp != null) {
+                    cameraPreview.setImageBitmap(bmp)
+                    lastPreviewDecoded = jpeg
+                }
             } catch (_: Exception) { /* keep last frame on decode failure */ }
         }
         val faceCount: Int? = if (PerceptionState.visualPresence.fresh(5_000))

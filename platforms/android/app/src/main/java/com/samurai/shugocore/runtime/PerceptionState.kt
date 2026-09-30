@@ -112,6 +112,27 @@ object PerceptionState {
 
     @Volatile var lastCameraFrameMs: Long = 0L
     @Volatile var lastFaceCount: Int = -1
+
+    // -- night vision --------------------------------------------------------
+    // What the last analysed frame actually said. A calibration session runs at
+    // the device, without a host in the loop, so the numbers the log will be
+    // analysed from have to be visible on the phone that produced them.
+    /** Mean luma of the last analysed frame; -1 means "no frame yet". */
+    @Volatile var visionLuma: Int = -1
+    /** Mean absolute luma difference from the previous frame (motion evidence). */
+    @Volatile var visionMotion: Double = 0.0
+    /** "faces" / "motion" / "unavailable" / "none" for the last frame. */
+    @Volatile var visionVerdict: String = ""
+    /** Width the frame is analysed at, and therefore published to NRR at. */
+    @Volatile var visionAnalysisWidth: Int = 0
+    /** Mean luma at or below which this device is judged blind. */
+    @Volatile var visionDarkThreshold: Int = 12
+    /** Faces found in the stretched copy of the last frame; -1 = not run. */
+    @Volatile var visionFacesStretched: Int = -1
+    /** Whether one line is logged per analysed frame (calibration mode). */
+    @Volatile var visionCalibration: Boolean = false
+    /** Applied Camera2 AE compensation steps; 0 = auto exposure. */
+    @Volatile var visionExposureSteps: Int = 0
     @Volatile var lastMicActivityMs: Long = 0L
     @Volatile var lastTranscript: String? = null
     @Volatile var lastPartialTranscript: String = ""

@@ -614,13 +614,30 @@ class ShugoCoreService : Service() {
      * nature: the threshold belongs to a sensor and its exposure, so a staged
      * calibration session sets it here and the app stops guessing.
      */
+    /**
+     * Apply the vision policy prefs now instead of waiting for the 30s recheck.
+     *
+     * Called by the SENSORS pane when the operator changes the dark threshold,
+     * the calibration logging or the exposure: during a calibration session
+     * somebody watching the camera should not have to wonder whether the change
+     * landed. The provider logs what it applied either way.
+     */
+    fun applyVisionPolicyNow() {
+        // Deliberately off the main thread. The exposure pref reaches Camera2
+        // capture-request options, and a UI thread that waits on the camera is an
+        // ANR: on the S9FE, tapping a control in the SENSORS pane timed out input
+        // dispatch ("Input dispatching timed out") while the camera was busy. Uses
+        // the service's existing housekeeping executor rather than a new thread.
+        executor.execute { applyVisionPolicy() }
+    }
+
     private fun applyVisionPolicy() {
         try {
             val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
             val threshold = prefs.getInt("vision_dark_luma_max", -1)
             visionProvider?.applyDarkLumaMax(if (threshold >= 0) threshold else null)
-            visionProvider?.calibrationMode =
-                prefs.getBoolean("vision_calibration", false)
+            visionProvider?.setCalibrationMode(
+                prefs.getBoolean("vision_calibration", false))
             // 0 (the default) leaves exposure to the camera; anything else is the
             // deliberate low-light raise, which also moves NRR's frame pixels.
             visionProvider?.applyExposureCompensation(

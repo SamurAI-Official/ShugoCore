@@ -26,9 +26,9 @@ here that no amount of desk work can supply:
   - `NRRBridge: power status: scale=... battery=... charging=...` (or the stub
     line), and `VisionProvider: analysis width=320 (NRR advised ...)`.
 
-## Setting the vision policy (rough edge, read this)
+## Setting the vision policy (SENSORS tab, or prefs as a fallback)
 
-Three preferences drive Stage B, and **nothing in the UI writes them yet**:
+Three preferences drive this stage:
 
 | pref | meaning | default |
 |---|---|---|
@@ -36,15 +36,45 @@ Three preferences drive Stage B, and **nothing in the UI writes them yet**:
 | `vision_calibration` | log one line per analysed frame instead of per change | false |
 | `vision_exposure_steps` | Camera2 AE compensation steps (0 = auto) | 0 |
 
-On a debug build they can be placed directly, e.g.
-`adb shell run-as com.samurai.shugocore` and edit
-`shared_prefs/shugocore_prefs.xml`, then relaunch. The alternative is to set the
-constant and redeploy. Either way the app logs what it applied
-(`VisionProvider: dark threshold=...`, `low-light exposure: ...`), so the log is
-the record of what the session actually ran with.
+**The SENSORS tab drives all three** — the `NIGHT VISION` section, just below the
+camera preview, which is the camera they act on:
+
+- *Dark threshold* and *Exposure* are steppers (`-10 / -1 / +1 / +10` and
+  `reset`). Each writes the preference and asks the service to apply it at once,
+  so the provider's log line follows within about a second.
+- *Calibration log* toggles per-frame logging.
+- The line under the controls is the device's own readout, and it is **state, not
+  an echo of the request**: `22 (pref 22)` means the provider is running with 22
+  and 22 is stored; `12 (pref -1)` means running with the default because nothing
+  is stored yet. When the two numbers disagree, the apply has not landed — that is
+  worth looking at rather than assuming.
+- The readout also carries what the last analysed frame said, e.g.
+  `luma=105 · motion=4.5 · verdict=motion · faces/stretched=0/0 · width=320`.
+  That is the same number the log will be analysed from, read on the phone that
+  produced it, with no host in the loop.
+
+Fallback if the pane is unusable: on a debug build set the preference directly
+(`adb shell run-as com.samurai.shugocore`, then edit
+`shared_prefs/shugocore_prefs.xml`) and relaunch. Either way the app logs what it
+applied (`VisionProvider: dark threshold=...`, `low-light exposure: ...`), so the
+log stays the record of what the session actually ran with.
 
 Start the session with `vision_calibration` **on**: the luma transition band is
 the thing being measured, and change-driven logging hides it.
+
+### Two things learned on hardware
+
+- **Keep the app in the foreground.** The camera binds only while the UI lifecycle
+  is alive, so the pane readout and the presence log both go quiet the moment the
+  app is backgrounded — a device at a black screen looks exactly like a dead
+  camera.
+- **Check for an ANR dialog before believing a control is broken.** On the S9FE a
+  tap on this pane produced `ANR ... Reason: Input dispatching timed out` twice.
+  The first happened *before any of these controls was touched*, so it is the
+  pane's own per-second refresh, not the controls. Two mitigations are in: the
+  preview JPEG is decoded only when a new frame arrives, and the immediate apply
+  runs on the service's executor rather than the UI thread. Neither is proof the
+  stall cannot recur, and a tap that lands on the dialog does nothing at all.
 
 ## The session
 

@@ -20,6 +20,9 @@ KOTLIN = os.path.join(ROOT, "platforms", "android", "app", "src", "main", "java"
                       "com", "samurai", "shugocore")
 VISION_PROVIDER = os.path.join(KOTLIN, "runtime", "VisionProvider.kt")
 KOTLIN_SERVICE = os.path.join(KOTLIN, "ShugoCoreService.kt")
+MAIN_ACTIVITY = os.path.join(KOTLIN, "MainActivity.kt")
+SENSORS_PANE = os.path.join(KOTLIN, "ui", "SensorsPane.kt")
+CONTROL_HOST = os.path.join(KOTLIN, "runtime", "NodeState.kt")
 CORRELATION = os.path.join(ROOT, "runtime", "fleet_correlation.py")
 
 
@@ -175,6 +178,61 @@ class PolicyWiringTestCase(unittest.TestCase):
             service.count("applyVisionPolicy()"), 2,
             "the vision policy is applied only once: a threshold set between runs "
             "would never arrive, and a relaunch would keep the old one")
+
+
+class VisionControlSurfaceTestCase(unittest.TestCase):
+    """The SENSORS controls, the host contract and the service must agree.
+
+    The pane, the activity and the service each name the same three preferences by
+    string; nothing checks that at build time, and a typo in one of them would be a
+    control that quietly does nothing. The pane is also checked for showing the
+    value the device is *running with* rather than echoing the request, because a
+    calibration run reads those numbers as fact.
+    """
+
+    KEYS = ("vision_dark_luma_max", "vision_calibration", "vision_exposure_steps")
+
+    def test_the_host_contract_declares_both_vision_methods(self):
+        host = _read(CONTROL_HOST)
+        self.assertIn("fun visionPolicy(): Map<String, Any>", host)
+        self.assertIn("fun onVisionPolicyChanged(key: String, value: Any)", host)
+
+    def test_the_activity_can_write_every_key_the_pane_uses(self):
+        activity = _read(MAIN_ACTIVITY)
+        for key in self.KEYS:
+            self.assertIn(key, activity, "MainActivity never names %s" % key)
+        self.assertIn("service()?.applyVisionPolicyNow()", activity)
+
+    def test_the_service_keeps_reading_the_same_keys(self):
+        service = _read(KOTLIN_SERVICE)
+        for key in self.KEYS:
+            self.assertIn(key, service, "the service never reads %s" % key)
+
+    def test_the_immediate_apply_stays_off_the_ui_thread(self):
+        """An operator tap must not make the main thread wait on the camera.
+
+        The exposure value ends up in Camera2 capture-request options. Applying it
+        on the caller's thread is how a tap in this pane became "Input dispatching
+        timed out" on the S9FE while the camera was busy.
+        """
+        service = _read(KOTLIN_SERVICE)
+        body = service.split("fun applyVisionPolicyNow")[1].split("private fun")[0]
+        self.assertIn("executor.execute", body)
+        self.assertNotIn("= applyVisionPolicy()", body)
+
+    def test_the_pane_shows_applied_state_alongside_the_request(self):
+        pane = _read(SENSORS_PANE)
+        for key in self.KEYS:
+            self.assertIn(key, pane, "the SENSORS pane has no control for %s" % key)
+        self.assertIn("PerceptionState.visionDarkThreshold", pane)
+        self.assertIn("PerceptionState.visionExposureSteps", pane)
+        self.assertIn('"%d (pref %d)"', pane)
+
+    def test_the_pane_reads_policy_through_the_host(self):
+        """One read path, so the pane cannot invent its own defaults."""
+        pane = _read(SENSORS_PANE)
+        self.assertIn("host.visionPolicy()", pane)
+        self.assertNotIn("host.prefs()", pane)
 
 
 if __name__ == "__main__":

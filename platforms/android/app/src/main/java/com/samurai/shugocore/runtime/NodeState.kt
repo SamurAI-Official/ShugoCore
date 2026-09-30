@@ -40,4 +40,23 @@ interface ControlPlaneHost {
     fun onBackupTokenChanged(token: String)
     fun onModelProbeClicked()
     fun onCompanionModeToggle()
+
+    // -- night vision policy (SENSORS pane) -----------------------------------
+    /**
+     * The vision policy as persisted: dark threshold, calibration logging, and
+     * Camera2 exposure steps. Keys and defaults are the ones the service reads in
+     * `applyVisionPolicy`, so the pane and the service cannot disagree about what
+     * "unset" means.
+     */
+    fun visionPolicy(): Map<String, Any>
+
+    /**
+     * Persist one vision policy value and apply it now.
+     *
+     * `key` is the preference name; `value` is an Int or Boolean. The host writes
+     * it and asks the service to apply it immediately rather than waiting for the
+     * 30s housekeeping recheck, so an operator watching the camera sees the
+     * change take effect.
+     */
+    fun onVisionPolicyChanged(key: String, value: Any)
 }

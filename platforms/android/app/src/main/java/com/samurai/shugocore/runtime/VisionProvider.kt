@@ -181,7 +181,28 @@ class VisionProvider(private val context: Context) {
     private val exposureLogged = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /** When true, log one line per analysed frame instead of one per change. */
-    @Volatile var calibrationMode: Boolean = false
+    @Volatile private var calibrationMode: Boolean = false
+
+    /**
+     * Turn per-frame calibration logging on or off.
+     *
+     * The SENSORS pane owns this rather than writing the field, so the applied
+     * state is readable in one place and the device says in the log what it is
+     * actually running with: a "calibration run" whose logging was never on would
+     * otherwise look like a session that simply produced no data.
+     */
+    fun setCalibrationMode(enabled: Boolean) {
+        val changed = enabled != calibrationMode
+        calibrationMode = enabled
+        PerceptionState.visionCalibration = enabled
+        if (changed) {
+            android.util.Log.i("VisionProvider",
+                if (enabled)
+                    "calibration logging ON (one line per analysed frame)"
+                else
+                    "calibration logging off (change-driven presence lines)")
+        }
+    }
 
     /** Sampled luma of the previous analysed frame, for the motion measure. */
     private var previousLumaSamples: IntArray? = null
@@ -223,6 +244,7 @@ class VisionProvider(private val context: Context) {
         val applied = (steps ?: 0).coerceIn(-12, 12)
         val changed = applied != exposureSteps
         exposureSteps = applied
+        PerceptionState.visionExposureSteps = applied
         applyExposureToCamera()
         if (changed || exposureLogged.compareAndSet(false, true)) {
             android.util.Log.i("VisionProvider",
@@ -551,6 +573,14 @@ class VisionProvider(private val context: Context) {
             // distinguishable both from one whose camera is dead and from one that cannot see.
             // Calibration mode logs every analysed frame instead, because the point of that run
             // is the luma series itself.
+            // The SENSORS pane reads these, so a calibration run at the device
+            // sees the same numbers the log will be analysed from.
+            PerceptionState.visionLuma = luma
+            PerceptionState.visionMotion = motion
+            PerceptionState.visionVerdict = verdict
+            PerceptionState.visionAnalysisWidth = bitmap.width
+            PerceptionState.visionFacesStretched = stretchedCount
+            PerceptionState.visionDarkThreshold = darkLumaMax
             val presenceNow = System.currentTimeMillis()
             if (calibrationMode || faceCount != lastLoggedFaces ||
                     verdict != lastLoggedVerdict || tooDark != lastLoggedDark ||

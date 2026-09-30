@@ -57,6 +57,13 @@ class ShugoCoreService : Service() {
     private var soundBridge: SoundBridge? = null
     private var ttsProvider: TtsProvider? = null
     private var meshManager: DeviceMeshManager? = null
+    /**
+     * Slow re-read of NRR's advised frame resolution. NRR's power manager owns
+     * that policy (battery/thermal) and the analysed frame is the frame NRR
+     * renders, so the advice is re-read rather than sampled once at boot.
+     */
+    private var lastNrrScaleCheckMs = 0L
+    private val NRR_SCALE_RECHECK_MS = 30_000L
     @Volatile private var agentRunning = false
     // One agent per process. onStartCommand is START_STICKY and every
     // startService (activity, boot receiver, UI Start) schedules the bootstrap,
@@ -217,6 +224,22 @@ class ShugoCoreService : Service() {
                 // Sound waits its turn: sync() opens the mic only while the speech
                 // pipeline does not own it, so the arbiter decides, not this loop.
                 soundProvider?.sync()
+                // NRR's power manager owns the frame resolution policy, and the
+                // analysed frame is the frame NRR renders, so re-read its advice
+                // slowly: a real throttle has to reach the analyser, not just the
+                // boot. 30s is well inside the scale's own timescale and keeps
+                // the JNI call rare. A null bridge means "no advice", which
+                // leaves the base width standing.
+                if (System.currentTimeMillis() - lastNrrScaleCheckMs >=
+                        NRR_SCALE_RECHECK_MS) {
+                    lastNrrScaleCheckMs = System.currentTimeMillis()
+                    try {
+                        visionProvider?.applyAdvisedResolutionScale(
+                            nrrBridge?.advisedResolutionScale())
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "NRR resolution advice failed: ${t.message}")
+                    }
+                }
                 if (agentRunning) {
                     val config = thermalMonitor?.getInferenceConfig()
                     if (config?.shouldShutdown == true) {
@@ -414,6 +437,18 @@ class ShugoCoreService : Service() {
                                     "%.1fms".format(probe["render_time_ms"]))
                             } else {
                                 Log.w(TAG, "NRR self-test FAILED (no frame returned)")
+                            }
+                            // NRR's power manager owns the frame resolution
+                            // policy (battery/thermal), and the frame the camera
+                            // analyses is the frame NRR renders -- so the analyser
+                            // follows its advice rather than keeping a second
+                            // policy of its own. The provider logs the width and
+                            // the scale behind it either way.
+                            try {
+                                visionProvider?.applyAdvisedResolutionScale(
+                                    nrr.advisedResolutionScale())
+                            } catch (t: Throwable) {
+                                Log.w(TAG, "NRR resolution advice failed: ${t.message}")
                             }
                             apiServer?.attachNrr(nrr)
                             pyAgent?.callAttr("register_nrr_renderer",

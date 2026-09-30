@@ -77,7 +77,49 @@ class NRRBridge(
     /** Battery / thermal snapshot plus the resolution scale NRR would use. */
     fun powerStatus(): Map<String, Any> {
         if (sessionPtr == 0L) return emptyMap()
-        return parseJson(nativePowerStatusJson(sessionPtr))
+        // The native session is single-threaded (see renderLock above), so the
+        // power query is serialized against renders too: the service tick and the
+        // local API server both call this while the camera may be rendering.
+        synchronized(renderLock) {
+            return parseJson(nativePowerStatusJson(sessionPtr))
+        }
+    }
+
+    /**
+     * The resolution scale NRR's power manager advises for frame sources
+     * (0.5..1.0), or null when there is no trustworthy advice.
+     *
+     * NRR owns this policy: it is a battery/thermal decision, and the frame the
+     * camera analyses is the very frame NRR renders, so the app follows its
+     * advice rather than keeping a second resolution policy of its own.
+     *
+     * Null is a real answer, not a failure. `docs/nrr_android_port.md` records
+     * that the Android power-manager hooks exist nowhere upstream:
+     * `nrr_power_manager.cpp` calls `android_get_battery_level()` and
+     * `android_is_low_power()`, which this build's platform layer stubs out. A
+     * stub reports "0% battery, not charging", which is below
+     * `critical_battery_threshold` (0.10) and would therefore pin the scale to
+     * `min_resolution_scale` (0.50) on every phone forever. A device executing
+     * this code has either some charge or an active charger, so that reading is
+     * the signature of a stub rather than of a flat battery -- and acting on it
+     * would shrink every analysed frame for no reason.
+     */
+    fun advisedResolutionScale(): Double? {
+        val status = powerStatus()
+        if (status.isEmpty()) return null
+        val scale = (status["resolution_scale"] as? Number)?.toDouble()
+            ?: return null
+        val battery = (status["battery_level"] as? Number)?.toDouble() ?: return null
+        val charging = (status["charging"] as? Number)?.toInt() ?: 0
+        if (battery <= 0.0 && charging == 0) {
+            Log.i(TAG, "power status is a stub (battery=$battery " +
+                "charging=$charging, scale=$scale); keeping the app's frame width")
+            return null
+        }
+        Log.i(TAG, "power status: scale=$scale battery=$battery charging=$charging " +
+            "thermal_headroom=${status["thermal_headroom"]} " +
+            "low_power_mode=${status["low_power_mode"]} profile=${status["profile"]}")
+        return scale
     }
 
     /**

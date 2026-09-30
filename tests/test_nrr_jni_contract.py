@@ -36,6 +36,8 @@ KOTLIN_SERVICE = os.path.join(ANDROID, "java", "com", "samurai", "shugocore",
 JNI_SOURCE = os.path.join(ANDROID, "cpp", "nrr_jni.cpp")
 CMAKE = os.path.join(ANDROID, "cpp", "CMakeLists.txt")
 ADAPTER = os.path.join(ROOT, "nrr", "adapter.py")
+VISION_PROVIDER = os.path.join(ANDROID, "java", "com", "samurai", "shugocore",
+                               "runtime", "VisionProvider.kt")
 AGENT = os.path.join(ROOT, "shugocore_agent.py")
 APK = os.path.join(ROOT, "platforms", "android", "app", "build", "outputs",
                    "apk", "debug", "app-debug.apk")
@@ -144,6 +146,108 @@ class BridgeProtocolTestCase(unittest.TestCase):
         self.assertEqual(libraries, ["nrr_jni"])
         self.assertRegex(_read(CMAKE), re.compile(
             rf"add_library\(\s*{libraries[0]}\s+SHARED\b"))
+
+
+class ResolutionPolicyTestCase(unittest.TestCase):
+    """NRR's power manager owns the frame resolution; three files must agree.
+
+    The analysed frame *is* the frame NRR renders -- `VisionProvider` publishes the
+    same bitmap it detects faces in -- so a resolution decision made in one place
+    and not the others is either a policy that silently never applies, or a frame
+    geometry that changes without NRR asking for it. These checks read the four
+    numbers involved (NRR's `min_resolution_scale` / `max_resolution_scale`, the
+    provider's base and floor widths) plus the wiring that carries the advice from
+    the native runtime to the analyser.
+
+    Worth knowing when reading the stub guard below: `docs/nrr_android_port.md`
+    records that the Android power-manager hooks exist nowhere upstream, so on
+    this platform NRR's inputs are placeholders reporting "0% battery, not
+    charging" -- which is under `critical_battery_threshold` and would pin the
+    scale to its minimum on every phone forever.
+    """
+
+    def test_the_provider_widths_mirror_nrr_scale_bounds(self):
+        native = _read(JNI_SOURCE)
+        provider = _read(VISION_PROVIDER)
+        low = re.search(r"min_resolution_scale\s*=\s*([\d.]+)f", native)
+        high = re.search(r"max_resolution_scale\s*=\s*([\d.]+)f", native)
+        self.assertTrue(low and high,
+                        "nrr_jni.cpp no longer declares resolution scale bounds")
+        base = re.search(r"BASE_ANALYSIS_WIDTH\s*=\s*(\d+)", provider)
+        floor = re.search(r"MIN_ANALYSIS_WIDTH\s*=\s*(\d+)", provider)
+        self.assertTrue(base and floor,
+                        "VisionProvider no longer declares both analysis widths")
+        base, floor = int(base.group(1)), int(floor.group(1))
+        self.assertEqual(
+            floor / base, float(low.group(1)),
+            "the floor width is no longer NRR's min_resolution_scale of the base "
+            "width: the advice would map onto a range NRR never asked for")
+        self.assertEqual(
+            float(high.group(1)), 1.0,
+            "NRR's max_resolution_scale moved, but the base width is defined as it")
+        self.assertEqual(base % 2, 0, "FaceDetector needs an even width")
+        self.assertEqual(floor % 2, 0, "FaceDetector needs an even width")
+
+    def test_the_analysis_width_is_state_not_a_constant(self):
+        provider = _read(VISION_PROVIDER)
+        self.assertRegex(provider, r"frameToRgb565\(proxy,\s*analysisWidth\)")
+        self.assertIsNone(
+            re.search(r"(?<!BASE_)(?<!MIN_)ANALYSIS_WIDTH", provider),
+            "a hard-coded analysis width is back: the frame geometry would stop "
+            "following NRR's advice -- and NRR renders the very same frame")
+        self.assertRegex(provider, r"BASE_ANALYSIS_WIDTH \* advised")
+        self.assertRegex(provider,
+                         r"coerceIn\(MIN_ANALYSIS_WIDTH, BASE_ANALYSIS_WIDTH\)")
+        # Both dimensions of the scaled frame have to stay even.
+        self.assertRegex(provider, r"if \(height % 2 == 1\) height \+= 1")
+
+    def test_the_published_frame_keeps_the_bitmap_geometry(self):
+        provider = _read(VISION_PROVIDER)
+        self.assertIn("val w = bitmap.width", provider)
+        self.assertIn("val h = bitmap.height", provider)
+        self.assertRegex(provider, r"stampFrameRgba\(w,\s*h,\s*rgba\)")
+
+    def test_kotlin_reads_the_scale_and_rejects_stub_power_inputs(self):
+        bridge = _read(KOTLIN_BRIDGE)
+        self.assertRegex(bridge, r"fun advisedResolutionScale\(\):\s*Double\?")
+        self.assertIn('status["resolution_scale"]', bridge)
+        # The native session is single-threaded, so the power query is serialized
+        # with renders: the tick and the API server call it while the camera may be
+        # rendering.
+        self.assertRegex(bridge,
+                         r"synchronized\(renderLock\)\s*\{\s*return parseJson\("
+                         r"nativePowerStatusJson")
+        self.assertRegex(
+            bridge, r"battery <= 0\.0 && charging == 0",
+            "the stub guard is gone: docs/nrr_android_port.md records that the "
+            "Android power hooks are absent upstream, so a stub's '0% battery, "
+            "not charging' would pin the scale to its minimum forever")
+
+    def test_the_service_applies_the_advice_at_boot_and_on_a_slow_cadence(self):
+        service = _read(KOTLIN_SERVICE)
+        self.assertGreaterEqual(
+            service.count("applyAdvisedResolutionScale"), 2,
+            "the advice is applied only once: a thermal throttle request would "
+            "never reach the analyser")
+        self.assertIn("nrr.advisedResolutionScale()", service)
+        self.assertIn("nrrBridge?.advisedResolutionScale()", service)
+        self.assertRegex(service, r"NRR_SCALE_RECHECK_MS\s*=\s*[\d_]+L")
+
+    def test_the_power_status_keys_are_the_same_on_both_sides(self):
+        native = _read(JNI_SOURCE)
+        bridge = _read(KOTLIN_BRIDGE)
+        # Scoped to the power-status body: the same file publishes other JSON
+        # (capabilities, for one), and a key name found there would not be this
+        # contract. Kept as bare spellings -- the C quotes are escaped in the
+        # format string, so the escaping is not what is being asserted.
+        body = native[native.index("nativePowerStatusJson"):]
+        body = body[:body.index("return to_jstr(env, buf)")]
+        for key in ("battery_level", "charging", "thermal_headroom",
+                    "low_power_mode", "profile", "resolution_scale"):
+            self.assertIn(key, body,
+                          "nrr_jni.cpp no longer publishes the %s key" % key)
+            self.assertIn(key, bridge,
+                          "NRRBridge does not mention %s" % key)
 
 
 class ShippedSymbolTestCase(unittest.TestCase):

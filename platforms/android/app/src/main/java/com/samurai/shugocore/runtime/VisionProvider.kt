@@ -61,7 +61,16 @@ class VisionProvider(private val context: Context) {
         private const val ABSENT_AFTER_MS = 20_000L
         private const val HEARTBEAT_MS = 45_000L
         private const val MAX_FACES = 3
-        private const val ANALYSIS_WIDTH = 320  // even: FaceDetector requires it
+        /**
+         * Width of the analysed frame at NRR's `max_resolution_scale` (1.00).
+         * Even, because FaceDetector requires it.
+         *
+         * NRR's power manager may ask for a smaller share of this under thermal
+         * or battery pressure; see [applyAdvisedResolutionScale].
+         */
+        private const val BASE_ANALYSIS_WIDTH = 320
+        /** NRR's `min_resolution_scale` (0.50) of [BASE_ANALYSIS_WIDTH]. Even too. */
+        private const val MIN_ANALYSIS_WIDTH = 160
         private const val MIN_FACE_CONFIDENCE = 0.35f
         private const val GAZE_YAW_THRESHOLD = 20  // v1.20: degrees off-center for "gaze toward camera"
     }
@@ -116,6 +125,54 @@ class VisionProvider(private val context: Context) {
 
     /** v1.20: when true, camera runs at higher frame rate for gaze tracking. */
     @Volatile var attentionMode: Boolean = false
+
+    /**
+     * Width of the analysed frame -- and therefore of the RGBA frame published
+     * for NRR, which is the same bitmap.
+     *
+     * NRR's power manager owns this policy (see [applyAdvisedResolutionScale]),
+     * so it is state rather than a constant: a thermal throttle has to reach the
+     * analyser, or the app would keep feeding full-size frames while NRR asks
+     * for smaller ones.
+     */
+    @Volatile private var analysisWidth: Int = BASE_ANALYSIS_WIDTH
+
+    /** One-shot: whether the width decision has been logged yet. */
+    private val widthLogged = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * Follow NRR's advised resolution scale for the analysed frame.
+     *
+     * The scale maps onto the width over NRR's own declared range: its
+     * `max_resolution_scale` (1.00) is [BASE_ANALYSIS_WIDTH] and its
+     * `min_resolution_scale` (0.50) is [MIN_ANALYSIS_WIDTH], so the whole range
+     * of advice maps onto [MIN_ANALYSIS_WIDTH]..[BASE_ANALYSIS_WIDTH] and the
+     * frame only shrinks when NRR itself asks. The width stays even, because
+     * FaceDetector requires it.
+     *
+     * `scale` is null when NRR offers no trustworthy advice (its power-manager
+     * inputs are stubs on this platform -- see `NRRBridge.advisedResolutionScale`)
+     * or when NRR is not available at all. The base width stands in that case,
+     * and the decision is logged either way: a frame-geometry change must never
+     * be silent, because the same geometry is what NRR renders.
+     */
+    fun applyAdvisedResolutionScale(scale: Double?) {
+        val advised = (scale ?: 1.0).coerceIn(0.5, 1.0)
+        val width = (((BASE_ANALYSIS_WIDTH * advised).toInt() / 2) * 2)
+            .coerceIn(MIN_ANALYSIS_WIDTH, BASE_ANALYSIS_WIDTH)
+        val previous = analysisWidth
+        if (width != previous) {
+            analysisWidth = width
+            android.util.Log.i("VisionProvider",
+                "analysis width $previous -> $width " +
+                "(NRR advised resolution_scale=${"%.2f".format(advised)})")
+        } else if (widthLogged.compareAndSet(false, true)) {
+            android.util.Log.i("VisionProvider",
+                "analysis width=$width (NRR advised resolution_scale=" +
+                "${"%.2f".format(advised)}; range " +
+                "$MIN_ANALYSIS_WIDTH..$BASE_ANALYSIS_WIDTH)")
+        }
+    }
 
     private var lastAnalyzeMs = 0L
     private var lastFaceMs = 0L
@@ -244,7 +301,7 @@ class VisionProvider(private val context: Context) {
                     "first frame analysed (${proxy.width}x${proxy.height}, " +
                     "rotation=${proxy.imageInfo.rotationDegrees})")
             }
-            val bitmap = frameToRgb565(proxy, ANALYSIS_WIDTH)
+            val bitmap = frameToRgb565(proxy, analysisWidth)
             if (bitmap == null) {
                 if (frameConvertFailedLogged.compareAndSet(false, true)) {
                     android.util.Log.w("VisionProvider",

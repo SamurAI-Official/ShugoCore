@@ -45,8 +45,17 @@ class VisionProvider(private val context: Context) {
      */
     private var lastLoggedFaces = -2
     private var lastPresenceLogMs = 0L
+    /** Whether the last logged frame was too dark to see anything in. */
+    private var lastLoggedDark = false
 
     companion object {
+
+        /**
+         * Below this mean luma the camera is effectively blind, so faces=0 means "cannot see"
+         * rather than "nobody there" -- the same distinction the sound contract draws between a
+         * room nobody measured and a quiet one.
+         */
+        private const val DARK_LUMA_MAX = 12
         private const val ANALYZE_INTERVAL_MS = 1_000L
         private const val ANALYZE_INTERVAL_ATTENTION_MS = 200L  // v1.20: higher rate for gaze tracking
         private const val ABSENT_AFTER_MS = 20_000L
@@ -293,14 +302,34 @@ class VisionProvider(private val context: Context) {
                 (faces[it]?.confidence() ?: 0f) >= MIN_FACE_CONFIDENCE
             }
             PerceptionState.lastFaceCount = faceCount
+            // Mean luma, sampled every 16th pixel: enough at ~1 fps, and it is the only way an
+            // unlit room can be told from an empty one. The face detector needs visible features,
+            // so without this "faces=0" in the dark reads as "nobody there" -- a claim the camera
+            // is in no position to make.
+            var lumaSum = 0L
+            var lumaCount = 0
+            var cursor = 0
+            val pixels = bitmap.width * bitmap.height
+            while (cursor < pixels) {
+                val pixel = bitmap.getPixel(cursor % bitmap.width, cursor / bitmap.width)
+                lumaSum += (((pixel shr 16) and 0xFF) + ((pixel shr 8) and 0xFF)
+                    + (pixel and 0xFF)) / 3
+                lumaCount++
+                cursor += 16
+            }
+            val luma = if (lumaCount > 0) (lumaSum / lumaCount).toInt() else -1
+            val tooDark = luma in 0..DARK_LUMA_MAX
             // The correlation series: what this device can see, when it saw it. Change-driven
             // with a heartbeat, because a device that sees nobody for ten minutes has to be
-            // distinguishable from one whose camera is dead.
+            // distinguishable both from one whose camera is dead and from one that cannot see.
             val presenceNow = System.currentTimeMillis()
-            if (faceCount != lastLoggedFaces || presenceNow - lastPresenceLogMs >= 30_000L) {
+            if (faceCount != lastLoggedFaces || tooDark != lastLoggedDark ||
+                    presenceNow - lastPresenceLogMs >= 30_000L) {
                 lastLoggedFaces = faceCount
+                lastLoggedDark = tooDark
                 lastPresenceLogMs = presenceNow
-                android.util.Log.i("VisionProvider", "presence faces=$faceCount")
+                android.util.Log.i("VisionProvider", "presence faces=$faceCount luma=$luma" +
+                    (if (tooDark) " unavailable=too_dark" else ""))
             }
 
             // v1.20: gaze extraction from FaceDetector pose (yaw toward camera).

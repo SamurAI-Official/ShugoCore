@@ -6,7 +6,9 @@ that moved nothing, a node that never took the lease, a harness error. A claim c
 on a transcript that says nothing, which is the whole reason the producer exists instead of a
 hand-written status line.
 """
+import contextlib
 import importlib.util
+import io
 import os
 import sys
 import unittest
@@ -28,6 +30,16 @@ def _module():
 
 
 FLEET = _module()
+
+
+def _console():
+    """The operator terminal, loaded as a module (it is a script, not a package)."""
+    spec = importlib.util.spec_from_file_location(
+        "console_under_test",
+        os.path.join(ROOT, "clients", "desktop", "shugocore_desktop.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 PEERS = [{"device_id": "shugo-mac", "priority": 10, "thermal_status": 0,
           "mem_available_bytes": 1680637952, "paired": True, "can_speak": True,
@@ -110,16 +122,8 @@ class TheRosterLinesTestCase(unittest.TestCase):
 class TheTerminalRosterTestCase(unittest.TestCase):
     """`/nodes` reads the node's own records; the layout is pure and testable."""
 
-    def _console(self):
-        spec = importlib.util.spec_from_file_location(
-            "console_under_test",
-            os.path.join(ROOT, "clients", "desktop", "shugocore_desktop.py"))
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-
     def test_the_roster_marks_the_lease_holder_and_sorts_by_priority(self):
-        lines = self._console().format_fleet(
+        lines = _console().format_fleet(
             {"node_id": "shugo-desktop", "role": "primary", "peers": PEERS,
              "lease": "shugo-desktop"})
         self.assertIn("shugo-desktop (primary) (holds the lease)", lines[0])
@@ -131,7 +135,44 @@ class TheTerminalRosterTestCase(unittest.TestCase):
         self.assertIn("lease held by      shugo-desktop", joined)
 
     def test_a_node_that_heard_nobody_says_so(self):
-        lines = self._console().format_fleet(
+        lines = _console().format_fleet(
             {"node_id": "shugo-desktop", "role": "standalone", "peers": [], "lease": ""})
         self.assertIn("standalone", lines[0])
         self.assertIn("none heard yet", lines[1])
+
+
+class TheNodesCommandTestCase(unittest.TestCase):
+    """The terminal command itself, on a stub node. The roster formatter alone is not the
+    feature: `/nodes` has to read the node's own telemetry, and a node that has heard nobody
+    has to answer that way rather than printing an empty table."""
+
+    class _Election:
+        def primary(self):
+            return "shugo-desktop"
+
+    class _Agent:
+        def __init__(self, peers, role="primary"):
+            self.telemetry = {"mesh_peers": peers}
+            self._role = role
+            self.mesh_election = TheNodesCommandTestCase._Election()
+
+        def get_status(self):
+            return {"node_id": "shugo-desktop", "mesh_role": self._role}
+
+    def _run(self, agent):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            handled = _console().handle_terminal_command(agent, "/nodes")
+        return handled, out.getvalue()
+
+    def test_the_command_prints_what_the_node_itself_has_heard(self):
+        handled, text = self._run(self._Agent(PEERS))
+        self.assertTrue(handled, "the terminal did not recognise /nodes")
+        self.assertIn("shugo-mac", text)
+        self.assertIn("holds the lease", text)
+
+    def test_the_command_reports_a_node_that_heard_nobody(self):
+        handled, text = self._run(self._Agent([], role="standalone"))
+        self.assertTrue(handled)
+        self.assertIn("none heard yet", text)
+        self.assertNotIn("shugo-mac", text)

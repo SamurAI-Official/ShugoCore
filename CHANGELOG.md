@@ -29,6 +29,35 @@ Two fleet facts, learned by trying to make a phone speak into a terminal, are no
 - Returning a phone from peripheral to primary does **not** restart its agent: the pane
   flips back while the header stays `AGENT OFFLINE` until the app is restarted.
 
+### The node has an ear: hearing through its own recogniser
+
+`--terminal --ear` listens on this node's own recogniser (PowerShell's
+`System.Speech.Recognition`, the same stdlib-only subprocess boundary as the voice) and
+hands each recognised phrase to the *fleet's* speech path -- the `HumanObservation(speech)`
+a phone's recogniser posts, source `on_device_stt`. Attention stamps it as speech, routing
+can pick this node for a spoken reply, and the journal records where the words came from.
+Nothing marks them typed: typed turns keep their own seam, and keeping the two apart is
+what the terminal is for.
+
+- The microphone has one owner and **policy decides**, not the terminal:
+  `ear_permission()` asks the agent's `apply_sound_policy()` and refuses when the mode is
+  `sound` (the acoustic layer owns the capture) or `off`. An unreadable policy is a
+  refusal, not permission.
+- A node that hears itself would answer its own sentences forever, so a phrase arriving
+  while the voice is speaking is dropped (`echo_dead_time`) -- the same dead time the
+  phone fleet keeps.
+- Honest degradation, twice over: no recogniser or no capture device is reported *with a
+  reason* (a silent ear and a quiet room are otherwise the same observation), and an ear
+  that stops says so instead of just going quiet.
+- `transcribe_wave()` reads a WAV instead of the microphone, which is how the ear is
+  proven on a machine that cannot talk to itself: the acceptance test synthesizes "check
+  the battery level", listens to its own output, and requires the sentence back. Verified
+  live here -- the round trip returns "Check the batter reliable", one phrase.
+- `System.Speech.Recognition` has **no device chooser** (its only other inputs are a wave
+  file, a stream and null), so live hearing uses whatever Windows calls the default
+  capture device. On a desk whose endpoints are virtual -- this one has Oculus and Iriun
+  devices -- the ear will hear nothing, and the WAV path is the check to run.
+
 ### The runtime tools ship, and two JNI contract tests stopped skipping
 
 `/runtime/` was ignored wholesale, so the operator tools that live beside the data they

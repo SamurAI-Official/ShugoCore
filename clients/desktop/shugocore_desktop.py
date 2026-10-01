@@ -1260,6 +1260,14 @@ def build_parser() -> argparse.ArgumentParser:
                              "voice's own rate)")
     parser.add_argument("--voice-engine", default="", metavar="NAME",
                         help="with --voice, a named System.Speech voice to use")
+    parser.add_argument("--ear", action="store_true",
+                        help="with --terminal, listen for words on this node's own "
+                             "recogniser (Windows System.Speech) and answer them as "
+                             "heard speech; refused when policy gives the microphone "
+                             "to another layer")
+    parser.add_argument("--ear-window", type=float, default=8.0,
+                        help="with --ear, seconds per recognition window "
+                             "(default 8; longer hears more, answers later)")
     parser.add_argument("--mesh-token", default="",
                         help="mesh shared secret for --terminal (defaults to "
                              "SHUGOCORE_MESH_TOKEN)")
@@ -1306,6 +1314,28 @@ def selftest(args) -> int:
     return 0 if failures == 0 else 1
 
 
+POWERSHELL_EXE = "powershell.exe"
+
+
+def _powershell(script, env=None, timeout=30.0, exe=None):
+    """Run one script under Windows PowerShell, with its inputs in the environment.
+
+    Both host speech providers (the voice and the ear) reach PowerShell this way for
+    the same reason: a *sentence* must never be parsed as a command line, so values
+    travel in the child's environment and the script is a constant.
+
+    This never raises on the caller's behalf -- a host with no PowerShell is a node
+    without a provider, which is a state both providers report rather than crash on.
+    """
+    import subprocess
+    merged = dict(os.environ)
+    merged.update({key: str(value) for key, value in (env or {}).items()})
+    return subprocess.run([exe or POWERSHELL_EXE, "-NoProfile", "-NonInteractive",
+                           "-Command", script],
+                          env=merged, capture_output=True, text=True,
+                          timeout=timeout, check=False)
+
+
 class WindowsVoice:
     """Speak replies aloud on this node, through whatever voice Windows has.
 
@@ -1320,7 +1350,7 @@ class WindowsVoice:
     rather than swallowing a reply in silence.
     """
 
-    POWERSHELL = "powershell.exe"
+    POWERSHELL = POWERSHELL_EXE
     SETUP = ("Add-Type -AssemblyName System.Speech; "
              "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
              "if ($env:SHUGO_SPEAK_RATE) { $s.Rate = [int]$env:SHUGO_SPEAK_RATE }; "
@@ -1353,13 +1383,7 @@ class WindowsVoice:
 
     # -- talking to the engine ------------------------------------------
     def _run_powershell(self, script, env):
-        import subprocess
-        merged = dict(os.environ)
-        merged.update(env)
-        return subprocess.run([self.powershell, "-NoProfile", "-NonInteractive",
-                               "-Command", script],
-                              env=merged, capture_output=True, text=True,
-                              timeout=self.timeout, check=False)
+        return _powershell(script, env, timeout=self.timeout, exe=self.powershell)
 
     def _run(self, script, env=None):
         try:
@@ -1495,6 +1519,282 @@ class WindowsVoice:
             return False
 
 
+def ear_permission(agent):
+    """May this node listen with its own recogniser? Returns (allowed, why).
+
+    One microphone has one owner, and policy names the owner (``mic_listen_mode``):
+    ``speech`` keeps the recogniser, ``sound`` means the acoustic layer owns the
+    capture, ``off`` means nobody does. Asked *through the agent*, so the answer is the
+    same policy the device is held to rather than the terminal's opinion of it.
+    """
+    try:
+        mode = str(agent.apply_sound_policy() or "").strip().lower()
+    except Exception as exc:
+        return False, f"policy unreadable ({type(exc).__name__}: {exc})"
+    if mode == "speech":
+        return True, ("policy says listen_mode=speech: the recogniser owns "
+                      "the microphone")
+    if mode == "sound":
+        return False, ("policy says listen_mode=sound: the acoustic layer owns "
+                       "the microphone")
+    if mode == "off":
+        return False, "policy says acoustic perception is off for this node"
+    return False, f"policy named an unusable mode ({mode or 'empty'})"
+
+
+def publish_heard(agent, text, source=None) -> dict:
+    """Hand one recognised phrase to the fleet's own speech path.
+
+    This is the same ``HumanObservation(type="speech")`` a phone's recogniser posts, so
+    the words are *heard* on every surface that matters: attention stamps them as speech,
+    routing may pick this node for a spoken reply, and the journal records where they came
+    from. Nothing here marks them typed -- typed turns have their own seam, and mixing the
+    two is the one thing this terminal must never do.
+    """
+    phrase = str(text or "").strip()
+    if not phrase:
+        return {"accepted": False, "reason": "empty phrase"}
+    return agent.publish_human_observation(
+        {"type": "speech", "source": source or WindowsEar.SOURCE,
+         "payload": {"transcript": phrase}})
+
+
+def echo_dead_time(voice) -> bool:
+    """Is this node's own voice in the room right now?
+
+    A node that hears itself answers its own sentences forever, so a phrase arriving while
+    the voice is speaking is dropped rather than fed back in -- the same dead time the
+    phone fleet keeps between speaking and listening.
+    """
+    if voice is None:
+        return False
+    return bool(getattr(voice, "speaking", False))
+
+
+class WindowsEar:
+    """Listen for words on this node, through whatever ear Windows has.
+
+    The engine is PowerShell's ``System.Speech`` recogniser, driven as a subprocess so
+    the Python side stays stdlib-only -- the same boundary the voice uses, with the same
+    honesty: a host with no recogniser, or no microphone, loses *hearing* and says why
+    rather than reporting silence as "nobody said anything".
+
+    Words go out through ``publish_heard``, the seam a phone's recogniser posts to. The
+    source is ``on_device_stt`` because that is what this is: the node's own recogniser,
+    not a remote peer's.
+    """
+
+    SOURCE = "on_device_stt"
+    WINDOW_S = 8.0
+
+    PROBE = ("Add-Type -AssemblyName System.Speech; "
+             "try { "
+             "$r = New-Object System.Speech.Recognition.SpeechRecognitionEngine; "
+             "$r.SetInputToDefaultAudioDevice(); "
+             "Write-Output ('ok|' + $r.RecognizerInfo.Name) "
+             "} catch { Write-Output ('error|' + $_.Exception.Message) }")
+
+    WAVE = ("Add-Type -AssemblyName System.Speech; "
+            "$r = New-Object System.Speech.Recognition.SpeechRecognitionEngine; "
+            "$r.LoadGrammar((New-Object System.Speech.Recognition.DictationGrammar)); "
+            "$r.SetInputToWaveFile($env:SHUGO_EAR_WAV); "
+            "$res = $r.Recognize([TimeSpan]::FromSeconds([double]$env:SHUGO_EAR_WINDOW)); "
+            "$text = ''; "
+            "if ($res -ne $null) { $text = $res.Text.Trim() }; "
+            "[Console]::Out.WriteLine($text); [Console]::Out.Flush()")
+
+    LISTEN = ("try { Add-Type -AssemblyName System.Speech; "
+              "$r = New-Object System.Speech.Recognition.SpeechRecognitionEngine; "
+              "$r.LoadGrammar((New-Object System.Speech.Recognition.DictationGrammar)); "
+              "$r.SetInputToDefaultAudioDevice(); "
+              "while ($true) { "
+              "$res = $r.Recognize([TimeSpan]::FromSeconds([double]$env:SHUGO_EAR_WINDOW)); "
+              "if ($res -ne $null) { $t = $res.Text.Trim(); "
+              "if ($t.Length -gt 0) { [Console]::Out.WriteLine($t); "
+              "[Console]::Out.Flush() } } } "
+              "} catch { [Console]::Error.WriteLine($_.Exception.Message); exit 2 }")
+
+    def __init__(self, source=None, window=None, timeout=25.0, runner=None,
+                 popen=None, powershell=None) -> None:
+        self.source = source or self.SOURCE
+        self.window = float(window or self.WINDOW_S)
+        self.timeout = timeout
+        self.powershell = powershell or POWERSHELL_EXE
+        self._runner = runner               # injectable (script, env) -> result
+        self._popen = popen                 # injectable command launcher
+        self._available = None
+        self.reason = "not probed yet"
+        self.recognizer = ""
+        self.phrases = 0
+        self.last = ""
+        self._proc = None
+        self._thread = None
+        self._stop = threading.Event()
+
+
+    def _env(self, **extra):
+        values = {"SHUGO_EAR_WINDOW": f"{self.window:g}"}
+        values.update({key: str(value) for key, value in extra.items()})
+        return values
+
+    def _run(self, script, env=None):
+        """One run. Inputs travel in the environment; the script is a constant."""
+        try:
+            if self._runner is not None:
+                merged = self._env()
+                merged.update({key: str(value) for key, value in (env or {}).items()})
+                return self._runner(script, merged)
+            return _powershell(script, self._env() if env is None else env,
+                               timeout=self.timeout, exe=self.powershell)
+        except Exception as exc:            # no ear on this host is not an error
+            self.reason = f"{type(exc).__name__}: {exc}"
+            return None
+
+    def probe(self) -> bool:
+        """Is there an ear on this node? Asked once; the answer says why not.
+
+        The probe opens the default input device as well as constructing the engine, so
+        "no microphone" is reported here rather than as an ear that silently hears
+        nothing.
+        """
+        if self._available is not None:
+            return self._available
+        result = self._run(self.PROBE)
+        if result is None:
+            self._available = False
+            return False
+        text = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        last = lines[-1] if lines else ""
+        if last.startswith("ok"):
+            self.recognizer = last.split("|", 1)[1].strip() if "|" in last else ""
+            self._available = True
+            self.reason = "ready"
+            return True
+        self._available = False
+        if last.startswith("error"):
+            self.reason = last.split("|", 1)[1].strip() or "the recogniser refused"
+        elif result.returncode != 0:
+            self.reason = text[:200] or f"powershell exited {result.returncode}"
+        else:
+            self.reason = f"no recogniser reported ({last[:80] or 'no output'})"
+        return False
+
+    def describe(self) -> str:
+        label = "System.Speech"
+        if self.recognizer:
+            label += f" ({self.recognizer})"
+        # Worth saying out loud: this engine has no device chooser (its only other inputs
+        # are a wave file, a stream and null), so it hears whatever Windows calls the
+        # default capture device -- on a desk with virtual microphones, that is the thing
+        # to check first when the ear seems deaf.
+        return f"{label}, {self.window:g}s windows, default capture device"
+
+
+    # -- hearing something ---------------------------------------------
+    def transcribe_wave(self, path) -> str:
+        """Read one spoken line out of a WAV file instead of the microphone.
+
+        Same engine, same grammar, but the input is an artifact -- which is how an ear
+        the machine running the tests cannot *talk* to is still measured, and how a
+        node's voice and its ear can be checked against each other.
+
+        One phrase, deliberately: for *file* input the engine restarts at the beginning
+        of the wave on each call, so looping collected the same sentence as many times as
+        it was asked. A live device stream advances, a file does not.
+        """
+        result = self._run(self.WAVE, {"SHUGO_EAR_WAV": str(path)})
+        if result is None:
+            return ""
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()[:200]
+            if detail:
+                self.reason = detail
+            return ""
+        text = " ".join(line.strip() for line in (result.stdout or "").splitlines()
+                        if line.strip())
+        if text:
+            self.phrases += 1
+            self.last = text
+        return text
+
+    def start(self, on_heard) -> bool:
+        """Begin listening on the microphone. False (with ``reason``) when it cannot."""
+        if self._proc is not None:
+            return True
+        if not self.probe():
+            return False
+        env = dict(os.environ)
+        env.update(self._env())
+        command = [self.powershell, "-NoProfile", "-NonInteractive",
+                   "-Command", self.LISTEN]
+        try:
+            if self._popen is not None:
+                self._proc = self._popen(command, env)
+            else:
+                import subprocess
+                self._proc = subprocess.Popen(command, env=env,
+                                              stdout=subprocess.PIPE,
+                                              stderr=subprocess.PIPE,
+                                              text=True, bufsize=1)
+        except Exception as exc:
+            self.reason = f"{type(exc).__name__}: {exc}"
+            return False
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._drain, args=(on_heard,),
+                                        name="terminal-ear", daemon=True)
+        self._thread.start()
+        return True
+
+    def stop(self) -> None:
+        """Stop listening: the child owns the capture, so it exits to release it."""
+        self._stop.set()
+        proc = self._proc
+        self._proc = None
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+    def _drain(self, on_heard) -> None:
+        """One phrase per line, the way the child writes them."""
+        proc = self._proc
+        if proc is None:
+            return
+        try:
+            for line in proc.stdout or []:
+                if self._stop.is_set():
+                    break
+                phrase = str(line or "").strip()
+                if not phrase:
+                    continue
+                self.phrases += 1
+                self.last = phrase
+                try:
+                    on_heard(phrase)
+                except Exception as exc:    # a bad turn must not close the ear
+                    self.reason = f"{type(exc).__name__}: {exc}"
+            tail = ""
+            try:
+                tail = (proc.stderr.read() or "").strip() if proc.stderr else ""
+            except Exception:
+                tail = ""
+            if tail:
+                self.reason = tail.splitlines()[-1][:200]
+            elif not self._stop.is_set() and self.reason == "ready":
+                self.reason = "the recogniser exited"
+            if not self._stop.is_set():
+                # Hearing that stops has to say so: silence from a dead ear and silence
+                # from a quiet room are otherwise the same observation.
+                print(f"\n  [EAR    ] stopped: {self.reason}", flush=True)
+        finally:
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+
+
 class TerminalSpeaker:
     """Deliver the agent's replies to the operator sitting at this terminal.
 
@@ -1611,6 +1911,31 @@ def run_terminal(args) -> int:
                           "replies still print")
             voice = None
     agent.register_speak_listener(speaker)
+    ear = None
+    ear_note = "off (pass --ear to listen for words here)"
+    if getattr(args, "ear", False):
+        ear = WindowsEar(window=getattr(args, "ear_window", None))
+        allowed, why = ear_permission(agent)
+        if not allowed:
+            ear_note = f"off ({why})"
+            ear = None
+        elif not ear.probe():
+            ear_note = (f"unavailable on this node ({ear.reason}); words can still "
+                        "be typed")
+            ear = None
+        else:
+            def _on_heard(phrase: str) -> None:
+                """One recognised phrase: show it, then hand it over as *heard*."""
+                if echo_dead_time(voice):
+                    print(f"\n  [EAR    ] heard while speaking, not fed back: "
+                          f"\"{phrase}\"", flush=True)
+                    return
+                print(f"\n  [EAR    ] heard: \"{phrase}\"", flush=True)
+                publish_heard(agent, phrase, ear.source)
+
+            if not ear.start(_on_heard):
+                ear_note = f"unavailable on this node ({ear.reason})"
+                ear = None
     if not getattr(args, "verbose", False):
         # Set *after* the node boots: the agent's own logging setup configures the
         # root logger, so a level set before it is silently overwritten -- which is
@@ -1624,9 +1949,10 @@ def run_terminal(args) -> int:
           f" -> {args.url or spec['url'] or 'offline stub'}")
     print(f"  data dir  {Path(args.data_dir).expanduser().resolve()}")
     print(f"  mesh      port {args.mesh_port}  peers {args.peers or '(none)'}")
-    print("  hearing   a phone in the mesh streams its on-device transcripts "
-          "here; typed words are labelled 'terminal', never 'heard'")
     print(f"  voice     {voice.describe() if voice is not None else voice_note}")
+    print(f"  ear       {ear.describe() if ear is not None else ear_note}")
+    print("  hearing   typed words are labelled 'terminal', never 'heard'; a phone's")
+    print("            recogniser reaches its paired primary, not a mesh peer")
     print("  commands  /status  /say TEXT  /quit      (Ctrl+C also exits)\n")
 
     stop = threading.Event()
@@ -1691,6 +2017,10 @@ def run_terminal(args) -> int:
         pass
     finally:
         stop.set()
+        if ear is not None:
+            # The child owns the capture: leaving it alive would keep the microphone
+            # open past the terminal that asked for it.
+            ear.stop()
         controller.stop()
     print(f"\nterminal closed: {speaker.delivered} repl(s) delivered")
     sys.stdout.flush()

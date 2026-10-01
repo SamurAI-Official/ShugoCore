@@ -375,6 +375,60 @@ Endpoints on the server:
 Backends: `ollama` (default), `llamacpp`, `openai`, `stub` (offline tests).
 Full setup for each OS: [`docs/desktop_server.md`](docs/desktop_server.md).
 
+## Operator engagement terminal (typed, spoken, heard)
+
+The desktop control plane (`clients/desktop/shugocore_desktop.py`) is also a console. Run it
+with `--terminal` and it is a second *front end* of the same node -- the same
+`AgentController`, the same tick, the same turn pipeline -- not a second agent, and it needs
+no GUI at all (the Tk import is tolerant, so it runs over SSH on a host without Tk):
+
+```bash
+python clients/desktop/shugocore_desktop.py --terminal                  # type to the agent
+python clients/desktop/shugocore_desktop.py --terminal --voice          # and hear the replies
+python clients/desktop/shugocore_desktop.py --terminal --voice --ear    # and speak to it
+python clients/desktop/shugocore_desktop.py --terminal --say "status report" --exit-after 30
+```
+
+| Words | How they arrive | How they are labelled |
+|---|---|---|
+| typed | the agent's own conversational path (`handle_typed_input`) | `source="terminal"` -- never `heard` |
+| heard | `--ear`: this node's own recogniser, or a mesh transcript | `HumanObservation(speech)`, source `on_device_stt` |
+| replies | printed as `Agent> ...`; spoken when `--voice` finds a voice | recorded as an `AgentResponse` |
+
+- **`--voice`** speaks replies through PowerShell's `System.Speech`, driven as a subprocess so
+  the Python side stays stdlib-only. The sentence travels in the child's *environment*, never
+  on a command line, so a reply containing quotes or a pipeline is a sentence to be spoken
+  rather than something for a shell to parse. A host with no engine reports the reason in the
+  header and keeps printing: `can_speak` still means "the reply reaches a human", so response
+  routing does not move. The node's arbiter is told while it is speaking, so a voice here is
+  interruptible like any other.
+- **`--ear`** hears through `System.Speech.Recognition`, and each phrase goes out through the
+  same seam a phone's recogniser posts to -- so attention stamps it as speech and routing may
+  pick this node for a *spoken* reply. The microphone has one owner and **policy decides**
+  (`apply_sound_policy`): `--ear` refuses when the mode is `sound` (the acoustic layer owns the
+  capture) or `off`, and an unreadable policy is a refusal rather than permission. A phrase
+  heard while the node is speaking is dropped, because a node that hears itself answers its
+  own sentences forever. No recogniser, or no capture device, is reported with a reason: a
+  silent ear and a quiet room are otherwise the same observation.
+- **`/say TEXT`** drives the agent's own gated `speak_test()` -- the path the AGENT tab's "Test
+  speech" control uses -- instead of talking from the terminal. The terminal prints and the
+  agent speaks; the terminal never becomes a second way for a node to decide to talk.
+  `/status` prints the node's own state.
+- **`--voice-rate`, `--voice-engine`, `--ear-window`, `--no-input`, `--exit-after`,
+  `--mesh-token`** cover scripting, voice choice and headless runs. `System.Speech.Recognition`
+  has no device chooser, so live hearing uses whatever Windows calls the default capture
+  device.
+
+Routing: `terminal_active` (0.30) is what lets a keyboard operator be chosen at all -- bare
+presence (0.15) cannot cross the response floor (0.20) by design, and a face (0.35) still
+outranks a keyboard. Speech heard through `--ear` makes this node a speech candidate instead.
+
+Hearing from a phone is a different path, and worth knowing before waiting for one: a
+peripheral's ears reach its *paired Bluetooth primary* (SPP), a follower consumes its own
+transcripts locally, and a desktop node on the Shogunet fabric is an orchestrator rather than
+an ear -- see
+[The device hive](docs/android_integration.md#the-device-hive-and-which-transport-carries-what).
+
 ## Multi-agent networking with Shogunet
 
 ShugoCore integrates with [Shogunet](https://github.com/SamurAI-Official/Shogunet)
@@ -1120,6 +1174,8 @@ ShugoCore/
 ├── telemetry.py              # telemetry hooks
 ├── token_budget.py           # context budgeting
 ├── version.py                # SemVer, frozen for the 1.x series
+├── clients/desktop/          # host control plane: the GUI panes, and the operator
+│                             #   engagement terminal (--terminal/--voice/--ear)
 ├── clients/android/          # reference Kotlin bridge client + Gradle shell
 ├── platforms/android/        # Android node app: 5-tab control-plane UI (ui/),
 │                             #   runtime/ layer (log bus, node state, sensor
@@ -1130,8 +1186,11 @@ ShugoCore/
 └── requirements.txt
 ```
 
-Runtime artifacts (`runtime/`: `semantic_memory.db`, the audit chain, logs and a
-node's local `mesh_peers.json`) are local and gitignored.
+Runtime state (`runtime/`: `semantic_memory.db`, the audit chain, logs, a node's local
+`mesh_peers.json` and `mesh_token.txt`) is local and gitignored. The operator tools that live
+beside it (`runtime/fleet_correlation.py`, the vision and sound probes, `runtime/tools/*`) are
+tracked, because a runbook that says "run `runtime/vis_phase_check.py`" is not a runbook if a
+fresh clone has no such file.
 
 ## Roadmap
 
@@ -1181,6 +1240,12 @@ Remaining:
 - Deep NPU bring-up (QNN / MTK inference integrations against real silicon)
 - Canonical desktop fleet dashboard UI (parsing the server-hosted
   `/api/v1/fleet`)
+- Engagement matrix: one row per world (robotics / XR / sandbox) saying how an
+  operator reaches the agent there and gets an answer, in the
+  `claim_matrix.py` shape -- check, artifact, verdict -- runnable from the
+  operator terminal
+- XR sandbox for the Godot/OpenXR bridge (`platforms/godot/`), so an operator can
+  stand in a virtual space and be answered there
 
 ### In progress: distributed reasoning across nodes
 

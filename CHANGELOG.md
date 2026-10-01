@@ -6,6 +6,60 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### Vision: a camera that stops is not a camera that never started
+
+Measured on the A16: CameraX bound, delivered analysed frames for 15 s, then closed with
+`state=CLOSED, error=null` -- no exception, no crash, process alive. Nothing threw, so
+nothing reacted; the first report came from the NRR camera probe three minutes later, by
+which point a presence-based decision had three minutes of silently absent vision behind it.
+
+- The watchdog that existed was one-shot: it checked `!firstFrameSeen` twenty seconds after
+  binding, so a camera that stopped *after* delivering satisfied its own condition and was
+  never looked at again. It now re-arms every 5 s for as long as the provider runs and judges
+  by the **age of the last analysed frame**, not by whether one ever arrived.
+- Its threshold is 90 s because the watchdog's own first version (45 s) flagged a healthy
+  camera during a recovery: the number comes from what the watchdog measured about itself,
+  not from a round figure.
+
+**Presence measurement, with controls.** Both channels need the app in the foreground, and
+audio lies about it. Backgrounded for 80 s the A16 produced **1 presence line**; screen off
+for 110 s, **0** -- while the A51 and S9 FE, untouched, produced 10/17/10 and 18/21/14 over
+the same windows. The world was unchanged, so the action caused the silence. Audio kept an
+unbroken 1 Hz heartbeat throughout: 110 of 110 screen-off lines reported `rms=0.0000`
+(median *and* maximum exactly zero) against zero zero-lines on the controls, whose medians
+were ~0.045. Android silences background capture, so that heartbeat was reporting a dead
+microphone as a quiet room -- the class of lie the sound contract exists to refuse.
+`docs/vision_calibration_runbook.md` records the calibration attempts, the second clap
+measurement, and why the distance claim fails.
+
+### The operator terminal: typing to the agent, and a keyboard operator who can be answered
+
+The hive had mouths on the phones and status panes on a desktop, but no console where an
+operator could simply type to the agent and watch what it heard, decided and did:
+
+    python clients/desktop/shugocore_desktop.py --terminal --say "hello"
+
+- It is a second *front end* of the same node -- the same `AgentController`, the same tick,
+  the same turn pipeline -- rather than a second agent. Typed words go in through the agent's
+  own conversational path (`handle_typed_input`) carrying `source="terminal"`, so no journal,
+  scene classifier or mesh agent can record them as something a microphone heard.
+- The terminal registers a speak listener, which is what makes `can_speak` true and the node a
+  response candidate. `can_speak` has always meant "the reply reaches a human", and printing
+  counts.
+- `response_routing` gains `terminal_active` (0.30). A keyboard operator has no face and no
+  gaze, and `presence_present` (0.15) cannot cross the floor (0.20) by design -- so before
+  this a screen could never be chosen, and the hive answered a phone in the room instead. A
+  face (0.35) still outranks a keyboard, and the signal is set only while input is recent.
+- `--say`, `--exit-after`, `--no-input`, `--mesh-token` and `--verbose` make it scriptable and
+  headless; the Tk import is tolerant, so it runs over SSH on a host with no Tk at all.
+
+Two faults the first smoke run found, both of which made it unusable rather than wrong: the
+agent's logging setup configures the root logger, so a level set *before* boot was silently
+overwritten and every INFO line appeared twice, once per second; and redirected stdout is
+block-buffered, so a scripted run showed nothing until it exited -- while the mesh threads
+kept the port bound, so the next run hung. Output is line-buffered now, and the terminal
+exits through `os._exit(0)` after `controller.stop()`.
+
 ### The operator terminal has a voice, and the fleet's speech path is written down
 
 `--terminal --voice` speaks replies aloud through PowerShell's `System.Speech` when the

@@ -1251,6 +1251,15 @@ def build_parser() -> argparse.ArgumentParser:
                              "until Ctrl+C or /quit); used by the smoke test")
     parser.add_argument("--no-input", action="store_true",
                         help="with --terminal, display only (do not read stdin)")
+    parser.add_argument("--voice", action="store_true",
+                        help="with --terminal, speak replies aloud when this node "
+                             "has a voice (Windows System.Speech); printing is "
+                             "unaffected, so a node without one still answers")
+    parser.add_argument("--voice-rate", type=int, default=None,
+                        help="with --voice, speech rate -10..10 (default: the "
+                             "voice's own rate)")
+    parser.add_argument("--voice-engine", default="", metavar="NAME",
+                        help="with --voice, a named System.Speech voice to use")
     parser.add_argument("--mesh-token", default="",
                         help="mesh shared secret for --terminal (defaults to "
                              "SHUGOCORE_MESH_TOKEN)")
@@ -1297,6 +1306,195 @@ def selftest(args) -> int:
     return 0 if failures == 0 else 1
 
 
+class WindowsVoice:
+    """Speak replies aloud on this node, through whatever voice Windows has.
+
+    The engine is PowerShell's ``System.Speech``, driven as a subprocess so the
+    Python side stays stdlib-only and a node without a voice loses nothing but the
+    sound. The sentence goes to the child in the *environment*, never on the
+    command line: a reply containing quotes, semicolons or a pipeline is a sentence
+    to be spoken, not something for a shell to parse.
+
+    ``say()`` hands one sentence to a worker thread and returns, because the tick
+    loop must never wait on a loudspeaker -- and the queue counts what it drops
+    rather than swallowing a reply in silence.
+    """
+
+    POWERSHELL = "powershell.exe"
+    SETUP = ("Add-Type -AssemblyName System.Speech; "
+             "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+             "if ($env:SHUGO_SPEAK_RATE) { $s.Rate = [int]$env:SHUGO_SPEAK_RATE }; "
+             "if ($env:SHUGO_SPEAK_VOICE) { "
+             "try { $s.SelectVoice($env:SHUGO_SPEAK_VOICE) } catch { } }; ")
+    PROBE = ("Add-Type -AssemblyName System.Speech; "
+             "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+             "Write-Output ('ok|' + $s.Voice.Name)")
+    SAY = SETUP + "$s.Speak($env:SHUGO_SPEAK_TEXT); Write-Output 'spoken'"
+    WAVE = (SETUP + "$s.SetOutputToWaveFile($env:SHUGO_SPEAK_WAV); "
+            "$s.Speak($env:SHUGO_SPEAK_TEXT); $s.SetOutputToNull(); "
+            "Write-Output 'written'")
+
+    def __init__(self, rate=None, voice="", timeout=30.0, runner=None,
+                 powershell=None) -> None:
+        self.rate = rate
+        self.voice = voice or ""
+        self.timeout = timeout
+        self.powershell = powershell or self.POWERSHELL
+        self._runner = runner or self._run_powershell
+        self._available = None
+        self.reason = "not probed yet"
+        self.voice_name = ""
+        self.spoken = 0
+        self.dropped = 0
+        self.speaking = False
+        self._queue = queue.Queue(maxsize=8)
+        self._worker = None
+        self._attention = None
+
+    # -- talking to the engine ------------------------------------------
+    def _run_powershell(self, script, env):
+        import subprocess
+        merged = dict(os.environ)
+        merged.update(env)
+        return subprocess.run([self.powershell, "-NoProfile", "-NonInteractive",
+                               "-Command", script],
+                              env=merged, capture_output=True, text=True,
+                              timeout=self.timeout, check=False)
+
+    def _run(self, script, env=None):
+        try:
+            return self._runner(script, dict(env or {}))
+        except Exception as exc:            # no engine on this node is not an error
+            self.reason = f"{type(exc).__name__}: {exc}"
+            return None
+
+    def probe(self) -> bool:
+        """Is there a voice on this node? Asked once; the answer says why not."""
+        if self._available is not None:
+            return self._available
+        result = self._run(self.PROBE)
+        if result is None:
+            self._available = False
+            return False
+        if result.returncode != 0:
+            self._available = False
+            detail = (result.stderr or result.stdout or "").strip()
+            self.reason = detail[:200] or f"powershell exited {result.returncode}"
+            return False
+        lines = (result.stdout or "").strip().splitlines()
+        last = lines[-1] if lines else ""
+        if not last.startswith("ok"):
+            self._available = False
+            self.reason = f"no voice reported ({last[:80] or 'no output'})"
+            return False
+        self.voice_name = last.split("|", 1)[1].strip() if "|" in last else ""
+        self._available = True
+        self.reason = "ready"
+        return True
+
+    def describe(self) -> str:
+        label = (f"System.Speech ({self.voice_name})" if self.voice_name
+                 else "System.Speech")
+        if self.rate not in (None, ""):
+            label += f" rate {self.rate}"
+        return label
+
+
+    # -- saying something ----------------------------------------------
+    def attach(self, attention) -> None:
+        """Tell the agent's arbiter when this node talks, so it can be cut off."""
+        self._attention = attention
+
+    def _stamp(self, speaking: bool) -> None:
+        stamp = getattr(self._attention, "stamp_tts", None)
+        if callable(stamp):
+            try:
+                stamp(bool(speaking))
+            except Exception:
+                pass
+        self.speaking = bool(speaking)
+
+    def enqueue(self, text) -> bool:
+        """Hand one sentence to the speaker thread. False when it could not go."""
+        message = str(text or "").strip()
+        if not message or not self.probe():
+            return False
+        self._ensure_worker()
+        try:
+            self._queue.put_nowait(message)
+        except queue.Full:
+            self.dropped += 1
+            return False
+        return True
+
+    def say(self, text) -> bool:
+        """The speaker-facing name for one spoken sentence."""
+        return self.enqueue(text)
+
+    def _ensure_worker(self) -> None:
+        if self._worker is not None and self._worker.is_alive():
+            return
+        self._worker = threading.Thread(target=self._drain, name="terminal-voice",
+                                        daemon=True)
+        self._worker.start()
+
+    def _drain(self) -> None:
+        while True:
+            message = self._queue.get()
+            try:
+                self._speak_now(message)
+            except Exception as exc:        # one bad sentence, not a dead voice
+                self.reason = f"{type(exc).__name__}: {exc}"
+            finally:
+                self._queue.task_done()
+
+    def _env(self, **extra) -> dict:
+        values = {"SHUGO_SPEAK_RATE":
+                  "" if self.rate in (None, "") else str(self.rate),
+                  "SHUGO_SPEAK_VOICE": self.voice}
+        values.update({key: str(value) for key, value in extra.items()})
+        return values
+
+    def _speak_now(self, message: str) -> bool:
+        self._stamp(True)
+        result = None
+        try:
+            result = self._run(self.SAY, self._env(SHUGO_SPEAK_TEXT=message))
+            ok = result is not None and result.returncode == 0
+        finally:
+            self._stamp(False)
+        if ok:
+            self.spoken += 1
+        else:
+            detail = "" if result is None else \
+                (result.stderr or result.stdout or "").strip()[:200]
+            self.reason = detail or "the voice engine did not report success"
+        return ok
+
+    def synthesize(self, text, path) -> bool:
+        """Write one sentence to a WAV file instead of the loudspeaker.
+
+        Same engine and same text path, but the result is an artifact that can be
+        measured -- which is how a voice the machine running the test cannot
+        *hear* is still proven to work.
+        """
+        message = str(text or "").strip()
+        if not message or not self.probe():
+            return False
+        result = self._run(self.WAVE,
+                           self._env(SHUGO_SPEAK_TEXT=message,
+                                     SHUGO_SPEAK_WAV=str(path)))
+        if result is None or result.returncode != 0:
+            detail = "" if result is None else \
+                (result.stderr or result.stdout or "").strip()[:200]
+            self.reason = detail or "the voice engine did not report success"
+            return False
+        try:
+            return Path(path).stat().st_size > 0
+        except OSError:
+            return False
+
+
 class TerminalSpeaker:
     """Deliver the agent's replies to the operator sitting at this terminal.
 
@@ -1311,6 +1509,17 @@ class TerminalSpeaker:
         self._stream = stream or sys.stdout
         self.delivered = 0
         self.last = ""
+        self._voice = None
+
+    def attach_voice(self, voice) -> None:
+        """Give the terminal a loudspeaker as well as a screen.
+
+        Printing stays the delivery: ``can_speak`` has always meant "the reply
+        reaches a human", and sight counts. A voice adds sound when the node has
+        one, and a node without one is not a node that cannot answer -- so nothing
+        downstream of this method changes its mind about who should speak.
+        """
+        self._voice = voice
 
     def speak(self, text: str) -> bool:
         message = str(text or "").strip()
@@ -1319,7 +1528,42 @@ class TerminalSpeaker:
         self.delivered += 1
         self.last = message
         print(f"\nAgent> {message}\n", file=self._stream, flush=True)
+        if self._voice is not None:
+            # Queued, not awaited: the tick loop must not wait on a loudspeaker.
+            self._voice.say(message)
         return True
+
+
+def handle_terminal_command(agent, text) -> bool:
+    """The terminal's slash commands. True when the line was one of them.
+
+    ``/say`` drives one speech action through the agent's *own* gated path -- the
+    same one the AGENT tab's "Test speech" control uses -- instead of speaking from
+    the terminal, so anything this node says out loud has passed the same policy
+    gate as everything else it says. The terminal prints and the agent speaks; the
+    terminal never decides to.
+    """
+    lowered = str(text or "").strip().lower()
+    if lowered == "/status":
+        status = agent.get_status() or {}
+        for key in ("node_id", "mesh_role", "model", "security_baseline"):
+            if key in status:
+                print(f"    {key:<18} {status[key]}", flush=True)
+        return True
+    if lowered == "/say" or lowered.startswith("/say "):
+        asked = str(text).strip()[4:].strip()
+        try:
+            result = agent.speak_test(asked or None)
+        except Exception as exc:            # a bad command must not kill the loop
+            print(f"    speak_test failed: {type(exc).__name__}: {exc}", flush=True)
+            return True
+        if isinstance(result, dict):
+            summary = ", ".join(f"{key}={value}" for key, value in result.items())
+        else:
+            summary = str(result)
+        print(f"    speak_test -> {summary or 'no result'}", flush=True)
+        return True
+    return False
 
 
 def run_terminal(args) -> int:
@@ -1352,6 +1596,20 @@ def run_terminal(args) -> int:
         return 1
     agent = controller.agent
     speaker = TerminalSpeaker()
+    voice = None
+    voice_note = "off (pass --voice to speak replies aloud here)"
+    if getattr(args, "voice", False):
+        voice = WindowsVoice(rate=getattr(args, "voice_rate", None),
+                             voice=getattr(args, "voice_engine", "") or "")
+        if voice.probe():
+            # The arbiter is told while this node is talking, so a voice here is
+            # interruptible like any other: sound is not a claim on the room.
+            voice.attach(getattr(agent, "attention", None))
+            speaker.attach_voice(voice)
+        else:
+            voice_note = (f"unavailable on this node ({voice.reason}); "
+                          "replies still print")
+            voice = None
     agent.register_speak_listener(speaker)
     if not getattr(args, "verbose", False):
         # Set *after* the node boots: the agent's own logging setup configures the
@@ -1368,7 +1626,8 @@ def run_terminal(args) -> int:
     print(f"  mesh      port {args.mesh_port}  peers {args.peers or '(none)'}")
     print("  hearing   a phone in the mesh streams its on-device transcripts "
           "here; typed words are labelled 'terminal', never 'heard'")
-    print("  commands  /status  /quit      (Ctrl+C also exits)\n")
+    print(f"  voice     {voice.describe() if voice is not None else voice_note}")
+    print("  commands  /status  /say TEXT  /quit      (Ctrl+C also exits)\n")
 
     stop = threading.Event()
 
@@ -1379,11 +1638,7 @@ def run_terminal(args) -> int:
         text = str(text or "").strip()
         if not text:
             return
-        if text == "/status":
-            status = agent.get_status() or {}
-            for key in ("node_id", "mesh_role", "model", "security_baseline"):
-                if key in status:
-                    print(f"    {key:<18} {status[key]}", flush=True)
+        if handle_terminal_command(agent, text):
             return
         try:
             handled = agent.handle_typed_input(text)

@@ -573,6 +573,50 @@ A rollout only upgrades in place if every device trusts the signing key; a
 mismatch (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`) is reported per target and the
 device keeps its data - see the fleet-key notes in `CHANGELOG.md`.
 
+### Named development tasks (dev_task)
+
+| Action | Type | Description |
+|---|---|---|
+| `fleet_dev_task` | Side-effecting | Name one task from a node's own registry and have that node run it |
+
+The hive could already ask a peer to do two things over the mesh — speak, or host
+an RPC peripheral. Everything else an operator does *to* a node (check it against
+the fleet's declared state, pull the repo, run the suite, rebuild the RPC server)
+happened by hand, on each machine, outside the governance layer. `dev_task` makes
+that an ordinary gated capability, and the shape *is* the safety property: **the
+hub names a task and the peer decides what the name means.**
+
+- `dev_tasks.NAMED_TASKS` is the registry, and it belongs to the node:
+  `node_consistency`, `run_tests`, `git_pull`, `build_rpc_server`, `fleet_status`.
+  Each entry is a fixed argv vector, a working directory, a timeout, and the
+  pieces of the machine it needs — and `validate_registry` refuses a placeholder it
+  did not put there, because that is what an accidental interpolation looks like.
+- **Nothing that crosses the mesh is an argv.** The wire carries
+  `{"task": "run_tests"}` and nothing else. `FleetDevTaskHandler` refuses a request
+  that carries `argv`, `command`, `cmd`, `cwd`, `shell`, `env` … *by name*, and
+  `run_named_task` has no parameter through which one could arrive.
+- The hub's half is consent-gated and approval-gated exactly like `fleet_deploy`,
+  on the engine's own decision gate.
+- The peer's half resolves the name against *its* registry, checks it actually has
+  the tooling (`git`, `pytest`, the script — a missing piece is refused with the
+  reason, so "the peer did not answer" never hides it), runs it with `shell=False`
+  and the node's **own** interpreter, and audits `dev_task_started` /
+  `dev_task_finished` on its own chain.
+- Host-only, like `fleet_deploy`: `dev_tasks` is not in the Android bundle, so a
+  phone refuses a delegated dev task with a reason instead of guessing.
+
+```bash
+py -3.10 runtime/tools/dev_task_proof.py --task node_consistency
+```
+
+runs the proof the claims matrix judges: a peer node in its own process, this node
+as the hub holding the lease, the operator path (consent, approval, the engine's
+gate), one named task delegated over the real transport — and the peer's own line,
+its argv, its exit code and its audit entries quoted in
+`runtime/evidence/dev_task.txt`. The exit code is not required to be `0`: a
+consistency check that finds a difference is doing its job, so the claim is that
+the hub records the peer's verdict rather than a friendlier one.
+
 ### Onboarding a node: the two things it cannot work out (v1.30.23)
 
 A node is accepted only if it presents the fleet's shared secret, and it reaches

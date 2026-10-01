@@ -45,6 +45,10 @@ from policy import FLEET_ACTION_TYPES, FLEET_READ_ACTION_TYPES
 logger = logging.getLogger(__name__)
 
 DEFAULT_PACKAGE = "com.samurai.shugocore"
+# The action types THIS handler serves. ``policy.FLEET_ACTION_TYPES`` is the shared class (a
+# dev task lives in it too), so the handler names its own share: registering by class would
+# claim ``fleet_dev_task`` and answer a dev task with "unknown fleet action".
+HANDLED_TYPES = ("fleet_deploy", "fleet_status")
 # A rollout is bounded: the operator allowlist is the real gate, this keeps a
 # runaway (or hallucinated) target list from stampeding the mesh.
 MAX_TARGETS = 8
@@ -338,8 +342,13 @@ def register_fleet_handlers(execution_layer: Any,
     Mirrors ``shugonet_bridge.register_network_handlers``: the execution layer
     gets one handler per action type, and ``policy.KNOWN_ACTION_TYPES`` is
     extended so any module validating against it accepts the new names.
+
+    The types are named here rather than taken from ``policy.FLEET_ACTION_TYPES``:
+    that class is shared with ``dev_tasks`` now, and taking the whole class would
+    install *this* handler under ``fleet_dev_task`` -- a deploy handler answering a
+    dev task with "unknown fleet action". A handler declares what it serves.
     """
-    types = sorted(FLEET_ACTION_TYPES | FLEET_READ_ACTION_TYPES)
+    types = sorted(HANDLED_TYPES)
     policy = policy_module
     if policy is None:
         try:

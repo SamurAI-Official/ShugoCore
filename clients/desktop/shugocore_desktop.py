@@ -1847,6 +1847,24 @@ def _human_bytes(value) -> str:
     return f"{number:.2f} TiB"
 
 
+def _node_id(agent) -> str:
+    """This node's own name, from the node itself.
+
+    Measured live: ``get_status()`` has no ``node_id`` (the runtime reports it as
+    ``agent_id`` and the agent keeps it as ``node_id``), so reading it from the status dict is
+    how the roster ends up calling the machine it runs on "unknown".
+    """
+    name = str(getattr(agent, "node_id", "") or "")
+    if not name:
+        name = str(getattr(getattr(agent, "mesh_election", None), "node_id", "") or "")
+    if not name:
+        try:
+            name = str((agent.get_status() or {}).get("mesh", {}).get("agent_id") or "")
+        except Exception:
+            name = ""
+    return name
+
+
 def fleet_snapshot(agent) -> dict:
     """What this node knows about the fleet, from its own surfaces -- never invented.
 
@@ -1868,7 +1886,7 @@ def fleet_snapshot(agent) -> dict:
         lease = str(getattr(agent, "mesh_election", None).primary() or "")
     except Exception:
         lease = ""
-    return {"node_id": str(status.get("node_id") or ""),
+    return {"node_id": _node_id(agent),
             "role": str(status.get("mesh_role") or "unknown"),
             "peers": peers, "lease": lease}
 

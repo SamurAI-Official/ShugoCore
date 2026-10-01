@@ -26,6 +26,8 @@ import requests
 
 from policy import (
     CapabilityRegistry,
+    FLEET_ACTION_TYPES,
+    FLEET_READ_ACTION_TYPES,
     MOBILE_ACTION_TYPES,
     MOBILE_READ_ACTION_TYPES,
     NETWORK_ACTION_TYPES,
@@ -76,11 +78,17 @@ class ExecutionLayer:
         type. Handlers are invoked only after the full policy gate has cleared
         the decision.
         """
+        # policy is the vocabulary: every action class it declares may have a handler. The
+        # fleet class was added to policy later and missed here, so
+        # ``register_fleet_handlers`` raised and its handler was never installed -- an action
+        # the engine consent-gated, offered to the model, and then answered "Unknown action
+        # type" at execution. Adding a class to policy means adding it here.
         allowed = (SIDE_EFFECTING_ACTION_TYPES
                    | ROBOTICS_ACTION_TYPES | ROBOTICS_SAFETY_ACTION_TYPES
                    | ROBOTICS_READ_ACTION_TYPES
                    | MOBILE_ACTION_TYPES | MOBILE_READ_ACTION_TYPES
                    | NETWORK_ACTION_TYPES | NETWORK_READ_ACTION_TYPES
+                   | FLEET_ACTION_TYPES | FLEET_READ_ACTION_TYPES
                    | OBSERVATION_ACTION_TYPES
                    | SPEECH_OUTPUT_ACTION_TYPES
                    | ASK_USER_ACTION_TYPES)

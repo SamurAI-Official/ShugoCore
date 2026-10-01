@@ -64,12 +64,15 @@ logger = logging.getLogger("shugocore_android")
 _ORCH_MIN_HEADROOM_BYTES = 64 * 1024 * 1024
 _ORCH_MIN_BATTERY_PCT = 15
 # Mesh topics for delegated work. The primary may ask a node to perform one
-# already-gated action (speak / ask the local human); the node answers on the
-# result topic. Only the lease holder is accepted as a sender, so a peer cannot
-# use another node as its hands.
+# already-gated action (speak / ask the local human / host its RPC peripheral /
+# run one of its *named* dev tasks); the node answers on the result topic. Only the
+# lease holder is accepted as a sender, so a peer cannot use another node as its hands.
+# ``dev_task`` carries a task *name* and nothing else: the receiver resolves it
+# against its own registry (dev_tasks.NAMED_TASKS), which is why a hub can ask
+# without ever naming an argv.
 DELEGATE_TOPIC = "orchestrate/delegate"
 DELEGATE_RESULT_TOPIC = "orchestrate/result"
-DELEGATABLE_ACTIONS = ("speak", "ask_user", "mesh_rpc")
+DELEGATABLE_ACTIONS = ("speak", "ask_user", "mesh_rpc", "dev_task")
 # What a node advertises over the mesh so the primary can measure which device is
 # closest to the operator. Only facts a node actually perceived are sent: a device
 # that saw nothing reports nothing rather than a guess.
@@ -974,6 +977,18 @@ class AndroidAgent:
             if self.engine is not None:
                 register_network_handlers(
                     self.engine.execution_layer, self.shugonet_runtime)
+                # A node that has the dev-task registry can *name* a task as well as perform
+                # one; a node without it (a phone) never learns the action type at all.
+                try:
+                    from dev_tasks import (FleetDevTaskHandler,
+                                           register_dev_task_handlers)
+                    register_dev_task_handlers(
+                        self.engine.execution_layer,
+                        FleetDevTaskHandler(
+                            self, audit=getattr(self.engine, "audit", None)))
+                except Exception as exc:
+                    self.log("FLEET", f"dev-task handlers skipped: {exc}",
+                             level="WARN")
             self.log("AGENT",
                      f"shugonet runtime started on port {mesh_port} "
                      f"(memory={'on' if shugonet_memory is not None else 'off'}, "
@@ -1571,6 +1586,33 @@ class AndroidAgent:
                 "port": port, "lan": bool(lan), "rpc": summary,
                 "reason": "" if ok else (summary.get("error")
                                          or "peripheral did not start")}
+
+    def _execute_dev_task(self, decision: Dict[str, Any]) -> Dict[str, Any]:
+        """Executor for a delegated ``dev_task``: run a *named* task on this node.
+
+        The request contains a task name and nothing else. This node resolves that name
+        against its own registry, checks it actually has the tooling, runs it with
+        ``shell=False`` and audits both ends -- so the hub can ask, but only this node
+        decides what the ask means. A node without the registry (a phone: ``dev_tasks`` is
+        not in the Android bundle) refuses with a reason instead of guessing.
+        """
+        if not self._mesh_may_act("dev_task"):
+            return {"status": "refused", "reason": "mesh_follower",
+                    "primary": (self.mesh_election.primary()
+                                if self.mesh_election is not None else None)}
+        try:
+            from dev_tasks import run_named_task  # noqa: WPS433
+        except Exception as exc:
+            return {"status": "refused", "action": "dev_task",
+                    "reason": f"this node has no dev-task registry "
+                              f"({type(exc).__name__})"}
+        params = decision.get("params") or {}
+        # Name-only, enforced on the receiving side too: any other key in the request is
+        # ignored rather than interpreted, so a peer cannot smuggle an argv past a hub.
+        return run_named_task(
+            params.get("task"),
+            audit=getattr(getattr(self, "engine", None), "audit", None),
+            requested_by=str(getattr(self, "_delegated_from", None) or ""))
 
     def _execute_speak(self, decision: Dict[str, Any]) -> Dict[str, Any]:
         """Executor for the internal speak action. Text is sanitized and
@@ -2851,7 +2893,8 @@ class AndroidAgent:
         try:
             executors = {"speak": self._execute_speak,
                          "ask_user": self._execute_ask_user,
-                         "mesh_rpc": self._execute_mesh_rpc}
+                         "mesh_rpc": self._execute_mesh_rpc,
+                         "dev_task": self._execute_dev_task}
             executor = executors[action_type]
             result = executor({"action_type": action_type, "params": params})
         except Exception as exc:

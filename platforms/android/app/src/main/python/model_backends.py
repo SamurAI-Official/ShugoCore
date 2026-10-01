@@ -93,9 +93,24 @@ def _validated_base_url(url: str) -> str:
 
 
 def _check_response(response: Any) -> None:
-    """Reject redirects outright (a redirect could bypass an allowlist)."""
+    """Reject redirects outright (a redirect could bypass an allowlist).
+
+    An HTTP error is re-raised with the status and the server's own words. A bare
+    ``HTTPError`` named nothing, so all an operator saw was "the model call failed" -- while
+    the server had already said *why* (a context overflow, an unsupported ``response_format``,
+    a model it does not have). The body is clipped: a local server's error text is still text
+    this project did not write.
+    """
     if 300 <= response.status_code < 400:
         raise BackendError("backend returned a redirect; refused to follow it")
+    if response.status_code >= 400:
+        try:
+            from security import sanitize_text as _sanitize
+            detail = _sanitize(getattr(response, "text", "") or "", 300)
+        except Exception:
+            detail = str(getattr(response, "text", "") or "")[:300]
+        raise BackendError(f"backend returned HTTP {response.status_code}"
+                           + (f": {detail}" if detail.strip() else ""))
     response.raise_for_status()
 
 

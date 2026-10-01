@@ -152,12 +152,15 @@ class TheNodesCommandTestCase(unittest.TestCase):
 
     class _Agent:
         def __init__(self, peers, role="primary"):
+            # The real node's identity lives on the agent (`get_status()` has no node_id --
+            # measured live, and assuming otherwise is how the roster says "unknown").
+            self.node_id = "shugo-desktop"
             self.telemetry = {"mesh_peers": peers}
             self._role = role
             self.mesh_election = TheNodesCommandTestCase._Election()
 
         def get_status(self):
-            return {"node_id": "shugo-desktop", "mesh_role": self._role}
+            return {"mesh_role": self._role}
 
     def _run(self, agent):
         out = io.StringIO()

@@ -1,0 +1,35 @@
+claim: the hive asks a node to run a named task on itself, and that node runs it locally and reports what happened
+where: README 'Named development tasks (dev_task)'
+verdict: proven
+
+$ C:\Users\marku\AppData\Local\Programs\Python\Python310\python.exe -m pytest tests/test_dev_tasks.py -q
+[exit 0]
+........................................                                 [100%]
+40 passed in 2.32s
+
+
+$ C:\Users\marku\AppData\Local\Programs\Python\Python310\python.exe runtime/tools/dev_task_proof.py
+[exit 0]
+e, 'text': 'routine observation (proposer backoff)', 'proposal_source': 'rule_fallback', 'action_type': 'record_observation'}
+INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'routine observation (proposer backoff)', 'proposal_source': 'rule_fallback', 'action_type': 'record_observation'}
+2026-10-01 11:35:02,349 - INFO - Decision made for task: maintain_agent_loop - N/A
+INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
+2026-10-01 11:35:02,349 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'routine observation (proposer backoff)', 'reason': 'proposer_backoff', 'failures': 3, 'retry_in_secs': 14.9}, 'confidence': 0.1, 'proposal_source': 'rule_fallback', 'model_outputs': {}, 'aggregated_output': 0, 'memory_context': []}
+INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'routine observation (proposer backoff)', 'reason': 'proposer_backoff', 'failures': 3, 'retry_in_secs': 14.9}, 'confidence': 0.1, 'proposal_source': 'rule_fallback', 'model_outputs': {}, 'aggregated_output': 0, 'memory_context': []}
+2026-10-01 11:35:02,349 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'routine observation (proposer backoff)', 'proposal_source': 'rule_fallback', 'action_type': 'record_observation'}
+INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'routine observation (proposer backoff)', 'proposal_source': 'rule_fallback', 'action_type': 'record_observation'}
+2026-10-01 11:35:03,796 - INFO - Decision made for task: maintain_agent_loop - N/A
+INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
+2026-10-01 11:35:03,796 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'routine observation (proposer backoff)', 'reason': 'proposer_backoff', 'failures': 3, 'retry_in_secs': 13.5}, 'confidence': 0.1, 'proposal_source': 'rule_fallback', 'model_outputs': {}, 'aggregated_output': 0, 'memory_context': []}
+INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'routine observation (proposer backoff)', 'reason': 'proposer_backoff', 'failures': 3, 'retry_in_secs': 13.5}, 'confidence': 0.1, 'proposal_source': 'rule_fallback', 'model_outputs': {}, 'aggregated_output': 0, 'memory_context': []}
+2026-10-01 11:35:03,796 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'routine observation (proposer backoff)', 'proposal_source': 'rule_fallback', 'action_type': 'record_observation'}
+INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'routine observation (proposer backoff)', 'proposal_source': 'rule_fallback', 'action_type': 'record_observation'}
+2026-10-01 11:35:05,228 - INFO - Decision made for task: maintain_agent_loop - N/A
+INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
+2026-10-01 11:35:05,228 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'routine observation (proposer backoff)', 'reason': 'proposer_backoff', 'failures': 3, 'retry_in_secs': 12.0}, 'confidence': 0.1, 'proposal_source': 'rule_fallback', 'model_outputs': {}, 'aggregated_output': 0, 'memory_context': []}
+INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'routine observation (proposer backoff)', 'reason': 'proposer_backoff', 'failures': 3, 'retry_in_secs': 12.0}, 'confidence': 0.1, 'proposal_source': 'rule_fallback', 'model_outputs': {}, 'aggregated_output': 0, 'memory_context': []}
+2026-10-01 11:35:05,228 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'routine observation (proposer backoff)', 'proposal_source': 'rule_fallback', 'action_type': 'record_observation'}
+INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'routine observation (proposer backoff)', 'proposal_source': 'rule_fallback', 'action_type': 'record_observation'}
+
+
+live dev_task_ran [runtime/evidence/dev_task.txt]: ok - the peer ran the named task (exit 1) and the hub recorded that verdict, not a friendlier one

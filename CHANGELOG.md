@@ -6,6 +6,40 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### A node can be asked to run a named task on itself
+
+The hive could ask a peer to speak or to host an RPC peripheral, and nothing else: every other
+job an operator does to a machine (check it against the fleet's declared state, pull the repo,
+run the suite, rebuild the RPC server) happened by hand, outside the governance layer — no
+consent, no approval, no audit. `dev_task` makes it an ordinary gated capability, and the shape
+is the safety property: **the hub names a task, and the peer decides what the name means.**
+
+- `dev_tasks.py` holds the registry (`node_consistency`, `run_tests`, `git_pull`,
+  `build_rpc_server`, `fleet_status`), the peer's executor and the hub's handler. Nothing that
+  crosses the mesh is an argv: the wire carries `{"task": "..."}` and nothing else, a request
+  carrying `argv`/`command`/`cwd`/`shell`/`env` is refused *by name*, and `run_named_task` has
+  no parameter to pass one through.
+- The peer resolves the name against its own registry, refuses a task it cannot run with the
+  missing piece named (`git`, `pytest`, the script), runs it `shell=False` with its own
+  interpreter, and audits `dev_task_started` / `dev_task_finished`. `fleet.dev_task` is proven
+  by a hub and a peer as two real processes: the transcript carries the peer's own line (argv,
+  exit code) and its audit entries.
+- Fixed: `ExecutionLayer.register_handler`'s allowlist predated the fleet action class, so
+  `register_fleet_handlers` raised and `fleet_deploy`'s engine wiring was dead while looking
+  installed — the engine consent-gated an action it then answered with "Unknown action type".
+  A regression test pins it.
+- Fixed: `register_fleet_handlers` took its types from the whole shared fleet class, so adding
+  a member to that class would have installed the *deploy* handler under `fleet_dev_task`. A
+  handler now names the types it serves.
+- Fixed: `/nodes` called the node it runs on "unknown" — `get_status()` has no `node_id`, and
+  the roster read it from there.
+- The lab peer's port moved off 9001, which this mesh also uses for its relay; a node whose
+  bind silently lost that race looked exactly like a peer refusing work. `devlab_node.py` now
+  asks its own port whether anything is listening, and says so when the answer is no.
+- An HTTP error from a model backend now carries the status and the server's own words. A bare
+  `HTTPError` printed "the model call failed" while LM Studio had already said why, and a cold
+  27B (unloaded after an idle gap) looked like a broken pipeline until it was asked directly.
+
 ### The fleet surface: `/nodes`, and a mesh proof that survives its own success
 
 The two mesh rows were the last claims with no evidence, because nothing recorded what a hive

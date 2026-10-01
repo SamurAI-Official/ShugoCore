@@ -66,7 +66,11 @@ NETWORK_READ_ACTION_TYPES = {"network_list_agents", "network_status"}
 # SIDE_EFFECTING class, and the handler adds its own target allowlist,
 # artifact-root containment and hash check on top. Host-only: the module is
 # deliberately not in the Android bundle, so a device can never propose it.
-FLEET_ACTION_TYPES = {"fleet_deploy"}
+# ``fleet_dev_task`` rides in the same class for the same reason -- it runs a
+# named task on another node, which changes that machine -- and it adds a
+# stricter rule of its own: the wire carries a task *name*, never an argv
+# (dev_tasks.NAMED_TASKS is the peer's own registry of what a name means).
+FLEET_ACTION_TYPES = {"fleet_deploy", "fleet_dev_task"}
 # Fleet deployment read-only actions: which devices are attached, and which
 # build each one is running. No consent required.
 FLEET_READ_ACTION_TYPES = {"fleet_status"}

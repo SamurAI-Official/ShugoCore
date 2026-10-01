@@ -67,7 +67,8 @@ def _collect(agent, controller) -> dict:
         if shared:
             break
     return {"role": str(status.get("mesh_role") or ""), "peers": peers, "lease": lease,
-            "mesh": mesh, "sync": dict(controller.sync_state), "shared": shared}
+            "mesh": mesh, "sync": dict(controller.sync_state), "shared": shared,
+            "node_id": str(getattr(agent, "node_id", "") or "")}
 
 
 def parse_args(argv=None):
@@ -128,7 +129,9 @@ def main(argv=None) -> int:
                 controller.stop()
         except Exception:
             pass
-    lines = status_lines(node_id=f"shugo-{args.device_caps}", error=error, **collected)
+    lines = status_lines(node_id=str(collected.pop("node_id", "")
+                                     or f"shugo-{args.device_caps}"),
+                         error=error, **collected)
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")

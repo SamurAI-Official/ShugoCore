@@ -30,6 +30,45 @@ ROLE_RE = re.compile(r"role=(\w+)")
 IMPORTED_RE = re.compile(r"imported=(\d+)")
 
 
+def dev_task_ran(status_text: str) -> tuple:
+    """A peer ran a task the hub named, and the hub recorded the peer's own verdict.
+
+    Two things must hold: the *peer's own process* executed the task (its line carries the
+    argv and the exit code), and the hub's recorded result agrees with it. The exit code is
+    deliberately not required to be 0 -- a consistency check that finds a difference is doing
+    its job, and a claim about the orchestration channel must not depend on the machine being
+    pristine. What must never happen is the hub recording something the peer did not say, and
+    that is what the agreement check is for.
+    """
+    plain = status_text or ""
+    wire = re.search(r"wire payload[^:]*: (\{.*\})", plain)
+    if not wire:
+        return False, "no wire payload recorded"
+    try:
+        payload = json.loads(wire.group(1))
+    except Exception:
+        return False, "the wire payload is not readable"
+    params = payload.get("params") or {}
+    if set(params) != {"task"}:
+        return False, f"the wire carried more than a task name: {sorted(params)}"
+    ran = re.search(r"peer ran: .*?exit=(-?\d+) ok=(\w+)", plain)
+    if not ran:
+        return False, "no execution line from the peer's own process"
+    exit_code, ok = int(ran.group(1)), ran.group(2)
+    result = re.search(r"result from peer: status=(\w+) action_type=dev_task "
+                       r"delivered=(\w+)", plain)
+    if not result:
+        return False, "the peer's result never reached the hub"
+    status, delivered = result.group(1), result.group(2)
+    expected_status = "success" if exit_code == 0 else "error"
+    expected_delivered = "True" if ok == "True" else "False"
+    if status != expected_status or delivered != expected_delivered:
+        return False, (f"the hub recorded {status}/delivered={delivered} for the peer's own "
+                       f"exit={exit_code} ok={ok}")
+    return True, (f"the peer ran the named task (exit {exit_code}) and the hub recorded that "
+                  f"verdict, not a friendlier one")
+
+
 def hub_role(status_text: str) -> tuple:
     """A hub status line must show a primary lease held by this node."""
     match = ROLE_RE.search(status_text or "")
@@ -328,6 +367,7 @@ def world_engagement(text: str) -> tuple:
 LIVE_CHECKS: Dict[str, Callable[[str], tuple]] = {
     "hub_role": hub_role,
     "hub_imported": hub_imported,
+    "dev_task_ran": dev_task_ran,
     "phone_quiet": phone_quiet,
     "audit_chain": chain_present,
     "timer_fired": timer_fired,
@@ -359,6 +399,17 @@ CLAIMS: List[Dict[str, Any]] = [
      "checks": [{"kind": "command", "argv": ["__PY__", "runtime/tools/fleet_status.py"]},
                 {"kind": "live", "name": "hub_imported",
                  "path": "runtime/evidence/fleet_status.txt"}]},
+    {"id": "fleet.dev_task",
+     "claim": "the hive asks a node to run a named task on itself, and that node runs it "
+              "locally and reports what happened",
+     "doc": "README 'Named development tasks (dev_task)'",
+     "checks": [{"kind": "command", "argv": ["__PY__", "-m", "pytest",
+                                             "tests/test_dev_tasks.py", "-q"]},
+                # A hub and a peer, two real processes, one named task through the engine's
+                # own consent + approval gate -- and the peer's own line as the evidence.
+                {"kind": "command", "argv": ["__PY__", "runtime/tools/dev_task_proof.py"]},
+                {"kind": "live", "name": "dev_task_ran",
+                 "path": "runtime/evidence/dev_task.txt"}]},
     {"id": "mesh.builds",
      "claim": "a build travels node-to-node, digest-checked",
      "doc": "README 'Build transfer over the mesh'",

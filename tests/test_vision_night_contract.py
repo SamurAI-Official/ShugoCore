@@ -23,6 +23,7 @@ KOTLIN_SERVICE = os.path.join(KOTLIN, "ShugoCoreService.kt")
 MAIN_ACTIVITY = os.path.join(KOTLIN, "MainActivity.kt")
 SENSORS_PANE = os.path.join(KOTLIN, "ui", "SensorsPane.kt")
 CONTROL_HOST = os.path.join(KOTLIN, "runtime", "NodeState.kt")
+PERCEPTION_STATE = os.path.join(KOTLIN, "runtime", "PerceptionState.kt")
 CORRELATION = os.path.join(ROOT, "runtime", "fleet_correlation.py")
 
 
@@ -233,6 +234,88 @@ class VisionControlSurfaceTestCase(unittest.TestCase):
         pane = _read(SENSORS_PANE)
         self.assertIn("host.visionPolicy()", pane)
         self.assertNotIn("host.prefs()", pane)
+
+
+class CameraStallWatchdogTestCase(unittest.TestCase):
+    """A camera that stops delivering must be noticed, not waited out.
+
+    Measured on the A16: the front camera bound, produced frames for 15 s, then
+    stopped with no error and no crash while the process stayed alive. The
+    watchdog that existed only checked for a camera that had NEVER delivered a
+    first frame, so nothing looked again -- the first report came from the NRR
+    camera probe three minutes later. These pin the properties that allowed it.
+    """
+
+    def _watchdog(self):
+        provider = _read(VISION_PROVIDER)
+        return provider.split("private fun scheduleFrameWatchdog()")[1] \
+                       .split("private fun rebindCamera()")[0]
+
+    def test_the_watchdog_repeats_instead_of_firing_once(self):
+        body = self._watchdog()
+        self.assertIn("postDelayed(this", body,
+                      "the frame watchdog does not re-arm itself: a camera that "
+                      "stops after delivering is invisible again")
+
+    def test_the_trigger_is_the_age_of_the_last_frame(self):
+        body = self._watchdog()
+        self.assertIn("lastCameraFrameMs", body,
+                      "the watchdog does not judge by the age of the last frame")
+        self.assertNotIn("!firstFrameSeen.get()) {", body,
+                         "the watchdog is gated on the first frame again, which "
+                         "is exactly the condition a stopped camera satisfies")
+
+    def test_the_threshold_sits_above_the_measured_healthy_burst(self):
+        provider = _read(VISION_PROVIDER)
+        match = re.search(r"private val STALL_MS = ([0-9_]+)L", provider)
+        self.assertIsNotNone(match, "no stall threshold in VisionProvider")
+        threshold_ms = int(match.group(1).replace("_", ""))
+        self.assertGreaterEqual(
+            threshold_ms, 40_000,
+            "a stall threshold of %dms sits inside the measured healthy gaps "
+            "(p90 8-32s, worst 33s), so it would fire during normal operation "
+            "and the rebind it triggers would itself cost frames" % threshold_ms)
+
+    def test_a_stall_is_reported_where_the_ui_can_read_it(self):
+        body = self._watchdog()
+        self.assertIn("PerceptionState.cameraStalled = true", body)
+        self.assertIn("PerceptionState.cameraStalledMs", body)
+        note = _read(PERCEPTION_STATE).split("fun unavailableVisionNote()")[1]
+        self.assertIn("cameraStalled", note,
+                      "the SENSORS note still hides a camera that stopped after "
+                      "it had worked")
+
+    def test_a_stall_says_whether_the_app_was_visible(self):
+        self.assertIn("PerceptionState.uiVisible", self._watchdog(),
+                      "a stall does not record whether the UI was visible, so a "
+                      "backgrounded camera and a broken one read the same")
+        activity = _read(MAIN_ACTIVITY)
+        self.assertIn("PerceptionState.uiVisible = true", activity)
+        self.assertIn("PerceptionState.uiVisible = false", activity)
+
+    def test_a_stall_attempts_recovery_and_gives_up_honestly(self):
+        self.assertIn("rebindCamera()", self._watchdog(),
+                      "a stall is reported but never retried")
+        rebind = _read(VISION_PROVIDER).split("private fun rebindCamera()")[1][:1200]
+        self.assertIn("unbindAll()", rebind)
+        self.assertIn("bindToLifecycle(", rebind)
+        self.assertIn("catch (t: Throwable)", rebind,
+                      "a rebind that cannot succeed must be reported, not thrown")
+
+    def test_a_persistent_stall_does_not_log_every_pass(self):
+        """A backgrounded camera stays backgrounded; the log must not flood."""
+        body = self._watchdog()
+        self.assertIn("STALL_LOG_STEP_MS", body,
+                      "the watchdog logs and rebinds on every pass, so a device left "
+                      "in the background would emit a line every 5s")
+        self.assertIn("firstPass", body,
+                      "the first pass of a stall is not distinguished, so a new "
+                      "stall cannot be reported immediately and then held back")
+
+    def test_the_watchdog_stops_with_the_provider(self):
+        self.assertIn("if (!isRunning) return", self._watchdog(),
+                      "a watchdog posted before stop() could resurrect a fault "
+                      "after the camera was intentionally shut down")
 
 
 if __name__ == "__main__":

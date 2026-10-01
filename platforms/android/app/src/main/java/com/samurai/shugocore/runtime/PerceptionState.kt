@@ -198,15 +198,39 @@ object PerceptionState {
     @Volatile var visionHasFrames: Boolean = false
 
     /**
-     * A short note for the SENSORS tab when vision is known to be unusable,
-     * else "".
+     * Set by [VisionProvider]'s frame watchdog when no analysed frame has arrived for longer than
+     * its threshold, cleared when frames resume.
      *
-     * Only reports once the fault is established: a camera that simply has not
-     * produced its first frame yet (right after a bind) is not an error.
+     * Distinct from [visionHasFrames], which records whether a frame was EVER analysed. This
+     * records whether one is arriving NOW, because a camera that worked and then stopped is the
+     * case a bind-time check cannot see -- measured on the A16: frames flowed for 15 s, stopped
+     * with no error, and nothing reported it for three minutes.
+     */
+    @Volatile var cameraStalled: Boolean = false
+
+    /** How long the current (or last) stall has lasted, ms; 0 while healthy. */
+    @Volatile var cameraStalledMs: Long = 0L
+
+    /**
+     * Whether the app's UI was last seen visible (stamped by MainActivity).
+     *
+     * Android withholds the camera from a backgrounded process, so a stall while this is false is
+     * expected behaviour rather than a fault. Saying which one it was is the difference between a
+     * useful log line and a misleading one.
+     */
+    @Volatile var uiVisible: Boolean = false
+
+    /**
+     * A short note for the SENSORS tab when vision is known to be unusable, else "".
+     *
+     * Keeps the difference between "not yet" and "no longer": a camera that has not produced its
+     * FIRST frame yet (right after a bind) is not an error, but a camera that stopped delivering
+     * after it worked is worth saying out loud even though [visionHasFrames] is true.
      */
     fun unavailableVisionNote(): String {
         val fault = cameraFault
-        if (fault.isEmpty() || visionHasFrames) return ""
+        if (fault.isEmpty()) return ""
+        if (visionHasFrames && !cameraStalled) return ""
         return fault
     }
 

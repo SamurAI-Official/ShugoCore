@@ -134,6 +134,10 @@ class MainActivity : AppCompatActivity(), ControlPlaneHost {
 
     override fun onStart() {
         super.onStart()
+        // Vision's liveness signal for the frame watchdog: Android gives the camera
+        // to the foreground process, so a camera stall while the UI was visible is a
+        // fault worth reporting, while the same stall with the UI down is expected.
+        com.samurai.shugocore.runtime.PerceptionState.uiVisible = true
         // The service is a foregroundServiceType="dataSync" service: on Android 14+
         // it MUST be started via startService() (which triggers onStartCommand →
         // startForeground + executor), not merely bound. Binding alone only calls
@@ -149,6 +153,7 @@ class MainActivity : AppCompatActivity(), ControlPlaneHost {
 
     override fun onStop() {
         super.onStop()
+        com.samurai.shugocore.runtime.PerceptionState.uiVisible = false
         statusHandler.removeCallbacks(refreshRunnable)
         if (bound) {
             unbindService(connection)

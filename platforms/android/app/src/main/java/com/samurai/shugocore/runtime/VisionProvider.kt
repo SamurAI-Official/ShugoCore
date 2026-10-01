@@ -107,9 +107,37 @@ class VisionProvider(private val context: Context) {
     private val frameConvertFailedLogged =
         java.util.concurrent.atomic.AtomicBoolean(false)
     private val analyzeErrorLogged = java.util.concurrent.atomic.AtomicBoolean(false)
-    /** Set on the first analysed frame; read by the no-frames watchdog. */
+    /** Set on the first analysed frame; read by the frame watchdog. */
     private val firstFrameSeen = java.util.concurrent.atomic.AtomicBoolean(false)
-    private val WATCHDOG_MS = 20_000L
+
+    /**
+     * How long without an analysed frame counts as a stalled camera, and how often to look.
+     *
+     * Not the few seconds that "notice promptly" would like: the analysed-frame cadence on these
+     * devices is genuinely bursty -- measured over an hour it is 0.2-0.3 s at the median but
+     * 8-32 s at the 90th percentile and 33 s at worst -- so a short threshold would cry wolf
+     * during healthy operation, and the rebind it triggers would itself cost frames. 45 s sits
+     * above the measured tail and turns a silent stop into a logged one.
+     */
+    private val STALL_MS = 45_000L
+    private val STALL_CHECK_MS = 5_000L
+
+    /**
+     * How often to act on (and log) a stall that has not cleared.
+     *
+     * The state is refreshed every pass so the UI note stays live, but the log line and the rebind
+     * attempt happen on a step: a backgrounded camera stays backgrounded until someone brings the
+     * app back, so a line every 5 s would be a flood rather than a signal. Each line still carries
+     * the current age, so a stall that keeps growing is visible without being repeated.
+     */
+    private val STALL_LOG_STEP_MS = 60_000L
+
+    /** How many stalls this provider run has seen, so recovery can be reported against it. */
+    @Volatile private var stallCount = 0
+    /** Log/recovery attempts made in the current stall, so the log says what was tried. */
+    @Volatile private var stallActionCount = 0
+    /** Wall clock of the last stall log, so a persisting stall reports on a step, not per pass. */
+    @Volatile private var lastStallActedMs = 0L
     private val probeHandler =
         android.os.Handler(android.os.Looper.getMainLooper())
 
@@ -367,28 +395,16 @@ class VisionProvider(private val context: Context) {
                                 "(~1 fps person presence)")
                         android.util.Log.i("VisionProvider",
                             "front camera bound (~1 fps)")
-                        // Watchdog: binding "succeeding" does NOT mean frames
-                        // arrive. On this hardware the front camera is refused
-                        // asynchronously ("Camera 1 disabled by policy"), so the
-                        // provider used to sit silently at zero frames forever.
-                        // Surface that once, with the CameraX error code.
-                        probeHandler.postDelayed({
-                            // Guard on isRunning: a watchdog posted before
-                            // stop() must not resurrect a fault after the
-                            // camera was intentionally shut down.
-                            if (isRunning && !firstFrameSeen.get()) {
-                                @Suppress("UNCHECKED_CAST")
-                                val st = boundCamera?.cameraInfo
-                                    ?.cameraState?.value
-                                cameraFault = "camera not delivering frames " +
-                                    "(state=${st?.type}, error=${st?.error?.code})"
-                                PerceptionState.cameraFault = cameraFault
-                                android.util.Log.w("VisionProvider",
-                                    "no camera frames after ${WATCHDOG_MS / 1000}s " +
-                                    "($cameraFault) - vision + NRR camera " +
-                                    "frames unavailable")
-                            }
-                        }, WATCHDOG_MS)
+                        // Frame watchdog: repeated, not one-shot. Binding
+                        // "succeeding" does NOT mean frames arrive (this
+                        // hardware can refuse the front camera asynchronously),
+                        // and -- measured -- a bound camera can also STOP
+                        // delivering with no error at all while the process
+                        // stays alive. The one-shot version only caught the
+                        // first case: once a frame had been seen it never
+                        // looked again, so a silent stop went unnoticed until
+                        // the NRR camera probe reported it minutes later.
+                        scheduleFrameWatchdog()
                     } catch (e: Exception) {
                         LogBus.log(LogBus.Category.SENSOR,
                             "vision provider failed: ${e.message}", isError = true)
@@ -433,6 +449,104 @@ class VisionProvider(private val context: Context) {
             context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
         if (granted && !isRunning) start()
         if (!granted && isRunning) stop()
+    }
+
+    /**
+     * Watch the age of the last analysed frame while running, and say so when it goes stale.
+     *
+     * Repeated rather than one-shot, because the failure that matters is a camera that *stopped*:
+     * `firstFrameSeen` stays true, so a bind-time check never looks again. Each pass reports the
+     * age, whether the app's UI was visible (a backgrounded process is not given the camera by
+     * Android, so that stall is expected rather than a fault), and attempts a rebind, because a
+     * camera that was dropped can often be re-acquired without the operator doing anything.
+     *
+     * The report is written to [PerceptionState] as well as logcat: the SENSORS tab reads it, and
+     * a stall is the one vision failure that used to be invisible there.
+     */
+    private fun scheduleFrameWatchdog() {
+        probeHandler.postDelayed(object : Runnable {
+            override fun run() {
+                // Guard on isRunning: a watchdog posted before stop() must not
+                // resurrect a fault after the camera was intentionally shut down.
+                if (!isRunning) return
+                val lastMs = PerceptionState.lastCameraFrameMs
+                val age = if (lastMs <= 0L) -1L else System.currentTimeMillis() - lastMs
+                if (age < 0L || age > STALL_MS) {
+                    val firstPass = !PerceptionState.cameraStalled
+                    val neverDelivered = !firstFrameSeen.get()
+                    @Suppress("UNCHECKED_CAST")
+                    val st = boundCamera?.cameraInfo?.cameraState?.value
+                    val visible = PerceptionState.uiVisible
+                    if (firstPass) {
+                        stallCount++
+                        stallActionCount = 0
+                    }
+                    cameraFault = if (neverDelivered)
+                        "camera not delivering frames (state=${st?.type}, " +
+                            "error=${st?.error?.code})"
+                    else
+                        "camera stopped delivering frames ${age / 1000}s ago" +
+                            (if (visible) "" else " while the app was backgrounded")
+                    PerceptionState.cameraFault = cameraFault
+                    PerceptionState.cameraStalled = true
+                    PerceptionState.cameraStalledMs = maxOf(age, 0L)
+                    // State every pass (the note must stay live); act and log on a step, because a
+                    // backgrounded camera stays backgrounded and a line every 5s is a flood.
+                    val nowMs = System.currentTimeMillis()
+                    if (firstPass || nowMs - lastStallActedMs >= STALL_LOG_STEP_MS) {
+                        lastStallActedMs = nowMs
+                        stallActionCount++
+                        android.util.Log.w("VisionProvider",
+                            "no analysed frame for " +
+                                "${if (age < 0) "never" else "${age / 1000}s"} " +
+                                "(uiVisible=$visible, state=${st?.type}, " +
+                                "error=${st?.error?.code}, stall #$stallCount " +
+                                "attempt #$stallActionCount) - rebinding")
+                        rebindCamera()
+                    }
+                } else if (PerceptionState.cameraStalled) {
+                    PerceptionState.cameraStalled = false
+                    PerceptionState.cameraStalledMs = 0L
+                    cameraFault = ""
+                    PerceptionState.cameraFault = ""
+                    android.util.Log.i("VisionProvider",
+                        "camera delivering again after $stallCount stall(s) " +
+                            "($stallActionCount recovery attempt(s), " +
+                            "last gap ${age / 1000}s)")
+                    stallActionCount = 0
+                    lastStallActedMs = 0L
+                }
+                probeHandler.postDelayed(this, STALL_CHECK_MS)
+            }
+        }, STALL_CHECK_MS)
+    }
+
+    /**
+     * Re-acquire the camera after a stall. Fail-open and honest.
+     *
+     * A rebind cannot succeed while Android withholds the camera from a backgrounded process, so
+     * the failure is logged with the reason rather than retried into a loop; the watchdog's next
+     * pass is what confirms whether frames actually came back.
+     */
+    private fun rebindCamera() {
+        ContextCompat.getMainExecutor(context).execute {
+            val provider = cameraProvider ?: return@execute
+            if (!isRunning) return@execute
+            try {
+                provider.unbindAll()
+                val analysis = ImageAnalysis.Builder()
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .build()
+                analysis.setAnalyzer(analyzerExecutor, ::analyze)
+                boundCamera = provider.bindToLifecycle(
+                    lifecycleOwner, CameraSelector.DEFAULT_FRONT_CAMERA, analysis)
+                applyExposureToCamera()
+            } catch (t: Throwable) {
+                android.util.Log.w("VisionProvider",
+                    "camera rebind after a stall failed: ${t.message} " +
+                        "(a backgrounded process cannot hold the camera)")
+            }
+        }
     }
 
     private fun analyze(proxy: ImageProxy) {

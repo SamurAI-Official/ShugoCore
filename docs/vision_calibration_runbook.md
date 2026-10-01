@@ -23,11 +23,16 @@ here that no amount of desk work can supply:
   `rms=0.0000`, against 0 zero-lines and ~0.045 medians on the two untouched devices in the same
   window. A backgrounded device is therefore not "listening quietly", it is deaf: Android silences
   background microphone capture, and the heartbeat makes that look like a quiet room.
-- **A window on top is enough to stop vision, and `am start` does not fix it.** A keyguard (or the
-  shade) holding focus pauses the activity, CameraX unbinds the camera, and presence stops silently
-  -- no error, no crash, process alive and `mFocusedApp` still naming the app. Only a fresh
-  `force-stop` + start restored it. The signal that noticed was the app's own
-  `NRR camera frame unavailable after 12 attempts`, three minutes late.
+- **A window on top is enough to stop vision, and `am start` alone does not fix it.** A keyguard
+  (or the shade) holding focus pauses the activity and CameraX closes the camera -- reported by its
+  own state as `CLOSED` with `error=null`, which is why nothing ever threw and nothing noticed.
+  VisionProvider's frame watchdog now catches it within its 45 s threshold (measured on device:
+  46-49 s) and says which failure it was, because a stall with `uiVisible=false` is the background
+  doing its job rather than a fault; it recovers on its own when frames return (`camera delivering
+  again ...`), with the episode's attempt count. To clear a keyguard on this hardware: `input
+  keyevent 82` and then a swipe. `wm dismiss-keyguard` and `cmd statusbar collapse` both report
+  success and do nothing, and `locksettings set-disabled true` claims success while `get-disabled`
+  stays false.
 - **Vision samples in bursts even while healthy**: median gap 0.2-0.3 s, but p90 8-32 s and a worst
   case of 10-33 s per device over ~1 hour. "No presence line for N seconds" is not evidence of
   absence; take absence and latency bounds from the tail of that distribution, never the median.

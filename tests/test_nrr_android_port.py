@@ -132,7 +132,13 @@ class TestCameraFaultIsVisible(unittest.TestCase):
         self.assertIn("PerceptionState.cameraFault = cameraFault", src)
         # The watchdog must exist -- binding success alone is not evidence.
         self.assertIn("firstFrameSeen", src)
-        self.assertIn("no camera frames after", src)
+        self.assertIn("scheduleFrameWatchdog", src)
+        # ...and it must keep looking. Measured on the A16: the camera bound,
+        # delivered for 15 s, then stopped with no error. A bind-time check
+        # cannot see that, so the watchdog re-arms and reports which failure it
+        # was -- never delivered, or stopped delivering.
+        self.assertIn("no analysed frame for", src)
+        self.assertIn("PerceptionState.cameraStalled = true", src)
 
     def test_perception_state_exposes_the_note(self):
         src = read(os.path.join(self.JAVA, "runtime", "PerceptionState.kt"))

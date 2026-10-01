@@ -78,11 +78,199 @@ def chain_present(chain_text: str) -> tuple:
     return True, f"{len(lines)} entries, last {hashed} hashed"
 
 
+def _lines(text: str) -> List[str]:
+    return [line.strip() for line in (text or "").splitlines() if line.strip()]
+
+
+def _speaks(text: str) -> List[str]:
+    """Every line the node said out loud, in order (the session's own marker)."""
+    return [line for line in _lines(text) if line.startswith("[SPEAK")]
+
+
+def timer_fired(text: str) -> tuple:
+    """A goal accepted now, acted on later, with nobody typing in between.
+
+    The agency part is the *absence* of input between the two: a reminder the operator had
+    to ask for again is not the node pursuing anything, so a typed turn in the gap fails
+    the claim rather than being ignored by it.
+    """
+    lines = _lines(text)
+    speaks = _speaks(text)
+    accepted = next((line for line in speaks if "timer set" in line.lower()), "")
+    acted = next((line for line in speaks if "is done" in line.lower()), "")
+    fired = any("[TIMER]" in line and "timer fired" in line for line in lines)
+    if not accepted:
+        return False, "the session never had a goal accepted (no timer was set)"
+    if not fired:
+        return False, "a goal was accepted but no timer ever fired"
+    if not acted:
+        return False, "the timer fired and the node said nothing about it"
+    start = lines.index(accepted)
+    end = lines.index(acted)
+    typed_between = [line for line in lines[start + 1:end] if line.startswith("[TURN")]
+    if typed_between:
+        return False, (f"the operator had to type {len(typed_between)} time(s) before the "
+                       f"node acted: {typed_between[0][:60]}")
+    return True, f"accepted a goal, then acted on it unprompted ({acted[:48]})"
+
+
+def memory_recalled(text: str) -> tuple:
+    """A fact survives the process: stored, the process ends, a new one recalls it.
+
+    The recall is checked against the fact the *session itself* recorded, not against an
+    answer this tool would like to see, and the restart marker is required so a single
+    process answering its own memory cannot pass as durability.
+    """
+    lines = _lines(text)
+    taught = [line for line in lines
+              if line.startswith("[TURN") and "remember" in line.lower()]
+    restart = [line for line in lines if "phase=second" in line]
+    if not taught:
+        return False, "the session never taught the node a fact"
+    token = ""
+    for word in reversed(re.findall(r"[A-Za-z][A-Za-z'’-]{2,}", taught[0])):
+        if word.lower() not in ("remember", "that", "the", "and", "with", "sister",
+                                "name", "typed", "turn"):
+            token = word
+            break
+    if not token:
+        return False, f"could not read a fact out of {taught[0][:60]}"
+    if not restart:
+        return False, "no second process ran, so nothing was tested across a restart"
+    after = lines[lines.index(restart[0]):]
+    answered = [line for line in after
+                if line.startswith("[SPEAK") and token.lower() in line.lower()]
+    if not answered:
+        return False, (f"the fact {token!r} was not recalled after the restart "
+                       f"(speaks after restart: {len(_speaks(''.join(after)))})")
+    return True, f"recalled {token!r} in a new process: {answered[0][:60]}"
+
+
+def personality_grew(text: str) -> tuple:
+    """The node grew a generation, and said why.
+
+    A generation is a window of turns, so the window marker is required too: growth that
+    cannot be attributed to a window is not evidence of anything.
+    """
+    lines = _lines(text)
+    window = [line for line in lines if "GROWTH_EVERY=" in line]
+    if not window:
+        return False, "no turn window was reported, so no growth cycle was run"
+    grew = re.search(r"grew gen (\d+)\s*->\s*(\d+)", text)
+    if grew and int(grew.group(2)) > int(grew.group(1)):
+        reason = ""
+        match = re.search(r"grew gen \d+\s*->\s*\d+ \(([^)]*)\)", text)
+        if match:
+            reason = f" ({match.group(1)[:60]})"
+        return True, f"generation {grew.group(1)} -> {grew.group(2)}{reason}"
+    generations = [int(value) for value in re.findall(r"gen (\d+)", text)]
+    if generations and max(generations) > min(generations):
+        return True, (f"generation advanced {min(generations)} -> {max(generations)} "
+                      f"across {len(window)} window(s)")
+    return False, (f"the node ran its window without growing "
+                   f"(generations seen: {sorted(set(generations)) or 'none'})")
+
+
+def heard_caused_action(text: str) -> tuple:
+    """Words the node *heard* led to an action and a reply.
+
+    The same no-input rule as the timer: the operator typed nothing, so whatever the node
+    did with the phrase came from having heard it.
+    """
+    lines = _lines(text)
+    heard = [index for index, line in enumerate(lines) if line.startswith("[HEARD")]
+    if not heard:
+        return False, "the session never gave the node something to hear"
+    if not any("accepted=True" in line for line in lines[heard[0]:]):
+        return False, "the node did not accept the speech observation"
+    speaks = [index for index, line in enumerate(lines)
+              if line.startswith("[SPEAK") and index > heard[0]]
+    if not speaks:
+        return False, "the node heard something and said nothing"
+    typed_between = [line for line in lines[heard[0] + 1:speaks[0]]
+                     if line.startswith("[TURN")]
+    if typed_between:
+        return False, ("the operator typed before the node answered, so the reply cannot "
+                       f"be attributed to hearing: {typed_between[0][:60]}")
+    return True, f"heard a phrase and answered it unprompted ({lines[speaks[0]][:56]})"
+
+
+def pipeline_reported(text: str) -> tuple:
+    """The node reports its own stages, in a vocabulary that can say "I do not know".
+
+    The honesty here *is* the vocabulary: ``unknown`` and ``down`` have to be available
+    beside ``ok``, and every organ has to appear -- a health surface that only knows how to
+    paint green is how a node with no model reads as healthy.
+    """
+    snapshots = []
+    for line in _lines(text):
+        if line.startswith("[STATUS") and "pipeline=" in line:
+            try:
+                snapshots.append(json.loads(line.split("pipeline=", 1)[1]))
+            except Exception:
+                return False, f"the pipeline snapshot is not JSON: {line[:80]}"
+    if not snapshots:
+        return False, "the node never reported its pipeline"
+    allowed = {"ok", "stale", "down", "unknown"}
+    organs = {"sensors", "vision", "hearing", "speech", "model", "memory"}
+    for snapshot in snapshots:
+        stages = snapshot.get("stages")
+        if not isinstance(stages, dict) or not stages:
+            return False, "a snapshot carried no stages"
+        odd = {name: value for name, value in stages.items() if value not in allowed}
+        if odd:
+            return False, f"a stage used vocabulary outside {sorted(allowed)}: {odd}"
+        missing = organs - set(stages)
+        if missing:
+            return False, f"organs missing from the health surface: {sorted(missing)}"
+        if snapshot.get("overall") not in allowed:
+            return False, f"overall={snapshot.get('overall')!r} is outside the vocabulary"
+    last = snapshots[-1]
+    observed = last.get("stages", {})
+    return True, ("reports " + ", ".join(f"{name}={value}"
+                                         for name, value in sorted(observed.items()))
+                  + f" (overall={last.get('overall')})")
+
+
+def no_third_party_egress(text: str) -> tuple:
+    """Nothing in the session tried to report home.
+
+    An offline-first, privacy-hardened agent that ships analytics is contradicting its own
+    claim, and it is invisible unless someone reads the transcript -- this is that reading,
+    over every URL the session mentions *and* every host named in an error, because a
+    library that fails to reach its analytics endpoint says so as
+    ``HTTPSConnectionPool(host='us.i.posthog.com')`` rather than as a URL.
+    """
+    body = text or ""
+    hosts = {host.lower() for host in re.findall(r"https?://([A-Za-z0-9_.\-]+)", body)}
+    hosts |= {host.lower() for host in
+              re.findall(r"host=['\"]([A-Za-z0-9_.\-]+)", body)}
+    hosts = {re.sub(r":\d+$", "", host) for host in hosts}
+    local = {"127.0.0.1", "localhost", "0.0.0.0", "::1"}
+    external = sorted(host for host in hosts
+                      if host not in local and not host.endswith((".local", ".internal")))
+    analytics = ("posthog", "sentry", "analytics", "mixpanel", "segment", "amplitude",
+                 "datadog", "google-analytics")
+    named = [host for host in external if any(word in host for word in analytics)]
+    if named:
+        return False, f"the session reached analytics hosts: {', '.join(named)}"
+    if external:
+        return True, (f"no analytics egress ({len(external)} external host(s) seen: "
+                      f"{', '.join(external[:3])})")
+    return True, "no external host appears in the session at all"
+
+
 LIVE_CHECKS: Dict[str, Callable[[str], tuple]] = {
     "hub_role": hub_role,
     "hub_imported": hub_imported,
     "phone_quiet": phone_quiet,
     "audit_chain": chain_present,
+    "timer_fired": timer_fired,
+    "memory_recalled": memory_recalled,
+    "personality_grew": personality_grew,
+    "heard_caused_action": heard_caused_action,
+    "pipeline_reported": pipeline_reported,
+    "no_third_party_egress": no_third_party_egress,
 }
 
 # Every claim the docs make, with the check that decides it. ``__PY__`` is
@@ -137,6 +325,66 @@ CLAIMS: List[Dict[str, Any]] = [
      "doc": "audit.py",
      "checks": [{"kind": "live", "name": "audit_chain",
                  "path": "runtime/desktop/audit_chain.jsonl"}]},
+    # Agency: the claims that decide whether the hive is *operable* rather than merely
+    # correct. Each row runs a scripted session (scripts/agency_session.py) against a real
+    # node and then judges the transcript with a pure parser, the same two-step the rest of
+    # this matrix uses. Deliberately absent: `reasoning.model_backed`. A parser that returns
+    # False is a *failed* claim, not an unproven one, and this fleet has no language model
+    # served or downloaded anywhere -- so that row is added with the model, not before it.
+    {"id": "agency.timed_autonomy",
+     "claim": "the node accepts a goal and acts on it later, with nobody typing",
+     "doc": "scripts/agency_session.py (timed), tools.TimerManager, agent._check_timers",
+     "checks": [{"kind": "command", "argv": ["__PY__", "scripts/agency_session.py",
+                                             "--scenario", "timed"]},
+                {"kind": "live", "name": "timer_fired",
+                 "path": "runtime/evidence/agency/timed.log"}]},
+    {"id": "agency.memory_durability",
+     "claim": "a fact survives the process: stored, restarted, recalled",
+     "doc": "README 'Memory architecture', scripts/agency_session.py (memory)",
+     "checks": [{"kind": "command", "argv": ["__PY__", "scripts/agency_session.py",
+                                             "--scenario", "memory",
+                                             "--phase", "first"]},
+                {"kind": "command", "argv": ["__PY__", "scripts/agency_session.py",
+                                             "--scenario", "memory",
+                                             "--phase", "second"]},
+                {"kind": "live", "name": "memory_recalled",
+                 "path": "runtime/evidence/agency/memory.log"}]},
+    {"id": "agency.personality_growth",
+     "claim": "a window of turns grows a generation, and the node says why",
+     "doc": "personality/growth.py, shugocore_agent.GROWTH_EVERY",
+     "checks": [{"kind": "command", "argv": ["__PY__", "scripts/agency_session.py",
+                                             "--scenario", "personality"]},
+                {"kind": "live", "name": "personality_grew",
+                 "path": "runtime/evidence/agency/personality.log"}]},
+    {"id": "agency.perception_to_action",
+     "claim": "a phrase it heard -- not typed -- reaches the reasoning path and a reply",
+     "doc": "human_interaction.py (speech observations), README 'Operator engagement "
+            "terminal'",
+     "checks": [{"kind": "command", "argv": ["__PY__", "scripts/agency_session.py",
+                                             "--scenario", "perception"]},
+                {"kind": "live", "name": "heard_caused_action",
+                 "path": "runtime/evidence/agency/perception.log"}]},
+    {"id": "node.pipeline_health",
+     "claim": "the node reports every organ in a vocabulary that can say 'unknown'",
+     "doc": "human_interaction.pipeline_health, CHANGELOG 'closed-loop validation'",
+     "checks": [{"kind": "command", "argv": ["__PY__", "scripts/agency_session.py",
+                                             "--scenario", "status"]},
+                {"kind": "live", "name": "pipeline_reported",
+                 "path": "runtime/evidence/agency/status.log"}]},
+    {"id": "privacy.no_third_party_egress",
+     "claim": "a session on this node reaches no analytics host",
+     "doc": "README 'Verifiable embeddings & privacy hardening', vector_db.py",
+     "checks": [{"kind": "command", "argv": ["__PY__", "scripts/agency_session.py",
+                                             "--scenario", "sandbox"]},
+                {"kind": "live", "name": "no_third_party_egress",
+                 "path": "runtime/evidence/agency/sandbox.log"}]},
+    {"id": "world.desktop",
+     "claim": "the operator terminal reaches the agent, and labels words honestly",
+     "doc": "README 'Operator engagement terminal'",
+     "checks": [{"kind": "command", "argv": ["__PY__", "-m", "unittest",
+                                             "tests.test_engagement_terminal",
+                                             "tests.test_terminal_voice",
+                                             "tests.test_terminal_ear"]}]},
 ]
 
 

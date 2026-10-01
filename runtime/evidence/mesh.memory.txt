@@ -1,0 +1,30 @@
+claim: Tier 2 memory crosses the mesh
+where: README 'Memory mesh semantics'
+verdict: proven
+
+$ C:\Users\marku\AppData\Local\Programs\Python\Python310\python.exe runtime/tools/fleet_status.py
+[exit 0]
+INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'routine observation (proposer backoff)', 'proposal_source': 'rule_fallback', 'action_type': 'record_observation'}
+2026-10-01 09:57:46,386 - INFO - Decision made for task: maintain_agent_loop - N/A
+INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
+2026-10-01 09:57:46,386 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'routine observation (proposer backoff)', 'reason': 'proposer_backoff', 'failures': 4, 'retry_in_secs': 54.9}, 'confidence': 0.1, 'proposal_source': 'rule_fallback', 'model_outputs': {}, 'aggregated_output': 0, 'memory_context': []}
+INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'routine observation (proposer backoff)', 'reason': 'proposer_backoff', 'failures': 4, 'retry_in_secs': 54.9}, 'confidence': 0.1, 'proposal_source': 'rule_fallback', 'model_outputs': {}, 'aggregated_output': 0, 'memory_context': []}
+2026-10-01 09:57:46,386 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'routine observation (proposer backoff)', 'proposal_source': 'rule_fallback', 'action_type': 'record_observation'}
+INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'routine observation (proposer backoff)', 'proposal_source': 'rule_fallback', 'action_type': 'record_observation'}
+2026-10-01 09:57:47,626 - INFO - Decision made for task: maintain_agent_loop - N/A
+INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
+2026-10-01 09:57:47,626 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'routine observation (proposer backoff)', 'reason': 'proposer_backoff', 'failures': 4, 'retry_in_secs': 53.7}, 'confidence': 0.1, 'proposal_source': 'rule_fallback', 'model_outputs': {}, 'aggregated_output': 0, 'memory_context': []}
+INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'routine observation (proposer backoff)', 'reason': 'proposer_backoff', 'failures': 4, 'retry_in_secs': 53.7}, 'confidence': 0.1, 'proposal_source': 'rule_fallback', 'model_outputs': {}, 'aggregated_output': 0, 'memory_context': []}
+2026-10-01 09:57:47,627 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'routine observation (proposer backoff)', 'proposal_source': 'rule_fallback', 'action_type': 'record_observation'}
+INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'routine observation (proposer backoff)', 'proposal_source': 'rule_fallback', 'action_type': 'record_observation'}
+2026-10-01 09:57:48,864 - INFO - Decision made for task: maintain_agent_loop - N/A
+INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
+2026-10-01 09:57:48,864 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'routine observation (proposer backoff)', 'reason': 'proposer_backoff', 'failures': 4, 'retry_in_secs': 52.5}, 'confidence': 0.1, 'proposal_source': 'rule_fallback', 'model_outputs': {}, 'aggregated_output': 0, 'memory_context': []}
+INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'routine observation (proposer backoff)', 'reason': 'proposer_backoff', 'failures': 4, 'retry_in_secs': 52.5}, 'confidence': 0.1, 'proposal_source': 'rule_fallback', 'model_outputs': {}, 'aggregated_output': 0, 'memory_context': []}
+2026-10-01 09:57:48,864 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'routine observation (proposer backoff)', 'proposal_source': 'rule_fallback', 'action_type': 'record_observation'}
+INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'routine observation (proposer backoff)', 'proposal_source': 'rule_fallback', 'action_type': 'record_observation'}
+WARNING:agent_runtime:peer shugo-a51 request failed: timed out
+WARNING:agent_runtime:peer shugo-a16 request failed: timed out
+
+
+live hub_imported [runtime/evidence/fleet_status.txt]: ok - imported=51 fact(s)

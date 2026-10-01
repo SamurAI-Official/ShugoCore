@@ -6,6 +6,26 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### The fleet surface: `/nodes`, and a mesh proof that survives its own success
+
+The two mesh rows were the last claims with no evidence, because nothing recorded what a hive
+looks like from inside one of its own nodes.
+
+- `runtime/tools/fleet_status.py` brings the desk node up the way the operator terminal does
+  (the same `AgentController`, so the transport, the identity and the fleet token are the real
+  ones), holds the lease at the hub's documented priority, listens, and writes
+  `runtime/evidence/fleet_status.txt` in the shape the existing parsers already read. A live
+  run: four peers heard -- the Mac at priority 10 among them -- `role=primary`, memory imported.
+- The memory claim reads the **durable** count, not a session delta. `imported: 0` is a healthy
+  sync on a converged fleet -- the client's own sync loop says as much -- so a claim that reads
+  a session counter fails on the *second* run of a working hive. The transcript therefore states
+  `shared_from` provenance from `FactStore.count_shared()` first: 32 facts held from peers while
+  this session imported none, which is what "memory crosses the mesh" actually means.
+- `/nodes` in the operator terminal answers with the roster this node itself has heard
+  (`telemetry['mesh_peers']` plus its own election), marks who holds the lease, and says "none
+  heard yet" rather than implying an empty fleet.
+- `mesh.election` and `mesh.memory` are now **proven** from that capture.
+
 ### A local model actually backs the decisions, and the health surface stops flattering it
 
 LM Studio serves this machine's model on 127.0.0.1:1234, and the node could not use it:

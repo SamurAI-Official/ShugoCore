@@ -1834,6 +1834,72 @@ class TerminalSpeaker:
         return True
 
 
+def _human_bytes(value) -> str:
+    """Bytes, as an operator reads them."""
+    try:
+        number = float(value or 0)
+    except (TypeError, ValueError):
+        return "?"
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if abs(number) < 1024.0 or unit == "TiB":
+            return f"{number:.2f} {unit}" if unit != "B" else f"{int(number)} B"
+        number /= 1024.0
+    return f"{number:.2f} TiB"
+
+
+def fleet_snapshot(agent) -> dict:
+    """What this node knows about the fleet, from its own surfaces -- never invented.
+
+    The peer records are the ones the mesh heartbeat merged (``telemetry['mesh_peers']``), and
+    the lease comes from this node's own election. A node that has heard nobody reports nobody:
+    an empty roster here means "no peer has advertised to me", which is a different thing from
+    "the fleet is empty" and is stated that way.
+    """
+    try:
+        status = agent.get_status() or {}
+    except Exception:
+        status = {}
+    try:
+        peers = list(((getattr(agent, "telemetry", None) or {}).get("mesh_peers") or []))
+    except Exception:
+        peers = []
+    lease = ""
+    try:
+        lease = str(getattr(agent, "mesh_election", None).primary() or "")
+    except Exception:
+        lease = ""
+    return {"node_id": str(status.get("node_id") or ""),
+            "role": str(status.get("mesh_role") or "unknown"),
+            "peers": peers, "lease": lease}
+
+
+def format_fleet(snapshot) -> list:
+    """The roster, as lines. Pure, so the layout is testable without a fleet."""
+    peers = snapshot.get("peers") or []
+    lease = str(snapshot.get("lease") or "")
+    node_id = str(snapshot.get("node_id") or "unknown")
+    role = str(snapshot.get("role") or "unknown")
+    holds = " (holds the lease)" if lease and lease == node_id else ""
+    lines = [f"    this node          {node_id} ({role}){holds}"]
+    if not peers:
+        lines.append("    peers              none heard yet -- a quiet mesh and an empty "
+                     "fleet look the same from here")
+        return lines
+    for peer in sorted(peers, key=lambda entry: (str(entry.get("priority", 999)),
+                                                 str(entry.get("device_id") or ""))):
+        name = peer.get("device_id") or peer.get("node_id") or "?"
+        lines.append("    {name:<18} prio={prio:<5} thermal={thermal:<3} mem={mem:<10} "
+                     "{speaks}{lease}".format(
+                         name=name, prio=peer.get("priority", "?"),
+                         thermal=peer.get("thermal_status", "?"),
+                         mem=_human_bytes(peer.get("mem_available_bytes", 0)),
+                         speaks="speaks  " if peer.get("can_speak") else "",
+                         lease="(holds the lease)" if name == lease else ""))
+    lines.append(f"    lease held by      {lease or 'nobody'} "
+                 f"({len(peers)} peer(s) heard)")
+    return lines
+
+
 def handle_terminal_command(agent, text) -> bool:
     """The terminal's slash commands. True when the line was one of them.
 
@@ -1871,6 +1937,10 @@ def handle_terminal_command(agent, text) -> bool:
         else:
             summary = str(result)
         print(f"    speak_test -> {summary or 'no result'}", flush=True)
+        return True
+    if lowered == "/nodes":
+        for line in format_fleet(fleet_snapshot(agent)):
+            print(line, flush=True)
         return True
     if lowered == "/prove" or lowered.startswith("/prove "):
         asked = str(text).strip()[6:].strip()
@@ -1994,7 +2064,7 @@ def run_terminal(args) -> int:
                                       for name, value in sorted(_stages.items()))
                             or "not reported yet")
           + (f"   backed by {_backing}" if _backing and _backing != "unknown" else ""))
-    print("  commands  /status  /say TEXT  /prove [ID]  /quit   (Ctrl+C also exits)\n")
+    print("  commands  /status  /nodes  /say TEXT  /prove [ID]  /quit   (Ctrl+C also exits)\n")
 
     stop = threading.Event()
 

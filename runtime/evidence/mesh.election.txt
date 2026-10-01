@@ -1,0 +1,83 @@
+claim: the hive elects exactly one primary and survives peers restarting
+where: README 'Mesh primary election (Track 1)'
+verdict: proven
+
+$ C:\Users\marku\AppData\Local\Programs\Python\Python310\python.exe -m unittest tests.test_mesh_heartbeat tests.test_mesh_election
+[exit 0]
+[SHUGOCORE_BOOT] chdir ok: C:\Users\marku\AppData\Local\Temp\shugo-role-6u62fiz0 (was G:\Program Prototype\shugocore)
+[SHUGOCORE_BOOT] chdir ok: C:\Users\marku\AppData\Local\Temp\shugo-role-kblq8r42 (was G:\Program Prototype\shugocore)
+[SHUGOCORE_BOOT] chdir ok: C:\Users\marku\AppData\Local\Temp\shugo-role-qziuinhx (was G:\Program Prototype\shugocore)
+[SHUGOCORE_BOOT] chdir ok: C:\Users\marku\AppData\Local\Temp\shugo-role-awpdf2sb (was G:\Program Prototype\shugocore)
+[SHUGOCORE_BOOT] chdir ok: C:\Users\marku\AppData\Local\Temp\shugo-role-7za6nwao (was G:\Program Prototype\shugocore)
+[SHUGOCORE_BOOT] chdir ok: C:\Users\marku\AppData\Local\Temp\shugo-role-kb_gecfj (was G:\Program Prototype\shugocore)
+[SHUGOCORE_BOOT] chdir ok: C:\Users\marku\AppData\Local\Temp\shugo-role-yervz0du (was G:\Program Prototype\shugocore)
+[SHUGOCORE_BOOT] chdir ok: C:\Users\marku\AppData\Local\Temp\mesh_election_test_lca8m4ra (was G:\Program Prototype\shugocore)
+[SHUGOCORE_BOOT] chdir ok: C:\Users\marku\AppData\Local\Temp\mesh_election_probe_7c628jbs (was G:\Program Prototype\shugocore)
+[SHUGOCORE_BOOT] chdir ok: C:\Users\marku\AppData\Local\Temp\mesh_election_probe_7c628jbs (was G:\Program Prototype\shugocore)
+..................heartbeat handler failed: election blew up
+..........heartbeat provider failed: no election
+....SHUGONET: runtime started on port 9000 (peers=0)
+.2026-10-01 09:56:05,617 - INFO - Logger already configured; skipping handler setup.
+INFO:logging_manager:Logger already configured; skipping handler setup.
+SHUGONET: runtime started on port 9000 (peers=0)
+2026-10-01 09:56:05,642 - INFO - Logger already configured; skipping handler setup.
+INFO:logging_manager:Logger already configured; skipping handler setup.
+SHUGONET: runtime started on port 9000 (peers=0)
+.2026-10-01 09:56:05,672 - INFO - Logger already configured; skipping handler setup.
+INFO:logging_manager:Logger already configured; skipping handler setup.
+SHUGONET: runtime started on port 9000 (peers=0)
+WARNING:shugocore_agent:posture: not loading a local model (a desktop hive is configured: the hive holds the model)
+2026-10-01 09:56:05,715 - INFO - Logger already configured; skipping handler setup.
+INFO:logging_manager:Logger already configured; skipping handler setup.
+SHUGONET: runtime started on port 9000 (peers=0)
+.2026-10-01 09:56:05,737 - INFO - Logger already configured; skipping handler setup.
+INFO:logging_manager:Logger already configured; skipping handler setup.
+SHUGONET: runtime started on port 9000 (peers=0)
+.2026-10-01 09:56:05,763 - INFO - Logger already configured; skipping handler setup.
+INFO:logging_manager:Logger already configured; skipping handler setup.
+SHUGONET: runtime started on port 9000 (peers=0)
+..WARNING:mesh_election:mesh election: shugo-tab claims shugo-mac, but shugo-desktop leads here
+.WARNING:mesh_election:mesh election: shugo-tab claims shugo-a16, but shugo-desktop leads here
+...............2026-10-01 09:56:05,791 - INFO - Logger already configured; skipping handler setup.
+INFO:logging_manager:Logger already configured; skipping handler setup.
+SHUGONET: runtime started on port 9000 (peers=0)
+2026-10-01 09:56:05,822 - INFO - Logger already configured; skipping handler setup.
+INFO:logging_manager:Logger already configured; skipping handler setup.
+SHUGONET: runtime started on port 9000 (peers=0)
+2026-10-01 09:56:05,837 - INFO - Logger already configured; skipping handler setup.
+INFO:logging_manager:Logger already configured; skipping handler setup.
+SHUGONET: runtime started on port 9000 (peers=0)
+WARNING:mesh_election:mesh election: shugo-tab claims shugo-mac, but shugo-tab leads here
+.......s..........
+----------------------------------------------------------------------
+Ran 72 tests in 9.421s
+
+OK (skipped=1)
+
+
+$ C:\Users\marku\AppData\Local\Programs\Python\Python310\python.exe runtime/tools/fleet_status.py
+[exit 0]
+INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'routine observation (proposer backoff)', 'proposal_source': 'rule_fallback', 'action_type': 'record_observation'}
+2026-10-01 09:56:48,913 - INFO - Decision made for task: maintain_agent_loop - N/A
+INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
+2026-10-01 09:56:48,913 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'routine observation (proposer backoff)', 'reason': 'proposer_backoff', 'failures': 4, 'retry_in_secs': 56.3}, 'confidence': 0.1, 'proposal_source': 'rule_fallback', 'model_outputs': {}, 'aggregated_output': 0, 'memory_context': []}
+INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'routine observation (proposer backoff)', 'reason': 'proposer_backoff', 'failures': 4, 'retry_in_secs': 56.3}, 'confidence': 0.1, 'proposal_source': 'rule_fallback', 'model_outputs': {}, 'aggregated_output': 0, 'memory_context': []}
+2026-10-01 09:56:48,913 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'routine observation (proposer backoff)', 'proposal_source': 'rule_fallback', 'action_type': 'record_observation'}
+INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'routine observation (proposer backoff)', 'proposal_source': 'rule_fallback', 'action_type': 'record_observation'}
+2026-10-01 09:56:50,147 - INFO - Decision made for task: maintain_agent_loop - N/A
+INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
+2026-10-01 09:56:50,147 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'routine observation (proposer backoff)', 'reason': 'proposer_backoff', 'failures': 4, 'retry_in_secs': 55.1}, 'confidence': 0.1, 'proposal_source': 'rule_fallback', 'model_outputs': {}, 'aggregated_output': 0, 'memory_context': []}
+INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'routine observation (proposer backoff)', 'reason': 'proposer_backoff', 'failures': 4, 'retry_in_secs': 55.1}, 'confidence': 0.1, 'proposal_source': 'rule_fallback', 'model_outputs': {}, 'aggregated_output': 0, 'memory_context': []}
+2026-10-01 09:56:50,147 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'routine observation (proposer backoff)', 'proposal_source': 'rule_fallback', 'action_type': 'record_observation'}
+INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'routine observation (proposer backoff)', 'proposal_source': 'rule_fallback', 'action_type': 'record_observation'}
+2026-10-01 09:56:51,378 - INFO - Decision made for task: maintain_agent_loop - N/A
+INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
+2026-10-01 09:56:51,378 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'routine observation (proposer backoff)', 'reason': 'proposer_backoff', 'failures': 4, 'retry_in_secs': 53.9}, 'confidence': 0.1, 'proposal_source': 'rule_fallback', 'model_outputs': {}, 'aggregated_output': 0, 'memory_context': []}
+INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'routine observation (proposer backoff)', 'reason': 'proposer_backoff', 'failures': 4, 'retry_in_secs': 53.9}, 'confidence': 0.1, 'proposal_source': 'rule_fallback', 'model_outputs': {}, 'aggregated_output': 0, 'memory_context': []}
+2026-10-01 09:56:51,378 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'routine observation (proposer backoff)', 'proposal_source': 'rule_fallback', 'action_type': 'record_observation'}
+INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'routine observation (proposer backoff)', 'proposal_source': 'rule_fallback', 'action_type': 'record_observation'}
+WARNING:agent_runtime:peer shugo-tab request failed: timed out
+WARNING:agent_runtime:peer shugo-a51 request failed: timed out
+
+
+live hub_role [runtime/evidence/fleet_status.txt]: ok - role=primary

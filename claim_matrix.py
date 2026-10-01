@@ -349,10 +349,16 @@ CLAIMS: List[Dict[str, Any]] = [
      "checks": [{"kind": "command", "argv": ["__PY__", "-m", "unittest",
                                              "tests.test_mesh_heartbeat",
                                              "tests.test_mesh_election"]},
-                {"kind": "live", "name": "hub_role", "path": ""}]},
+                # The live half is captured from a real fleet by a real node holding the
+                # lease -- the desk node, on its own data dir, hearing its own peers.
+                {"kind": "command", "argv": ["__PY__", "runtime/tools/fleet_status.py"]},
+                {"kind": "live", "name": "hub_role",
+                 "path": "runtime/evidence/fleet_status.txt"}]},
     {"id": "mesh.memory", "claim": "Tier 2 memory crosses the mesh",
      "doc": "README 'Memory mesh semantics'",
-     "checks": [{"kind": "live", "name": "hub_imported", "path": ""}]},
+     "checks": [{"kind": "command", "argv": ["__PY__", "runtime/tools/fleet_status.py"]},
+                {"kind": "live", "name": "hub_imported",
+                 "path": "runtime/evidence/fleet_status.txt"}]},
     {"id": "mesh.builds",
      "claim": "a build travels node-to-node, digest-checked",
      "doc": "README 'Build transfer over the mesh'",

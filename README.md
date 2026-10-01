@@ -413,7 +413,10 @@ python clients/desktop/shugocore_desktop.py --terminal --say "status report" --e
 - **`/say TEXT`** drives the agent's own gated `speak_test()` -- the path the AGENT tab's "Test
   speech" control uses -- instead of talking from the terminal. The terminal prints and the
   agent speaks; the terminal never becomes a second way for a node to decide to talk.
-  `/status` prints the node's own state.
+  `/status` prints the node's own state, and **`/nodes`** prints the fleet roster: one line per
+  node from the peer records this node's own mesh heartbeat merged, with the lease holder
+  marked. A node that has heard nobody says so -- "a quiet mesh and an empty fleet look the
+  same from here" is the honest reading, so the terminal does not imply the second.
 - **`--voice-rate`, `--voice-engine`, `--ear-window`, `--no-input`, `--exit-after`,
   `--mesh-token`** cover scripting, voice choice and headless runs. `System.Speech.Recognition`
   has no device chooser, so live hearing uses whatever Windows calls the default capture
@@ -1243,8 +1246,11 @@ Remaining:
 - Engagement matrix: the **agency rows ship and are proven** -- a goal acted on
   unprompted, memory across a restart, a grown generation, a *heard* phrase
   answered, honest pipeline health, no analytics egress, the operator terminal --
-  and `/prove` runs them from the console. The world rows beyond the desktop
-  (robotics, XR, sandbox) need a simulation and a headset before they can be judged.
+  and `/prove` runs them from the console. The **mesh rows are proven too**:
+  `runtime/tools/fleet_status.py` builds a real node, holds the lease, listens to
+  the hive and records what it heard, and the rows judge that transcript. The
+  world rows beyond the desktop (robotics, XR, sandbox) still need a simulation
+  boundary before they can be judged.
 - XR sandbox for the Godot/OpenXR bridge (`platforms/godot/`), so an operator can
   stand in a virtual space and be answered there
 

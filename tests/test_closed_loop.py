@@ -215,7 +215,11 @@ class TestAgentClosedLoop(unittest.TestCase):
         agent = self._make()
         pipeline = agent.get_status()["pipeline"]
         stages = pipeline["stages"]
-        self.assertEqual(stages["model"], "ok")
+        # No decision has been taken yet, so the model stage is *unknown* -- the pipeline's word
+        # for "no evidence yet". It used to read "ok" the moment an engine object existed, which
+        # is how a node whose every model call failed reported itself model-healthy.
+        self.assertEqual(stages["model"], "unknown")
+        self.assertEqual(pipeline["backing"], "none")
         self.assertEqual(stages["memory"], "ok")
         self.assertEqual(stages["speech"], "down")  # no listener attached
         self.assertEqual(pipeline["overall"], "down")

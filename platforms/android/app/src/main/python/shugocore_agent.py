@@ -1769,6 +1769,23 @@ class AndroidAgent:
             except Exception:
                 pass
 
+    def _model_backed(self):
+        """Is a *model* backing the decisions? ``None`` until there has been a decision.
+
+        ``model_ready`` used to mean "an engine object exists", which is how a node with no
+        model served reported ``model=ok`` while every proposer call failed and the rules
+        answered. The last decision's own source is the evidence: decision_engine tags
+        ``proposal_source`` with the model id when a model answers, and with one of these names
+        when it cannot. A node that has not decided yet is *unknown* -- the pipeline's word for
+        "no evidence yet, never fabricated" -- rather than a confident ok or down.
+        """
+        source = str(getattr(self, "_decision_source", "") or "").strip().lower()
+        if not source or source == "none":
+            return None
+        stood_in = {"rule_fallback", "null_proposal", "proposer_backoff",
+                    "conversation_fallback", "conversation_empty", "operator_test"}
+        return source not in stood_in
+
     def _check_timers(self) -> None:
         """Phase 3.2: fire any due background timers (speaks on completion).
 
@@ -4109,7 +4126,8 @@ class AndroidAgent:
             # pipeline (sensors/vision/hearing/speech/model/memory), rendered
             # as the AGENT tab Validation section.
             "pipeline": (self.interaction.pipeline_health(
-                model_ready=self.engine is not None,
+                model_ready=self._model_backed(),
+                backing=getattr(self, "_decision_source", "none"),
                 tts_attached=self._speak_listener is not None,
                 memory_ok=self.memory is not None)
                 if self.interaction is not None else None),

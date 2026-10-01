@@ -188,6 +188,79 @@ class PipelineHealthTestCase(unittest.TestCase):
         self.assertIn("never reported its pipeline", detail)
 
 
+class ModelBackedTestCase(unittest.TestCase):
+    """The claim that separates a node whose reasoning is connected from one whose fallback
+    answered -- which is precisely the reading that used to be a lie."""
+
+    def test_a_model_id_as_backing_is_proof(self):
+        ok, detail = claim_matrix.model_backed(
+            "[TERMINAL]   [MODEL  ] decisions backed by prism-ml/bonsai-27b\n")
+        self.assertTrue(ok, detail)
+        self.assertIn("prism-ml/bonsai-27b", detail)
+
+    def test_only_rules_backing_is_not_proof(self):
+        ok, detail = claim_matrix.model_backed(
+            "[TERMINAL]   [MODEL  ] decisions backed by rule_fallback\n"
+            "[TERMINAL]   [MODEL  ] decisions backed by none\n")
+        self.assertFalse(ok, "a rule-backed node passed the model claim")
+        self.assertIn("rather than a model", detail)
+
+    def test_a_transcript_that_announces_nothing_is_not_proof(self):
+        ok, detail = claim_matrix.model_backed("[SESSION] scenario=model")
+        self.assertFalse(ok)
+        self.assertIn("nothing announced", detail)
+
+    def test_a_model_that_could_not_be_reached_fails_the_claim(self):
+        text = ("[TERMINAL]   [MODEL  ] decisions backed by shugocore-local\n"
+                "[TERMINAL]   [AGENT  ] cycle=1 outcome=BACKEND_FAILURE stages=OBSERVE\n")
+        ok, detail = claim_matrix.model_backed(text)
+        self.assertFalse(ok, "a cycle that could not reach the model passed")
+        self.assertIn("could not reach it", detail)
+
+    def test_the_health_line_counts_too(self):
+        ok, detail = claim_matrix.model_backed(
+            "  health    model=ok, speech=ok   backed by shugocore-local\n")
+        self.assertTrue(ok, detail)
+
+
+class WorldEngagementTestCase(unittest.TestCase):
+    """A world is engaged when a *goal* was expressed, acted on through the gate, and
+    answered -- never because the world's interfaces pass their own tests."""
+
+    ENGAGED = ("[WORLD  ] robotics\n"
+               "[GOAL   ] pick up the red block\n"
+               "[ACTION ] moveit_plan (gated)\n"
+               "[REPLY  ] the plan is approved and running\n")
+
+    def test_a_goal_acted_on_and_answered_is_proof(self):
+        ok, detail = claim_matrix.world_engagement(self.ENGAGED)
+        self.assertTrue(ok, detail)
+        self.assertIn("robotics", detail)
+
+    def test_an_ungated_action_is_not_engagement(self):
+        ok, detail = claim_matrix.world_engagement(
+            self.ENGAGED.replace("(gated)", "(ungated)"))
+        self.assertFalse(ok, "an action that bypassed the gate passed as engagement")
+        self.assertIn("did not pass the gate", detail)
+
+    def test_an_unanswered_goal_is_not_engagement(self):
+        ok, detail = claim_matrix.world_engagement(
+            self.ENGAGED.replace("[REPLY  ] the plan is approved and running\n", ""))
+        self.assertFalse(ok)
+        self.assertIn("never answered", detail)
+
+    def test_a_goal_nobody_acted_on_is_not_engagement(self):
+        ok, detail = claim_matrix.world_engagement(
+            self.ENGAGED.replace("[ACTION ] moveit_plan (gated)\n", ""))
+        self.assertFalse(ok)
+        self.assertIn("nothing was done", detail)
+
+    def test_an_absent_transcript_is_not_engagement(self):
+        ok, detail = claim_matrix.world_engagement("")
+        self.assertFalse(ok)
+        self.assertIn("no world session", detail)
+
+
 class NoThirdPartyEgressTestCase(unittest.TestCase):
     """The privacy claim, read off a transcript rather than asserted in a README."""
 

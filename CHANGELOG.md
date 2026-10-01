@@ -6,6 +6,51 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### A local model actually backs the decisions, and the health surface stops flattering it
+
+LM Studio serves this machine's model on 127.0.0.1:1234, and the node could not use it:
+`OpenAICompatibleBackend.generate` raised `BackendError: environment variable OPENAI_API_KEY is
+not set` *before* any HTTP call, because the OpenAI wire wants a key and a local server usually
+has none. From outside it looked like a node whose every model call failed while the model sat
+there loaded and answering.
+
+- A keyless endpoint is now allowed **only** on loopback (`_is_loopback`): LM Studio,
+  llama.cpp's server, vLLM and a local ShugoCore server all answer without one, and the
+  requirement keeps its real purpose -- keeping a prompt from being sent somewhere the operator
+  did not mean -- for every remote host. The `Authorization` header is omitted rather than sent
+  empty when there is no key.
+- The OpenAI-compatible default timeout moves 30 s -> 120 s, matching the Ollama backend: a 27B
+  model took 65 s to load on its first call, and 30 s turned "slow" into "broken".
+- With that, the model takes the decisions: `proposal_source: 'prism-ml/bonsai-27b'` with
+  `action_type: speak` and `status: success`, and the node initiates speech of its own accord
+  between turns.
+
+**The health surface no longer flatters a fallback.** `pipeline_health` took `model_ready` as a
+truth from the shell, and the shell passed `self.engine is not None` -- so a node with no model
+served reported `model=ok` while every call failed. The pipeline now carries `backing` (a model
+id, or the name of the rule that stood in) and the `model` stage is judged by whether a *model*
+produced the last decision (`_model_backed`, which excludes the standing-rule names
+decision_engine uses). The operator terminal prints backing as it changes, beside the routing
+line it already printed, and `/status` shows the pipeline and what backed it.
+
+That makes the claim provable rather than assertable: `reasoning.model_backed` runs the real
+console against the local server and requires the transcript to show a model id backing its
+decisions, with no cycle that could not reach it. On this machine: **proven** (`decisions
+backed by shugocore-local`, after a turn whose reply the model wrote). The endpoint is
+`SHUGOCORE_MODEL_URL`-overridable and the wire is OpenAI-compatible, so the same row works
+against llama.cpp, vLLM or a ShugoCore server -- Ollama is one convenient option, not an
+assumption.
+
+**The world rows exist, and three of them are honestly unproven.** `world.robotics`,
+`world.xr` and `world.sandbox` each run their own verification suite (ROS 2 transport, the
+simulation layer, the Godot/OpenXR bridge scaffold, the actuation sandbox) and then judge a
+*session* transcript in the shape a world producer writes -- `[WORLD] [GOAL] [ACTION (gated)]
+[REPLY]` -- because interfaces passing their own tests is a different claim from an operator
+being reached and answered in a world. No such session has been run, so they read `unproven`,
+which is not `failed`: the matrix says what is missing instead of hiding it. `world.desktop` is
+proven, and that parser learned something on the way -- `ungated` contains `gated`, so a
+bypassed gate read as engagement until the word boundary was fixed.
+
 ### The hive can prove it is operable: agency claims, with transcripts as evidence
 
 `claim_matrix.py` already held the system to its *safety* claims (election, consent,

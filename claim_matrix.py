@@ -260,6 +260,71 @@ def no_third_party_egress(text: str) -> tuple:
     return True, "no external host appears in the session at all"
 
 
+def model_backed(text: str) -> tuple:
+    """Did a *model* take the last decision, or did a rule stand in for one?
+
+    Read from the node's own announcement of what backed its decisions, and from the absence of
+    the outcome that means the model could not be reached at all. "An engine object exists" is
+    not the claim -- it is precisely the reading that made a node with no model served report
+    itself healthy, so a transcript showing only rule-backed decisions fails this.
+    """
+    announced = re.findall(r"decisions backed by\s+([^\s]+)", text or "")
+    announced += re.findall(r"backed by\s+([A-Za-z0-9_./-]+)", text or "")
+    stood_in = {"", "none", "rule_fallback", "null_proposal", "proposer_backoff",
+                "conversation_fallback", "conversation_empty", "operator_test"}
+    if not announced:
+        return False, "nothing announced what backed the decisions, so nothing was judged"
+    reached = [name for name in announced if name.lower() not in stood_in]
+    failed = [line.strip() for line in _lines(text) if "BACKEND_FAILURE" in line]
+    if not reached:
+        return False, ("every decision was backed by a rule rather than a model: "
+                       f"{', '.join(sorted(set(announced)))}")
+    if failed:
+        return False, (f"a model answered, but {len(failed)} cycle(s) could not reach it "
+                       f"({failed[0][:70]})")
+    return True, f"decisions backed by {reached[-1]}"
+
+
+def world_engagement(text: str) -> tuple:
+    """Was the agent reached *and* answered in a world, or only wired for one?
+
+    Judged from a session transcript in the shape a world producer writes:
+
+        [WORLD  ] robotics
+        [GOAL   ] pick up the red block
+        [ACTION ] moveit_plan (gated)
+        [REPLY  ] the plan is approved and running
+
+    Two properties are required, and neither can be inferred from passing interface tests.
+    The *gate* marker is one: a world that actuates without passing it is exactly what the
+    containment claims exist to prevent, so an ungated action is not engagement. The *reply*
+    is the other: a plan that runs without answering the operator is not an answer. A row
+    whose transcript is absent stays ``unproven`` rather than proven by its wiring tests --
+    which is the distinction the whole matrix turns on.
+    """
+    body = text or ""
+    worlds = re.findall(r"^\[WORLD\s*\]\s*(\S+)", body, re.MULTILINE)
+    goals = re.findall(r"^\[GOAL\s*\]\s*(.+)$", body, re.MULTILINE)
+    actions = re.findall(r"^\[ACTION\s*\]\s*(.+)$", body, re.MULTILINE)
+    replies = re.findall(r"^\[REPLY\s*\]\s*(.+)$", body, re.MULTILINE)
+    if not worlds:
+        return False, "no world session was recorded"
+    world = worlds[0]
+    if not goals:
+        return False, f"no goal was expressed in {world}"
+    if not actions:
+        return False, f"a goal was expressed in {world} and nothing was done about it"
+    if not replies:
+        return False, f"{world} acted but never answered the operator"
+    # `gated` as a word, and not as the tail of `ungated`: the substring trap is exactly how a
+    # bypassed gate would have read as engagement.
+    ungated = [action for action in actions
+               if not re.search(r"(?<!un)gated\b", action, re.IGNORECASE)]
+    if ungated:
+        return False, f"an action in {world} did not pass the gate: {ungated[0][:60]}"
+    return True, (f"{world}: {goals[0][:40]!r} -> {actions[0][:40]} -> {replies[0][:40]!r}")
+
+
 LIVE_CHECKS: Dict[str, Callable[[str], tuple]] = {
     "hub_role": hub_role,
     "hub_imported": hub_imported,
@@ -271,6 +336,8 @@ LIVE_CHECKS: Dict[str, Callable[[str], tuple]] = {
     "heard_caused_action": heard_caused_action,
     "pipeline_reported": pipeline_reported,
     "no_third_party_egress": no_third_party_egress,
+    "model_backed": model_backed,
+    "world_engagement": world_engagement,
 }
 
 # Every claim the docs make, with the check that decides it. ``__PY__`` is
@@ -328,9 +395,7 @@ CLAIMS: List[Dict[str, Any]] = [
     # Agency: the claims that decide whether the hive is *operable* rather than merely
     # correct. Each row runs a scripted session (scripts/agency_session.py) against a real
     # node and then judges the transcript with a pure parser, the same two-step the rest of
-    # this matrix uses. Deliberately absent: `reasoning.model_backed`. A parser that returns
-    # False is a *failed* claim, not an unproven one, and this fleet has no language model
-    # served or downloaded anywhere -- so that row is added with the model, not before it.
+    # this matrix uses.
     {"id": "agency.timed_autonomy",
      "claim": "the node accepts a goal and acts on it later, with nobody typing",
      "doc": "scripts/agency_session.py (timed), tools.TimerManager, agent._check_timers",
@@ -378,6 +443,37 @@ CLAIMS: List[Dict[str, Any]] = [
                                              "--scenario", "sandbox"]},
                 {"kind": "live", "name": "no_third_party_egress",
                  "path": "runtime/evidence/agency/sandbox.log"}]},
+    {"id": "reasoning.model_backed",
+     "claim": "a model takes the decisions, not a rule standing in for one",
+     "doc": "model_backends.py (OpenAI-compatible), README 'Operator engagement terminal'",
+     "checks": [{"kind": "command", "argv": ["__PY__", "scripts/agency_session.py",
+                                             "--scenario", "model"]},
+                {"kind": "live", "name": "model_backed",
+                 "path": "runtime/evidence/agency/model.log"}]},
+    {"id": "world.robotics",
+     "claim": "an operator's words reach a robot in a simulation, and are answered there",
+     "doc": "ros2_interface.py, moveit_planner.py, gazebo_simulation.py, simulation/",
+     "checks": [{"kind": "command", "argv": ["__PY__", "-m", "unittest",
+                                             "tests.test_robotics",
+                                             "tests.test_ros2_transport_stress",
+                                             "tests.test_simulation"]},
+                # No transcript exists yet for the thing this claim is about: a goal spoken to
+                # a simulated robot, planned through MoveIt, executed and answered. The
+                # interfaces passing their own tests is a *different* claim, so this row stays
+                # unproven until a world session writes the lines -- unproven is not failed.
+                {"kind": "live", "name": "world_engagement", "path": ""}]},
+    {"id": "world.xr",
+     "claim": "an operator in a virtual space is reached there, and answered there",
+     "doc": "platforms/godot/README.md (SHUGOCORE_XR_AGENT_URL, desktop_preview)",
+     "checks": [{"kind": "command", "argv": ["__PY__", "-m", "unittest",
+                                             "tests.test_xr_scaffold"]},
+                {"kind": "live", "name": "world_engagement", "path": ""}]},
+    {"id": "world.sandbox",
+     "claim": "the agent proposes a sandboxed action, the gate judges it, and it answers",
+     "doc": "README 'Actuation sandbox', actuation_sandbox.py",
+     "checks": [{"kind": "command", "argv": ["__PY__", "-m", "unittest",
+                                             "tests.test_actuation_sandbox"]},
+                {"kind": "live", "name": "world_engagement", "path": ""}]},
     {"id": "world.desktop",
      "claim": "the operator terminal reaches the agent, and labels words honestly",
      "doc": "README 'Operator engagement terminal'",

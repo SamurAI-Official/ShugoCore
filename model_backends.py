@@ -53,6 +53,22 @@ class BackendError(RuntimeError):
     """Raised when a backend cannot complete a generation request."""
 
 
+def _is_loopback(url: str) -> bool:
+    """Is this endpoint on this machine?
+
+    A local server -- LM Studio, llama.cpp's server, vLLM -- usually has no API key at all, and
+    demanding one turned "the model is right there, answering" into `BackendError: environment
+    variable OPENAI_API_KEY is not set`. Remote endpoints still require a key, and what that
+    requirement is for is not authenticating a socket on this host: it is keeping a prompt from
+    being sent somewhere the operator did not mean.
+    """
+    try:
+        host = (urlparse(str(url or "")).hostname or "").strip().lower()
+    except ValueError:
+        return False
+    return host in ("127.0.0.1", "localhost", "::1", "0.0.0.0")
+
+
 def _validated_base_url(url: str) -> str:
     """Normalize and validate a backend base URL.
 
@@ -188,7 +204,7 @@ class OpenAICompatibleBackend(BaseBackend):
     name = "openai"
 
     def __init__(self, base_url: str, api_key_env: str = "OPENAI_API_KEY",
-                 timeout: float = 30.0, json_mode: str = "json_object"):
+                 timeout: float = 120.0, json_mode: str = "json_object"):
         self.base_url = _validated_base_url(base_url)
         self.api_key_env = str(api_key_env)
         self.timeout = float(timeout)
@@ -202,7 +218,7 @@ class OpenAICompatibleBackend(BaseBackend):
     def generate(self, model_id: str, prompt: str, timeout: float = None,
                  grammar: Optional[str] = None) -> str:
         api_key = os.environ.get(self.api_key_env)
-        if not api_key:
+        if not api_key and not _is_loopback(self.base_url):
             raise BackendError(f"environment variable {self.api_key_env} is not set")
         body: Dict[str, Any] = {
             "model": model_id, "stream": False,
@@ -222,7 +238,7 @@ class OpenAICompatibleBackend(BaseBackend):
                 body["response_format"] = {"type": "json_object"}
         with requests.post(
             f"{self.base_url}/v1/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}"},
+            headers=({"Authorization": f"Bearer {api_key}"} if api_key else {}),
             json=body,
             timeout=timeout or self.timeout,
             allow_redirects=False,

@@ -145,11 +145,22 @@ class TestOpenAICompatibleBackend(unittest.TestCase):
         result = backend.generate("fake-model", "hello")
         self.assertEqual(result, "fake-model-response")
 
-    def test_missing_api_key_raises(self):
+    def test_missing_api_key_raises_for_a_remote_endpoint(self):
         os.environ.pop("SHUGOCORE_LOCAL_KEY", None)
-        backend = create_backend({"type": "openai", "base_url": self.server.base_url(), "api_key_env": "SHUGOCORE_LOCAL_KEY"})
+        backend = create_backend({"type": "openai", "base_url": "http://10.0.0.5:1234",
+                                  "api_key_env": "SHUGOCORE_LOCAL_KEY"})
         with self.assertRaises(BackendError):
             backend.generate("fake-model", "hello")
+
+    def test_a_loopback_endpoint_needs_no_api_key(self):
+        # A local server -- LM Studio, llama.cpp, vLLM -- usually has no key at all, and
+        # demanding one turned "the model is right there" into a BackendError. The key
+        # requirement is about a prompt leaving this machine, which is what it still covers.
+        os.environ.pop("SHUGOCORE_LOCAL_KEY", None)
+        backend = create_backend({"type": "openai", "base_url": self.server.base_url(),
+                                  "api_key_env": "SHUGOCORE_LOCAL_KEY"})
+        self.assertEqual(backend.generate("fake-model", "hello"),
+                         "fake-model-response")
 
     def test_empty_choices_returns_empty(self):
         self.server.mode = "empty_choices"

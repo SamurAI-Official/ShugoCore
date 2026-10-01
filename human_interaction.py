@@ -468,14 +468,21 @@ class InteractionBus:
 
     def pipeline_health(self, model_ready: Optional[bool] = None,
                         tts_attached: Optional[bool] = None,
-                        memory_ok: Optional[bool] = None) -> Dict[str, Any]:
+                        memory_ok: Optional[bool] = None,
+                        backing: Optional[str] = None) -> Dict[str, Any]:
         """One liveness view over the closed loop (v1.17 validation — the
         'SHUGOCORE LIVE' monitor). Each stage reports ``ok`` (fresh
         evidence), ``stale`` (evidence expired), ``down`` (agent-side truth
         says the provider is absent) or ``unknown`` (no evidence yet — never
         fabricated). Sensor stages are judged from the bus's own buffer;
         model/tts/memory truths are passed in by the shell, keeping this a
-        provider-side module (the core never imports it)."""
+        provider-side module (the core never imports it).
+
+        ``backing`` is what produced the last decision -- a model id, or the name of the rule
+        that stood in for one. It is reported beside the stages because the model stage can only
+        answer "this path responded", and a node whose fallback answered is exactly the node
+        that must not read as healthy-by-model. The name is carried verbatim so the reader can
+        tell a model from a standing rule without trusting a boolean."""
         with self._lock:
             now = self._clock()
 
@@ -513,7 +520,8 @@ class InteractionBus:
             else:
                 overall = "stale"
             return {"stages": stages, "overall": overall,
-                    "round_trips": len(self._conversation_events)}
+                    "round_trips": len(self._conversation_events),
+                    "backing": str(backing or "unknown")}
 
     def add_listener(self, listener: Callable[[Dict[str, Any]], None]) -> None:
         with self._lock:

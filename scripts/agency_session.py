@@ -253,6 +253,38 @@ def scenario_sandbox(session, args):
     session.log(f"[SANDBOX] exit={proc.returncode}")
 
 
+def scenario_model(session, args):
+    """The operator terminal itself, against whatever model server this machine runs.
+
+    Nothing is simulated: it runs the real console as a subprocess, lets it take a real turn,
+    and keeps both streams. What the transcript has to show is the *backing* -- a model id,
+    not the name of a rule standing in for one -- because that is the difference between a
+    node whose reasoning is connected and one whose fallback answered. The endpoint defaults to
+    LM Studio on this machine and is overridable, since the wire is OpenAI-compatible and the
+    same run works against llama.cpp, vLLM or a ShugoCore server.
+    """
+    import subprocess
+    command = [sys.executable, os.path.join(str(ROOT), "clients", "desktop",
+                                            "shugocore_desktop.py"),
+               "--terminal", "--backend", args.backend, "--url", args.api_url,
+               "--no-input", "--data-dir", args.model_data_dir,
+               "--mesh-port", str(args.mesh_port),
+               "--say", args.prompt, "--exit-after", str(args.hold)]
+    if args.model:
+        command += ["--model", args.model]
+    session.log(f"[TERMINAL] {' '.join(command)}")
+    try:
+        proc = subprocess.run(command, cwd=str(ROOT), capture_output=True, text=True,
+                              timeout=args.timeout)
+    except Exception as exc:
+        session.log(f"[TERMINAL] could not run: {type(exc).__name__}: {exc}")
+        return
+    for stream in (proc.stdout or "", proc.stderr or ""):
+        for line in stream.splitlines():
+            session.log(f"[TERMINAL] {line}")
+    session.log(f"[TERMINAL] exit={proc.returncode}")
+
+
 SCENARIOS = {
     "timed": scenario_timed,
     "memory": scenario_memory,
@@ -260,6 +292,7 @@ SCENARIOS = {
     "perception": scenario_perception,
     "status": scenario_status,
     "sandbox": scenario_sandbox,
+    "model": scenario_model,
 }
 
 
@@ -275,6 +308,18 @@ def parse_args(argv=None):
     ap.add_argument("--timeout", type=float, default=300.0,
                     help="how long a scenario may take before it is called a harness "
                          "failure (the sandbox scenario runs another runnable)")
+    # Universal on purpose: the model wire is OpenAI-compatible, so the same run works
+    # against LM Studio (the default here), llama.cpp's server, vLLM or a ShugoCore server.
+    ap.add_argument("--api-url", default=os.environ.get("SHUGOCORE_MODEL_URL",
+                                                        "http://127.0.0.1:1234"))
+    ap.add_argument("--backend", default=os.environ.get(
+        "SHUGOCORE_MODEL_BACKEND", "LM Studio (OpenAI-compatible)"))
+    ap.add_argument("--model", default=os.environ.get("SHUGOCORE_MODEL", ""))
+    ap.add_argument("--prompt", default="in one short sentence, what is the battery level?")
+    ap.add_argument("--hold", type=float, default=180.0,
+                    help="how long the terminal may take one model-backed turn")
+    ap.add_argument("--mesh-port", type=int, default=9021)
+    ap.add_argument("--model-data-dir", default=os.path.join(DEFAULT_DATA, "model"))
     return ap.parse_args(argv)
 
 

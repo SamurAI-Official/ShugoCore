@@ -1849,6 +1849,15 @@ def handle_terminal_command(agent, text) -> bool:
         for key in ("node_id", "mesh_role", "model", "security_baseline"):
             if key in status:
                 print(f"    {key:<18} {status[key]}", flush=True)
+        # The pipeline is where a node says what actually backed its last decision: a stage
+        # reading `ok` because an engine object exists is not the same claim as a model
+        # answering, and this line is what keeps the two apart.
+        pipeline = status.get("pipeline") or {}
+        stages = pipeline.get("stages") or {}
+        if stages:
+            print("    pipeline           " + ", ".join(f"{name}={value}"
+                  for name, value in sorted(stages.items())), flush=True)
+            print(f"    backed by          {pipeline.get('backing', 'unknown')}", flush=True)
         return True
     if lowered == "/say" or lowered.startswith("/say "):
         asked = str(text).strip()[4:].strip()
@@ -1975,12 +1984,16 @@ def run_terminal(args) -> int:
     try:
         import json as _json
         _status = _json.loads(agent.get_status_json() or "{}")
-        _stages = (_status.get("pipeline") or {}).get("stages") or {}
+        _pipeline = _status.get("pipeline") or {}
+        _stages = _pipeline.get("stages") or {}
+        _backing = str(_pipeline.get("backing") or "")
     except Exception:
         _stages = {}
+        _backing = ""
     print("  health    " + (", ".join(f"{name}={value}"
                                       for name, value in sorted(_stages.items()))
-                            or "not reported yet"))
+                            or "not reported yet")
+          + (f"   backed by {_backing}" if _backing and _backing != "unknown" else ""))
     print("  commands  /status  /say TEXT  /prove [ID]  /quit   (Ctrl+C also exits)\n")
 
     stop = threading.Event()
@@ -2022,6 +2035,7 @@ def run_terminal(args) -> int:
 
     deadline = (time.monotonic() + args.exit_after) if args.exit_after else None
     last_route = None
+    last_backing = ""
     try:
         while not stop.is_set():
             snapshot = controller.snapshot()
@@ -2036,6 +2050,13 @@ def run_terminal(args) -> int:
                       f"(score {route.get('score')}: "
                       f"{', '.join(route.get('signals') or []) or 'no signals'}) "
                       f"- {route.get('reason')}")
+            # What is backing the decisions, as it changes: "the model answered" and "a rule
+            # stood in" are different nodes, and the operator should see which one they have
+            # rather than infer it from a health line printed once at boot.
+            backing = str(getattr(agent, "_decision_source", "") or "")
+            if backing and backing != last_backing:
+                last_backing = backing
+                print(f"  [MODEL  ] decisions backed by {backing}", flush=True)
             if snapshot.get("error"):
                 print(f"  [ERROR  ] {snapshot['error']}")
             if deadline is not None and time.monotonic() >= deadline:

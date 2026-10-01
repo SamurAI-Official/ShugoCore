@@ -1240,10 +1240,11 @@ Remaining:
 - Deep NPU bring-up (QNN / MTK inference integrations against real silicon)
 - Canonical desktop fleet dashboard UI (parsing the server-hosted
   `/api/v1/fleet`)
-- Engagement matrix: one row per world (robotics / XR / sandbox) saying how an
-  operator reaches the agent there and gets an answer, in the
-  `claim_matrix.py` shape -- check, artifact, verdict -- runnable from the
-  operator terminal
+- Engagement matrix: the **agency rows ship and are proven** -- a goal acted on
+  unprompted, memory across a restart, a grown generation, a *heard* phrase
+  answered, honest pipeline health, no analytics egress, the operator terminal --
+  and `/prove` runs them from the console. The world rows beyond the desktop
+  (robotics, XR, sandbox) need a simulation and a headset before they can be judged.
 - XR sandbox for the Godot/OpenXR bridge (`platforms/godot/`), so an operator can
   stand in a virtual space and be answered there
 

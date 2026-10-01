@@ -1,8 +1,18 @@
 import hashlib
 import logging
 import math
+import os
 import re
 from datetime import datetime
+
+# Vector search is optional, and so is the client's habit of reporting home. Chroma sends
+# usage to PostHog unless it is told not to -- exactly the egress an offline-first node must
+# not have, and it was the actuation sandbox's own transcript that caught it:
+# `HTTPSConnectionPool(host='us.i.posthog.com', port=443)` while an agent was being built.
+# Set before the import because the client reads these then, and with setdefault so an
+# operator can still opt in deliberately.
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+os.environ.setdefault("CHROMA_TELEMETRY_ENABLED", "False")
 try:
     import chromadb
     _HAS_CHROMA = True

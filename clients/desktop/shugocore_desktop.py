@@ -1863,6 +1863,25 @@ def handle_terminal_command(agent, text) -> bool:
             summary = str(result)
         print(f"    speak_test -> {summary or 'no result'}", flush=True)
         return True
+    if lowered == "/prove" or lowered.startswith("/prove "):
+        asked = str(text).strip()[6:].strip()
+        argv = [sys.executable, os.path.join(str(REPO_ROOT), "claim_matrix.py")]
+        for name in (asked.split() if asked else []):
+            argv += ["--only", name]
+        print(f"    running claim_matrix.py {' '.join(argv[3:])}".rstrip(), flush=True)
+        try:
+            import subprocess
+            proc = subprocess.run(argv, cwd=str(REPO_ROOT), capture_output=True,
+                                  text=True, timeout=1800)
+        except Exception as exc:
+            print(f"    could not run the matrix: {type(exc).__name__}: {exc}", flush=True)
+            return True
+        for line in (proc.stdout or "").strip().splitlines():
+            print("    " + line, flush=True)
+        if proc.returncode != 0:
+            print("    (the matrix exits 1 only when a claim FAILED; 'unproven' is "
+                  "not a failure)", flush=True)
+        return True
     return False
 
 
@@ -1953,7 +1972,16 @@ def run_terminal(args) -> int:
     print(f"  ear       {ear.describe() if ear is not None else ear_note}")
     print("  hearing   typed words are labelled 'terminal', never 'heard'; a phone's")
     print("            recogniser reaches its paired primary, not a mesh peer")
-    print("  commands  /status  /say TEXT  /quit      (Ctrl+C also exits)\n")
+    try:
+        import json as _json
+        _status = _json.loads(agent.get_status_json() or "{}")
+        _stages = (_status.get("pipeline") or {}).get("stages") or {}
+    except Exception:
+        _stages = {}
+    print("  health    " + (", ".join(f"{name}={value}"
+                                      for name, value in sorted(_stages.items()))
+                            or "not reported yet"))
+    print("  commands  /status  /say TEXT  /prove [ID]  /quit   (Ctrl+C also exits)\n")
 
     stop = threading.Event()
 

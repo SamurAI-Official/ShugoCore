@@ -6,6 +6,61 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### The hive can prove it is operable: agency claims, with transcripts as evidence
+
+`claim_matrix.py` already held the system to its *safety* claims (election, consent,
+containment, rollout, the audit chain). Nothing held it to the claims that decide whether it
+is actually running: that it acts on a goal later with nobody typing, that a fact outlives the
+process, that it grows, that it hears and answers, that it reports its own organs honestly.
+
+Seven rows do now, in the same shape as the rest -- a command that runs a session, a pure
+parser that judges the transcript, and an artifact left in `runtime/evidence/`. On this fleet:
+
+| Claim | Verdict |
+|---|---|
+| `agency.timed_autonomy` -- accepts a goal, then acts on it unprompted | **proven** |
+| `agency.memory_durability` -- a fact survives a restart | **proven** |
+| `agency.personality_growth` -- a window of turns grows a generation | **proven** |
+| `agency.perception_to_action` -- a *heard* phrase reaches the path and gets a reply | **proven** |
+| `node.pipeline_health` -- every organ reported, in a vocabulary that can say `unknown` | **proven** |
+| `privacy.no_third_party_egress` -- a session reaches no analytics host | **proven** |
+| `world.desktop` -- the operator terminal reaches the agent, labelling words honestly | **proven** |
+
+- `scripts/agency_session.py` is the producer: it builds the node the way a phone does, drives
+  it through the typed-turn seam, ticks the real loop, and writes a transcript plus the node's
+  own status JSON. Its exit code is about the *harness* -- whether the node behaved is the
+  parser's verdict, and a parser returning False is a FAILED claim, never an unproven one.
+- The parsers are pure functions of text, so unit tests re-check them without a node
+  (`tests/test_claim_matrix_agency.py`, 25 tests), and the negative cases are the interesting
+  ones: a reminder the operator had to repeat, a memory that only looked durable because one
+  process answered it, a health surface that paints everything green, an analytics host in the
+  transcript.
+- As recorded: `[TIMER] timer fired` and `SPEAK: Timer is done!` with no turn between them;
+  `My sister's name is Ana.` in a *new* process (`memory recall (question path)`);
+  `grew gen 1 -> 2 (questions 40%; long session (25 turns); praised warmth); drift=0.0523`,
+  persisted in `personality_model.json`; `HEARD ... accepted=True` followed by a spoken answer;
+  a pipeline snapshot naming six organs with three of them `unknown`.
+
+**The matrix found a real defect on its first run, which is what it is for.** The
+`containment.actuation` transcript was full of
+`HTTPSConnectionPool(host='us.i.posthog.com', port=443)`: Chroma reports usage to PostHog by
+default, so an offline-first node's sandbox run was shipping analytics while the README claimed
+privacy hardening. `vector_db.py` now sets `ANONYMIZED_TELEMETRY` and `CHROMA_TELEMETRY_ENABLED`
+before importing the client (with `setdefault`, so an operator can still opt in deliberately),
+and `privacy.no_third_party_egress` is the live check that keeps it that way: `failed` before
+the fix, `proven` after, on its own transcript.
+
+That parser had a blind spot its own tests caught: it scanned `http://` URLs, while a library
+that cannot reach its analytics endpoint names the host in an *error*
+(`host='us.i.posthog.com'`), not in a URL. Both forms are read now.
+
+Also here: `/prove [ID]` in the operator terminal runs the matrix and prints its table, and the
+terminal header carries the node's pipeline health, so operability can be *seen* from the
+console rather than only in artifacts. Deliberately still unproven: `mesh.election` and
+`mesh.memory` want a live hub status file; `reasoning.model_backed` waits for a language model
+(none is served or downloaded on this fleet -- every answer here comes from the deterministic
+fallback); and the robotics/XR world rows wait for a simulation and a headset.
+
 ### Vision: a camera that stops is not a camera that never started
 
 Measured on the A16: CameraX bound, delivered analysed frames for 15 s, then closed with

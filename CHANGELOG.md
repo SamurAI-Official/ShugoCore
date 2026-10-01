@@ -6,6 +6,49 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### The operator terminal has a voice, and the fleet's speech path is written down
+
+`--terminal --voice` speaks replies aloud through PowerShell's `System.Speech` when the
+host has one, passing the sentence in the environment rather than on a command line -- a
+reply containing quotes, semicolons or a pipeline is a sentence to be spoken, not
+something for a shell to parse. A host with no engine reports why in the header and keeps
+printing: `can_speak` still means "the reply reaches a human", so response routing does
+not move. `/say TEXT` drives the agent's own gated `speak_test()` -- the path the AGENT
+tab's "Test speech" control uses -- so the terminal never becomes a second way for a node
+to decide to talk. `synthesize()` writes the same sentence to a WAV instead of the
+speaker, which is how a voice the test machine cannot hear is still measured (144,652
+bytes of `Microsoft David Desktop` here).
+
+Two fleet facts, learned by trying to make a phone speak into a terminal, are now in
+`docs/android_integration.md`:
+
+- A peripheral's ears reach a **paired Bluetooth primary**, not the mesh:
+  `SensorPublisherService` streams over SPP, so a follower consumes its own transcripts
+  locally and a desktop node on the node fabric never hears them. The desktop's role is
+  orchestrator, not ear.
+- Returning a phone from peripheral to primary does **not** restart its agent: the pane
+  flips back while the header stays `AGENT OFFLINE` until the app is restarted.
+
+### The runtime tools ship, and two JNI contract tests stopped skipping
+
+`/runtime/` was ignored wholesale, so the operator tools that live beside the data they
+interpret were absent from a fresh clone while three tracked documents told readers to run
+them (`runtime/deploy_1_30_24.py`, `runtime/fleet_correlation.py`,
+`runtime/vis_phase_check.py`). The rule now ignores the *contents* and re-includes
+scripts -- `/runtime/*`, `!/runtime/*.py`, `!/runtime/*.ps1`, `runtime/tools/*.py` -- so
+logs, dumps, screenshots, mesh tokens and device backups stay out and 21 tools ship.
+Everything in `runtime/` that is not a script is still ignored, so nothing new leaks in by
+accident. One consequence is that the vision contract tests which read the correlation
+tool's own source (`tests/test_vision_night_contract.py`) stop being skippable in a fresh
+clone: the file they assert against is now part of the repository.
+
+`tests/android_toolchain.py` asks for the NDK's `llvm-nm` the way the build asks for its
+NDK: the environment, then `sdk.dir` in `platforms/android/local.properties` (where Gradle
+reads it), then `ANDROID_HOME`/`ANDROID_SDK_ROOT`, then the path this checkout's own CMake
+cache recorded, then `PATH`. That unskipped the two JNI contract tests on a machine where
+a complete NDK and a built APK were both present but `ANDROID_NDK_HOME` was unset, so the
+shipped `.so` symbols are now actually read instead of silently skipped.
+
 ## [1.30.24] - 2026-09-28 — audio perception, in layers
 
 `sound/` is the contract layer for hearing, which is the NRR pattern applied to audio: a

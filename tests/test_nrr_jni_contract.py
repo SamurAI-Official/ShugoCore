@@ -21,11 +21,12 @@ form of this contract that can catch a stale or stripped build.
 """
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 import unittest
 import zipfile
+
+from tests.android_toolchain import NO_NDK, find_llvm_nm
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ANDROID = os.path.join(ROOT, "platforms", "android", "app", "src", "main")
@@ -69,16 +70,6 @@ def _arity(params):
     if not inner:
         return 0
     return len([part for part in inner.split(",") if part.strip()])
-
-
-def _find_llvm_nm():
-    for root in (os.environ.get("ANDROID_NDK_HOME"), os.environ.get("ANDROID_NDK")):
-        if root and os.path.isdir(root):
-            for base, _dirs, files in os.walk(root):
-                for candidate in ("llvm-nm.exe", "llvm-nm"):
-                    if candidate in files:
-                        return os.path.join(base, candidate)
-    return shutil.which("llvm-nm")
 
 
 class JniNameContractTestCase(unittest.TestCase):
@@ -256,9 +247,9 @@ class ShippedSymbolTestCase(unittest.TestCase):
     @unittest.skipUnless(os.path.isfile(APK),
                          "no APK built in this checkout (assembleDebug)")
     def test_the_shipped_so_exports_every_jni_entry_point(self):
-        nm = _find_llvm_nm()
+        nm = find_llvm_nm()
         if not nm:
-            self.skipTest("no llvm-nm found (point ANDROID_NDK_HOME at an NDK)")
+            self.skipTest(NO_NDK)
         exported = set(re.findall(JNI_PREFIX + r"(\w+)\s*\(", _read(JNI_SOURCE)))
         with zipfile.ZipFile(APK) as apk:
             names = [n for n in apk.namelist()

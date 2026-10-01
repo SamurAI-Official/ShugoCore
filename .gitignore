@@ -11,7 +11,19 @@ chroma_db/
 # Anchored to the repo root: an unanchored "runtime/" also swallowed the Android
 # source package com.samurai.shugocore.runtime (every new provider there was
 # silently ignored, while tracked files merely kept working) and cpp/nrr/runtime.
-/runtime/
+#
+# The contents are ignored rather than the directory, so the operator tools that
+# live beside the data they interpret can be tracked. A runbook that says "run
+# runtime/vis_phase_check.py" is not a runbook if a fresh clone has no such file,
+# and these tools are how a vision or sound calibration is reproduced. Data still
+# stays out -- logs, dumps, jsonl, screenshots, mesh tokens, device backups --
+# because every negation below names a script, never a directory tree.
+/runtime/*
+!/runtime/*.py
+!/runtime/*.ps1
+!/runtime/tools/
+/runtime/tools/*
+!/runtime/tools/*.py
 
 # Local memory databases
 *.db

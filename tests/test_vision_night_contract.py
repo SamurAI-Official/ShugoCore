@@ -71,8 +71,7 @@ class StretchStaysDetectionSideTestCase(unittest.TestCase):
 
 
 @unittest.skipUnless(os.path.isfile(CORRELATION),
-                     "the host-side correlation tool is a local diagnostic "
-                     "(/runtime/ is ignored), so this checkout may not have it")
+                     "the host-side correlation tool is not in this checkout")
 class PresenceLineContractTestCase(unittest.TestCase):
     """The line the correlation tool parses, in its old and its new form."""
 
@@ -107,8 +106,7 @@ class PresenceLineContractTestCase(unittest.TestCase):
 
 
 @unittest.skipUnless(os.path.isfile(CORRELATION),
-                     "the host-side correlation tool is a local diagnostic "
-                     "(/runtime/ is ignored), so this checkout may not have it")
+                     "the host-side correlation tool is not in this checkout")
 class DeviceThresholdWinsTestCase(unittest.TestCase):
     """Darkness is the device's calibrated judgement, not a hard-coded luma."""
 

@@ -167,3 +167,54 @@ integration; all other functionality is stdlib-only).
   the monitor loop (`power_poll_interval`, default 30s); low battery or thermal
    streaks pause the engine via the fallback controller; plugged-in operation is
    recommended for permanent installs (camera streaming drains batteries.Battery/thermal monitors).
+
+## The device hive, and which transport carries what
+
+Two transports carry device data in this codebase, and confusing them costs an
+afternoon. This document describes the **DDS** one: a phone as a ROS 2 compute node in
+the service of a host engine. The app's own **sensor hive** is a separate path, and it
+does not use the mesh fabric at all:
+
+| Path | Transport | Who talks |
+|------|-----------|-----------|
+| ROS 2 node (`android_node.py`) | Fast-DDS (RTPS) | phone <-> host engine, robots, Gazebo |
+| Companion hive (COMPANION pane) | **Bluetooth SPP** (`00001101-0000-1000-8000-00805f9b34fb`) | peripheral phone -> primary phone |
+| Node fabric (`fleet_*`, Shugonet) | TCP/UDP, `--mesh-port` | every agent node: heartbeats, leases, journals, evidence |
+
+What follows from that, verified against a three-phone fleet and a desktop node:
+
+- **A phone's ears reach a paired primary, and nobody else.** `SensorPublisherService`
+  logs `peripheral streaming via shared mesh transport (00001101-...)` when a phone is
+  switched to peripheral: that is SPP, so the destination is a *paired Bluetooth*
+  device. `PAIRED DEVICES: No paired devices` in the COMPANION pane means a peripheral
+  has nowhere to stream, and the pane says so.
+- **A follower consumes its own transcripts locally.** Injecting words into a follower
+  runs them through its own pipeline (`ShugoCoreInject: received: "..."` with an online
+  agent) and the desktop node on the mesh fabric saw no heard turn at all. So a desktop
+  node is an *orchestrator*, not an ear -- it hears what a primary forwards as
+  observations, never a microphone directly.
+- **To try the speech path end to end, pair two phones over Bluetooth first** (Android
+  Settings -> Bluetooth, then Connect in the pane), make one a peripheral and speak at
+  it. Waiting for a phone to speak into a desktop terminal is waiting for a path that
+  does not exist.
+
+Two debug hooks make this testable without a human in the loop, both registered
+`RECEIVER_EXPORTED` at runtime (a runtime receiver is reachable on modern Android where a
+manifest-declared one is not):
+
+```
+# Words into the node's own speech pipeline. Use text_b64: adb shell word-splits, and a
+# quoted plain string arrives as separate arguments ("--es text the node is here" was
+# delivered as pkg=terminal and dropped).
+adb shell am broadcast -a com.samurai.shugocore.INJECT_TRANSCRIPT --es text_b64 <base64>
+
+# The layer-split peripheral RPC server, for headless probes (lan=1 is audited).
+adb shell am broadcast -a com.samurai.shugocore.DEBUG_MESH_RPC --es action start --es lan 1
+```
+
+One wart to know before relying on the mode switch: **returning a phone from peripheral to
+primary does not restart its agent.** The pane flips back to `Primary agent`, the button
+reads "Switch to peripheral" again, and the header stays `AGENT OFFLINE` with every row
+blanked until the app is restarted (`am force-stop` then relaunch). Treat the switch as
+one-way until then, and expect the fleet to be a node short if you forget.
+

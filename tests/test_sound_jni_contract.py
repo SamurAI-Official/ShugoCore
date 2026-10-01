@@ -15,11 +15,12 @@ time:
 """
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 import unittest
 import zipfile
+
+from tests.android_toolchain import NO_NDK, find_llvm_nm
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ANDROID = os.path.join(ROOT, "platforms", "android", "app", "src", "main")
@@ -54,16 +55,6 @@ def arity(param_list):
     """Count parameters, ignoring a trailing comma (Kotlin allows one)."""
     inner = param_list.strip()
     return 0 if not inner else len([p for p in inner.split(",") if p.strip()])
-
-
-def find_llvm_nm():
-    for root in (os.environ.get("ANDROID_NDK_HOME"), os.environ.get("ANDROID_NDK")):
-        if root and os.path.isdir(root):
-            for base, _dirs, files in os.walk(root):
-                for candidate in ("llvm-nm.exe", "llvm-nm"):
-                    if candidate in files:
-                        return os.path.join(base, candidate)
-    return shutil.which("llvm-nm")
 
 
 class JniNameContractTestCase(unittest.TestCase):

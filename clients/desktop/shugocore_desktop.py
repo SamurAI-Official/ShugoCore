@@ -22,17 +22,24 @@ Usage::
 import argparse
 import io
 import json
+import logging
 import os
 import queue
 import sys
 import threading
 import time
-import tkinter as tk
+try:                                    # a host node may have no Tk at all
+    import tkinter as tk
+    from tkinter import ttk
+    TK_AVAILABLE = True
+except Exception:                       # headless: --terminal still works
+    tk = None
+    ttk = None
+    TK_AVAILABLE = False
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from tkinter import ttk
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -403,7 +410,10 @@ class AgentController:
                            if self.started_at else 0.0)}
 
 
-class DesktopUI(tk.Tk):
+# Defined against Tk when it exists, and against object when this Python has no
+# Tk: the module must still import so the --terminal surface can run on a host
+# with no windowing system (the GUI branch refuses with an honest message).
+class DesktopUI(getattr(tk, "Tk", object)):
     """The Android control plane on the desktop: a pinned status header over
     SERVER | AGENT | ACTIVITY | SENSORS | SECURITY | LOG, polled at 1 Hz."""
 
@@ -1232,6 +1242,25 @@ def build_parser() -> argparse.ArgumentParser:
                         help="start the node immediately on launch")
     parser.add_argument("--selftest", action="store_true",
                         help="probe the backends and exit (no GUI)")
+    parser.add_argument("--terminal", action="store_true",
+                        help="operator engagement terminal: type to the agent and "
+                             "watch what it heard, what it decided and who "
+                             "answered (no GUI; runs over SSH, needs no Tk)")
+    parser.add_argument("--exit-after", type=float, default=0.0,
+                        help="with --terminal, exit after N seconds (0 = run "
+                             "until Ctrl+C or /quit); used by the smoke test")
+    parser.add_argument("--no-input", action="store_true",
+                        help="with --terminal, display only (do not read stdin)")
+    parser.add_argument("--mesh-token", default="",
+                        help="mesh shared secret for --terminal (defaults to "
+                             "SHUGOCORE_MESH_TOKEN)")
+    parser.add_argument("--say", action="append", default=[], metavar="TEXT",
+                        help="with --terminal, submit TEXT as a typed turn at "
+                             "startup (repeatable; for scripting and smoke tests "
+                             "-- no stdin needed)")
+    parser.add_argument("--verbose", action="store_true",
+                        help="with --terminal, keep the agent's INFO logging on "
+                             "the console as well as in the log pane stream")
     return parser
 
 
@@ -1268,6 +1297,156 @@ def selftest(args) -> int:
     return 0 if failures == 0 else 1
 
 
+class TerminalSpeaker:
+    """Deliver the agent's replies to the operator sitting at this terminal.
+
+    The agent's response router asks every candidate node whether it can
+    ``speak()`` and takes the closest one that can; ``can_speak`` has always meant
+    "the reply reaches a human". A terminal delivers by printing, and says so:
+    nothing here claims audio, and a device standing nearer the operator with a
+    real speaker still wins.
+    """
+
+    def __init__(self, stream=None) -> None:
+        self._stream = stream or sys.stdout
+        self.delivered = 0
+        self.last = ""
+
+    def speak(self, text: str) -> bool:
+        message = str(text or "").strip()
+        if not message:
+            return False
+        self.delivered += 1
+        self.last = message
+        print(f"\nAgent> {message}\n", file=self._stream, flush=True)
+        return True
+
+
+def run_terminal(args) -> int:
+    """The engagement terminal: a conversation with the agent in a console.
+
+    One node, one tick thread, one turn pipeline -- the same AgentController the
+    GUI drives, so this is a second *front end* rather than a second agent. Typed
+    words go in through the agent's own conversational path and are labelled
+    ``terminal``, so nothing downstream can record them as something a microphone
+    heard. Speech in comes from the mesh: a phone's on-device recogniser already
+    streams its transcripts to the primary, and this node is a peer.
+    """
+    spec = backend_by_label(args.backend)
+    try:
+        # A surface whose output only appears when it exits is not a terminal:
+        # redirected stdout is block-buffered by default, so a scripted run (or a
+        # session piped to a file) would show nothing until the process ended.
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+    controller = AgentController(interval=args.interval,
+                                 sync_interval=args.sync_interval)
+    mesh = {"port": args.mesh_port, "peers": args.peers,
+            "priority": args.mesh_priority,
+            "token": args.mesh_token or os.environ.get("SHUGOCORE_MESH_TOKEN", "")}
+    error = controller.start(spec, args.url, args.model, data_dir=args.data_dir,
+                             device_caps=args.device_caps, mesh=mesh)
+    if error:
+        print(f"node failed to start: {error}", file=sys.stderr)
+        return 1
+    agent = controller.agent
+    speaker = TerminalSpeaker()
+    agent.register_speak_listener(speaker)
+    if not getattr(args, "verbose", False):
+        # Set *after* the node boots: the agent's own logging setup configures the
+        # root logger, so a level set before it is silently overwritten -- which is
+        # what put a second, rawer copy of every INFO line on the console once per
+        # second. Every agent line still reaches the operator below, through the
+        # controller's snapshot, which is the curated view.
+        logging.getLogger().setLevel(logging.WARNING)
+
+    print("ShugoCore engagement terminal")
+    print(f"  node      shugo-{args.device_caps}   backend {args.backend}"
+          f" -> {args.url or spec['url'] or 'offline stub'}")
+    print(f"  data dir  {Path(args.data_dir).expanduser().resolve()}")
+    print(f"  mesh      port {args.mesh_port}  peers {args.peers or '(none)'}")
+    print("  hearing   a phone in the mesh streams its on-device transcripts "
+          "here; typed words are labelled 'terminal', never 'heard'")
+    print("  commands  /status  /quit      (Ctrl+C also exits)\n")
+
+    stop = threading.Event()
+
+    def _submit(text: str) -> None:
+        """One typed turn, through the agent's own pipeline. Shared by --say and
+        by the interactive reader so a scripted run and a session do the same
+        thing."""
+        text = str(text or "").strip()
+        if not text:
+            return
+        if text == "/status":
+            status = agent.get_status() or {}
+            for key in ("node_id", "mesh_role", "model", "security_baseline"):
+                if key in status:
+                    print(f"    {key:<18} {status[key]}", flush=True)
+            return
+        try:
+            handled = agent.handle_typed_input(text)
+        except Exception as exc:                 # a bad turn must not kill the loop
+            print(f"  (turn failed: {type(exc).__name__}: {exc})", flush=True)
+            return
+        if not handled:
+            print("  (nothing to handle)", flush=True)
+
+    for line in (getattr(args, "say", None) or []):
+        _submit(str(line))
+
+    if not args.no_input and sys.stdin is not None:
+        def _reader() -> None:
+            prompt = "you> " if sys.stdin.isatty() else ""
+            while not stop.is_set():
+                try:
+                    line = input(prompt)
+                except (EOFError, KeyboardInterrupt):
+                    return                      # EOF closes input, not the node
+                text = str(line or "").strip()
+                if text in ("/quit", "/exit"):
+                    stop.set()
+                    return
+                _submit(text)
+        threading.Thread(target=_reader, name="terminal-input", daemon=True).start()
+
+    deadline = (time.monotonic() + args.exit_after) if args.exit_after else None
+    last_route = None
+    try:
+        while not stop.is_set():
+            snapshot = controller.snapshot()
+            for entry in snapshot.get("logs") or []:
+                category = str(entry.get("category") or "")
+                message = str(entry.get("message") or "")
+                print(f"  [{category:<7}] {message}")
+            route = getattr(agent, "_last_route", None)
+            if isinstance(route, dict) and route != last_route:
+                last_route = dict(route)
+                print(f"  [ROUTE  ] {route.get('device')} "
+                      f"(score {route.get('score')}: "
+                      f"{', '.join(route.get('signals') or []) or 'no signals'}) "
+                      f"- {route.get('reason')}")
+            if snapshot.get("error"):
+                print(f"  [ERROR  ] {snapshot['error']}")
+            if deadline is not None and time.monotonic() >= deadline:
+                break
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop.set()
+        controller.stop()
+    print(f"\nterminal closed: {speaker.delivered} repl(s) delivered")
+    sys.stdout.flush()
+    # The agent's own runtime starts the mesh listener and the model-host threads,
+    # and they are not ours to join: a console that will not exit is worse than one
+    # that skips atexit, and everything above this line has been flushed and was
+    # already cleaned up by controller.stop(). Without this the process keeps the
+    # mesh port bound and the next terminal run hangs waiting for it.
+    os._exit(0)
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     args.backend = backend_by_label(args.backend)["label"]
@@ -1287,6 +1466,12 @@ def main(argv=None) -> int:
     os.environ.setdefault("PYTHONUTF8", "1")
     if args.selftest:
         return selftest(args)
+    if args.terminal:
+        return run_terminal(args)
+    if not TK_AVAILABLE:
+        print("this Python has no tkinter, so the GUI cannot open; run with "
+              "--terminal for the console engagement surface", file=sys.stderr)
+        return 2
     controller = AgentController(interval=args.interval,
                                  sync_interval=args.sync_interval)
     ui = DesktopUI(controller, args)

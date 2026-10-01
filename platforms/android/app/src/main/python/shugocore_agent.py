@@ -2589,6 +2589,52 @@ class AndroidAgent:
                 f"{profile['mem_available_bytes']} B free)")
         return "subordinate", f"peer {primary} holds the lease"
 
+    # -- operator surfaces -----------------------------------------------------
+
+    def handle_typed_input(self, text: str, source: str = "terminal") -> bool:
+        """Run one typed turn through the *same* pipeline heard speech uses.
+
+        The operator's terminal is a surface, not a second brain: it hands words
+        in here, and the agent classifies intent, records memory, runs gated
+        tools or answers conversationally exactly as it does for a microphone.
+        The source is carried through so a typed turn is never recorded as
+        *heard* -- the journals, the scene classifier and the mesh all name it.
+
+        Returns True when the turn was handled and False when there was nothing
+        to handle, which the terminal reports rather than inventing a reply.
+        """
+        from security import sanitize_text
+        transcript = sanitize_text(str(text or "").strip(), 400)
+        if not transcript:
+            return False
+        # A keyboard operator is demonstrably in front of this node: that is the
+        # one honest fact the response router can use to place a screen.
+        self._terminal_input_ts = time.time()
+        observation = {
+            "type": "speech",
+            "source": str(source or "terminal"),
+            "transcript": transcript,
+            "new_speech": True,
+            "typed": True,
+        }
+        try:
+            self._handle_conversational_input(observation)
+        except Exception as exc:
+            self.log("ERROR", f"typed input failed: {exc}", level="ERROR")
+            return False
+        self.log("AGENT", f"typed ({source}): {transcript[:120]}")
+        return True
+
+    def terminal_input_recent(self, window_s: float = 60.0) -> bool:
+        """Whether an operator surface took typed input recently.
+
+        Deliberately bounded: typing once must not claim the operator is present
+        for the rest of the session, or the hive would keep answering a screen
+        nobody is sitting at.
+        """
+        ts = float(getattr(self, "_terminal_input_ts", 0.0) or 0.0)
+        return ts > 0.0 and (time.time() - ts) <= float(window_s)
+
     def _response_candidates(self) -> List[Dict[str, Any]]:
         """Every device that could answer, with the facts that place it.
 
@@ -2620,6 +2666,12 @@ class AndroidAgent:
             peers = []
         if telemetry.get("voice_active"):
             self_facts["voice_active"] = True
+        if self.terminal_input_recent():
+            # The operator is at a screen, not (necessarily) in front of a camera.
+            # See response_routing.SCORE_WEIGHTS["terminal_active"] for why this
+            # can cross the floor where bare presence cannot -- and why a visible
+            # face still outranks it.
+            self_facts["terminal_active"] = True
         try:
             att_state, _ = self.attention.evaluate()
             self_facts["attention_state"] = getattr(att_state, "value", att_state)

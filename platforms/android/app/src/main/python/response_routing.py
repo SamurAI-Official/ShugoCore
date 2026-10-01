@@ -28,6 +28,13 @@ SCORE_WEIGHTS = {
     # a face, stronger than nothing, and never enough on its own (it cannot cross
     # the floor by itself) because a person in the next room is not an operator.
     "presence_present": 0.15,
+    # A surface that has just taken typed input: the operator is demonstrably IN
+    # FRONT OF IT, which is stronger evidence than a face (a face may be a
+    # passer-by) and the only signal that can place a keyboard operator at all.
+    # Without it a terminal scores 0.15 at best and can never cross the floor, so
+    # the hive would answer a phone in the room instead of the screen being typed
+    # at. The agent sets this fact only while the input is recent.
+    "terminal_active": 0.30,
     "utterance_recent_s": 5.0,
     "utterance_recent": 0.10,
     "utterance_stale_s": 15.0,
@@ -86,6 +93,12 @@ def proximity_score(facts: Optional[Dict[str, Any]], *,
     if f.get("presence_present"):
         score += SCORE_WEIGHTS["presence_present"]
         why.append("present")
+    if f.get("terminal_active"):
+        # Typed input is the operator demonstrating presence at a screen. Ordered
+        # after the perception signals on purpose: it adds to them, so a device
+        # that sees the operator AND is being typed at still wins.
+        score += SCORE_WEIGHTS["terminal_active"]
+        why.append("terminal-input")
     utterance_age = f.get("utterance_age_s", f.get("transcript_age_s"))
     if isinstance(utterance_age, (int, float)):
         if utterance_age <= SCORE_WEIGHTS["utterance_recent_s"]:

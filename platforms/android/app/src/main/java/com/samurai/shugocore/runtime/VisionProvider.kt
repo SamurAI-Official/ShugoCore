@@ -113,13 +113,15 @@ class VisionProvider(private val context: Context) {
     /**
      * How long without an analysed frame counts as a stalled camera, and how often to look.
      *
-     * Not the few seconds that "notice promptly" would like: the analysed-frame cadence on these
-     * devices is genuinely bursty -- measured over an hour it is 0.2-0.3 s at the median but
-     * 8-32 s at the 90th percentile and 33 s at worst -- so a short threshold would cry wolf
-     * during healthy operation, and the rebind it triggers would itself cost frames. 45 s sits
-     * above the measured tail and turns a silent stop into a logged one.
+     * Not the few seconds that "notice promptly" would like, and not 45 s either, which is what
+     * the first version used: running the watchdog on the two untouched devices showed the
+     * pipeline stalling for 57-67 s *while the camera was OPEN and the UI was visible*, then
+     * recovering by itself. So the real distribution is worse than the logging gaps first
+     * measured (p90 8-32 s, worst 33 s) and a threshold inside it produces noise on healthy
+     * devices. 90 s sits above every gap observed so far and is still twice as quick as the NRR
+     * probe it replaces.
      */
-    private val STALL_MS = 45_000L
+    private val STALL_MS = 90_000L
     private val STALL_CHECK_MS = 5_000L
 
     /**

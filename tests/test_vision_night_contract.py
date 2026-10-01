@@ -271,10 +271,10 @@ class CameraStallWatchdogTestCase(unittest.TestCase):
         self.assertIsNotNone(match, "no stall threshold in VisionProvider")
         threshold_ms = int(match.group(1).replace("_", ""))
         self.assertGreaterEqual(
-            threshold_ms, 40_000,
-            "a stall threshold of %dms sits inside the measured healthy gaps "
-            "(p90 8-32s, worst 33s), so it would fire during normal operation "
-            "and the rebind it triggers would itself cost frames" % threshold_ms)
+            threshold_ms, 90_000,
+            "a stall threshold of %dms sits inside the gaps the pipeline shows while "
+            "healthy (measured on both controls: 57-67s with the camera OPEN and the UI "
+            "visible), so it would report noise on a working device" % threshold_ms)
 
     def test_a_stall_is_reported_where_the_ui_can_read_it(self):
         body = self._watchdog()

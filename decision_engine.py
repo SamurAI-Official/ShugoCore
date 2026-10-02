@@ -310,6 +310,12 @@ class DecisionEngine:
         # targets a real, writable path instead of failing with EROFS.
         self._log_dir = log_dir
         self._model_failures = 0  # consecutive model parse failures (rule-fallback trigger)
+        # Consecutive cycles where the model was *asked* and could not be reached at all. Kept
+        # apart from `_model_failures`: an unreachable backend gets the same safe substitution
+        # after three cycles (so the loop stays productive) but never arms the proposer
+        # backoff, because a window that outlives the outage is how a node ends up answering
+        # with rules long after its model came back.
+        self._backend_failures = 0
         self._proposer_ready_at = 0.0  # monotonic time the proposer may be asked again
 
         # Governance components (security architecture):
@@ -565,6 +571,14 @@ class DecisionEngine:
         # this cycle, because it was never asked.
         now = time.monotonic()
         backing_off = now < self._proposer_ready_at
+        # "the model answered and gave nothing usable" and "the model was never reached"
+        # are different facts. Only the first is about the model; the second is a backend
+        # outage (a server still loading its weights, a refused connection), and counting it
+        # as a proposal failure lets three failed requests start a backoff that outlives the
+        # outage -- so the node keeps answering with rules long after the model is ready, and
+        # reports the model as the reason.
+        asked = 0
+        answered = 0
 
         self.memory.record_event(
             "decision_requested",
@@ -577,6 +591,7 @@ class DecisionEngine:
             if not validate_model_name(model_id):
                 self.logger.error(f"Skipping model with invalid id: {model_id!r}")
                 continue
+            asked += 1
             try:
                 # v1.21: delegation URL from the agent shell's network
                 # delegation manager overrides this model's backend.  The
@@ -589,6 +604,7 @@ class DecisionEngine:
                 output = self.subconscious.get_model_output(
                     model_id, task, backend=backend,
                     action_schema=self.available_action_types())
+                answered += 1
             except Exception as exc:
                 self.logger.error(f"Model {model_id} failed: {type(exc).__name__}")
                 output = ""
@@ -618,6 +634,7 @@ class DecisionEngine:
             # healthy once, but a model that ONLY ever says null must still
             # reach the rule-based fallback, so it never resets the counter.
             self._model_failures = 0
+            self._backend_failures = 0
             self._proposer_ready_at = 0.0   # a usable proposal clears the backoff
         else:
             if backing_off:
@@ -634,6 +651,31 @@ class DecisionEngine:
                     "confidence": 0.1,
                     "proposal_source": "rule_fallback",
                 }
+            elif asked and not answered:
+                # Every model raised before it answered: the ensemble is unreachable. That is
+                # the machine's weather, not the model's judgment, so the *backoff* streak is
+                # left alone -- otherwise three refused connections arm a 30s+ window that
+                # outlives the outage, and the node goes on answering with rules long after
+                # the model is ready. Measured live: a cold server turned a model-backed claim
+                # into a rule-backed one exactly this way.
+                #
+                # The substitution itself is unchanged, so the loop stays productive: the
+                # first two unreachable cycles report no action at all (the shell calls that
+                # BACKEND_FAILURE), and from the third the node takes the safe rule action.
+                self._backend_failures += 1
+                if self._backend_failures >= 3:
+                    decision = {
+                        "action_type": "record_observation",
+                        "params": {"text": "routine observation (backend unavailable)",
+                                   "reason": "backend_unavailable",
+                                   "failures": self._backend_failures},
+                        "confidence": 0.1,
+                        "proposal_source": "rule_fallback",
+                    }
+                else:
+                    decision = {"action_type": None, "params": {},
+                                "confidence": 0.0, "proposal_source": None,
+                                "reason": "backend_unavailable"}
             else:
                 self._model_failures += 1
                 if self._model_failures >= 3:

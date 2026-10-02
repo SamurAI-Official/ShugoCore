@@ -1,9 +1,9 @@
-fleet status: 2026-10-01 11:33:38  node=shugo-desktop  port=9000  priority=1  window=45s
+fleet status: 2026-10-01 21:37:03  node=shugo-desktop  port=9000  priority=1  window=45s
 hub role=primary lease=shugo-desktop peers=4
-peer shugo-a16 prio=500 thermal=0 mem_available=146841600 (140.04 MiB) paired=True can_speak=True source=mesh
-peer shugo-tab prio=500 thermal=0 mem_available=174354432 (166.28 MiB) paired=True can_speak=True source=mesh
-peer shugo-a51 prio=500 thermal=0 mem_available=178921472 (170.63 MiB) paired=True can_speak=True source=mesh
-peer shugo-mac prio=10 thermal=0 mem_available=4985323520 (4.64 GiB) paired=True can_speak=False source=mesh
-mesh stats: rx=14 tx=4 errors=0 connected=4 configured=4
-memory across the mesh: imported=60 (durable 60, this session 0, runtime total 0, rounds 1, failed 1)
+peer shugo-a16 prio=500 thermal=0 mem_available=124440576 (118.68 MiB) paired=True can_speak=True source=mesh
+peer shugo-a51 prio=500 thermal=0 mem_available=86392832 (82.39 MiB) paired=True can_speak=True source=mesh
+peer shugo-mac prio=10 thermal=0 mem_available=5030526976 (4.69 GiB) paired=True can_speak=False source=mesh
+peer shugo-tab prio=500 thermal=0 mem_available=191475712 (182.61 MiB) paired=True can_speak=True source=mesh
+mesh stats: rx=13 tx=4 errors=0 connected=4 configured=4
+memory across the mesh: imported=60 (durable 60, this session 1, runtime total 1, rounds 1, failed 1)
 verdict: role=primary peers=4 lease=shugo-desktop

@@ -1,0 +1,38 @@
+claim: a model takes the decisions, not a rule standing in for one
+where: model_backends.py (OpenAI-compatible), README 'Operator engagement terminal'
+verdict: proven
+
+$ C:\Users\marku\AppData\Local\Programs\Python\Python310\python.exe scripts/agency_session.py --scenario model
+[exit 0]
+5,\n  "text": "I\'ve initialized my greeting message to welcome the user in a warm manner."\n}\n'}, 'aggregated_output': 54.76369923749306, 'memory_context': []}
+[TERMINAL] 2026-10-01 21:42:49,425 - INFO - Execution result: {'status': 'success', 'spoken': "Hello! I'm Shugo, your friendly local assistant, and I'm ready to help with anything you need.", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
+[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'spoken': "Hello! I'm Shugo, your friendly local assistant, and I'm ready to help with anything you need.", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
+[TERMINAL] 2026-10-01 21:42:53,085 - INFO - Decision made for task: maintain_agent_loop - N/A
+[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
+[TERMINAL] 2026-10-01 21:42:53,085 - INFO - Decision: {'action_type': 'speak', 'params': {'text': 'Hello! How can I help you today?', 'utterance': "I'm ready to assist you with your query."}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-86', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello! How can I help you today?"\n  },\n  "confidence": 0.9,\n  "text": "I\'m ready to assist you with your query."\n}\n'}, 'aggregated_output': 60.24006916124237, 'memory_context': []}
+[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'speak', 'params': {'text': 'Hello! How can I help you today?', 'utterance': "I'm ready to assist you with your query."}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-86', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello! How can I help you today?"\n  },\n  "confidence": 0.9,\n  "text": "I\'m ready to assist you with your query."\n}\n'}, 'aggregated_output': 60.24006916124237, 'memory_context': []}
+[TERMINAL] 2026-10-01 21:42:53,086 - INFO - Execution result: {'status': 'success', 'spoken': 'Hello! How can I help you today?', 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
+[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'spoken': 'Hello! How can I help you today?', 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
+[TERMINAL] exit=0
+[STATUS ] mesh_role="follower"
+[STATUS ] security_baseline={"baseline_ok": true, "checked": 4, "violations": []}
+[STATUS ] pipeline={"stages": {"sensors": "unknown", "vision": "unknown", "hearing": "unknown", "speech": "ok", "model": "unknown", "memory": "ok"}, "overall": "unknown", "round_trips": 0, "backing": "none"}
+[AGENT  ] [AGENT] cwd -> G:\Program Prototype\shugocore\runtime\agency_node
+[AGENT  ] [AGENT] sound: policy says listen_mode=speech (sound perception is not enabled in configuration for this node)
+[AGENT  ] [PERSONALITY] resumed at gen 11
+[AGENT  ] [PERSONALITY] governor live (gen 11)
+[AGENT  ] [AGENT] shugonet runtime started on port 9000 (memory=on, peers=0)
+[AGENT  ] [AGENT] delegation manager ready
+[AGENT  ] [AGENT] agent ready (device=desktop, api=http://127.0.0.1:11434, engine=DecisionEngine)
+[AGENT  ] [MESH] peer heartbeat over the mesh: shugo-tab prio=500 thermal=0 mem=194584576
+[AGENT  ] [MESH] peer heartbeat over the mesh: shugo-mac prio=10 thermal=0 mem=5323046912
+[AGENT  ] [MESH] peer heartbeat over the mesh: shugo-a51 prio=500 thermal=0 mem=97996800
+[AGENT  ] [MESH] peer heartbeat over the mesh: shugo-a16 prio=500 thermal=0 mem=138780672
+SHUGONET: runtime started on port 9000 (peers=0)
+WARNING:mesh_election:mesh election: shugo-tab claims shugo-mac, but shugo-desktop-b2c8 leads here
+WARNING:mesh_election:mesh election: shugo-mac claims shugo-desktop, but shugo-mac leads here
+WARNING:mesh_election:mesh election: shugo-a16 claims shugo-a16, but shugo-mac leads here
+ERROR:shugocore_android:Consolidation error: Cannot operate on a closed database.
+
+
+live model_backed [runtime/evidence/agency/model.log]: ok - decisions backed by shugocore-local

@@ -47,6 +47,67 @@ TICK_S = 0.4
 GREETINGS = ("hello", "how are you", "what can you do", "thank you", "good morning")
 
 
+def warm_model(api_url: str, model: str = "", budget: float = 180.0) -> str:
+    """Ask the model endpoint to answer once, and wait (bounded) until it does.
+
+    A server that loads its weights on the first request answers slowly -- or with an error
+    while it loads -- and behaves only afterwards. That is the machine's state, not the node's
+    reasoning, so the model-backed scenario establishes the precondition it is about (a model
+    that *can* answer) before it measures anything, and says in the transcript what the wait
+    cost.
+
+    Every candidate name is tried, not just the first one the server lists: measured on this
+    machine, ``/v1/models`` lists a second 27B that *cannot* load (it asks for 64.74 GB) beside
+    the one that can, and the listing order is not stable -- so "warm models[0]" warmed a model
+    that answers HTTP 400 with its own reason, and reported the endpoint as cold while a
+    perfectly good model sat next to it.
+    """
+    try:
+        import requests
+    except Exception as exc:
+        return f"cannot probe the endpoint ({type(exc).__name__})"
+    base = str(api_url or "").rstrip("/")
+    if not base.endswith("/v1"):
+        base += "/v1"
+    deadline = time.monotonic() + max(0.0, float(budget))
+    attempt, last = 0, "no attempt was possible"
+    while True:
+        attempt += 1
+        try:
+            listing = requests.get(f"{base}/models", timeout=10).json()
+            listed = [str(entry.get("id") or "") for entry in (listing.get("data") or [])]
+            chat_capable = [name for name in listed
+                            if name and "embed" not in name.lower()]
+        except Exception as exc:
+            chat_capable = []
+            last = f"{type(exc).__name__}: {exc}"
+        # The node's own default alias first (LM Studio resolves it to whatever is loaded),
+        # then every chat-capable id the server lists. An explicitly named model wins outright.
+        candidates = ([str(model)] if model else ["shugocore-local"] + chat_capable)
+        for name in candidates:
+            if not name:
+                continue
+            try:
+                reply = requests.post(
+                    # A cold 27B can take minutes to load, and loading is the whole point of
+                    # this call: the node's own 120s timeout is right for a *serving* model but
+                    # too short to bring one up, so a shorter timeout here reported the
+                    # endpoint cold while it was still loading.
+                    f"{base}/chat/completions", timeout=300,
+                    json={"model": name, "temperature": 0.0, "max_tokens": 1,
+                          "messages": [{"role": "user", "content": "ok"}]})
+                if reply.status_code < 400:
+                    return (f"warm after {attempt} attempt(s) "
+                            f"(HTTP {reply.status_code}, model {name})")
+                last = f"model '{name}' -> HTTP {reply.status_code}: {str(reply.text)[:200]}"
+            except Exception as exc:
+                last = f"model '{name}' -> {type(exc).__name__}: {exc}"
+        if time.monotonic() >= deadline:
+            return (f"NOT warm after {attempt} attempt(s) in {budget:.0f}s "
+                    f"({last}); running anyway")
+        time.sleep(3.0)
+
+
 class Session:
     """One scripted session: the transcript, the node, and the ticking between them."""
 
@@ -264,6 +325,12 @@ def scenario_model(session, args):
     same run works against llama.cpp, vLLM or a ShugoCore server.
     """
     import subprocess
+    # Establish the precondition this scenario is about before measuring it: a model that can
+    # answer. Recorded either way, so a reader sees what was waited for and what it cost.
+    session.log(f"[SESSION] warming the model endpoint at {args.api_url} "
+                f"(budget {args.warm_seconds:.0f}s)")
+    session.log(f"[SESSION] warm-up: "
+                f"{warm_model(args.api_url, args.model, args.warm_seconds)}")
     command = [sys.executable, os.path.join(str(ROOT), "clients", "desktop",
                                             "shugocore_desktop.py"),
                "--terminal", "--backend", args.backend, "--url", args.api_url,
@@ -315,9 +382,17 @@ def parse_args(argv=None):
     ap.add_argument("--backend", default=os.environ.get(
         "SHUGOCORE_MODEL_BACKEND", "LM Studio (OpenAI-compatible)"))
     ap.add_argument("--model", default=os.environ.get("SHUGOCORE_MODEL", ""))
-    ap.add_argument("--prompt", default="in one short sentence, what is the battery level?")
+    ap.add_argument("--prompt", default=("the charger is warm to the touch; note whether that "
+                                         "warrants attention"),
+                    help="an ordinary operator sentence that must be *decided*, not one a "
+                         "built-in command answers: the battery question was answered by the "
+                         "node's own command router, so the transcript showed a rule where "
+                         "this claim is about the model")
     ap.add_argument("--hold", type=float, default=180.0,
                     help="how long the terminal may take one model-backed turn")
+    ap.add_argument("--warm-seconds", type=float, default=180.0,
+                    help="how long the model scenario waits for the endpoint to answer "
+                         "once before it starts measuring (0 skips the wait)")
     ap.add_argument("--mesh-port", type=int, default=9021)
     ap.add_argument("--model-data-dir", default=os.path.join(DEFAULT_DATA, "model"))
     return ap.parse_args(argv)

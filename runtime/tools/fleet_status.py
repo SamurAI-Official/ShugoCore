@@ -76,8 +76,8 @@ def parse_args(argv=None):
     ap.add_argument("--seconds", type=float, default=45.0,
                     help="how long to listen to the hive before writing the transcript")
     ap.add_argument("--sync-interval", type=float, default=15.0,
-                    help="seconds between memory syncs (0 disables, and then imported "
-                         "can only come from the runtime's own total)")
+                    help="seconds between memory syncs (a 1s floor applies; the durable "
+                         "shared-fact count is read regardless of syncing)")
     ap.add_argument("--data-dir", default=os.path.join("runtime", "desktop"),
                     help="the node's data dir: it holds the identity AND the fleet token, "
                          "which is why the desk node's own dir is the default")

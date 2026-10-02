@@ -6,6 +6,28 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### A backend outage is the machine's weather, not the model's judgment
+
+Three failed requests — a server still loading its weights, a refused connection — were counted
+as "the model proposed nothing", which armed the proposer backoff: a 30 s+ window that outlives
+the outage, during which the node skips the model and answers with rules. Measured live, that
+is how a model-backed claim came back "every decision was backed by a rule rather than a model"
+while the model was ready and answering.
+
+- The engine now keeps two streaks: "the model answered and gave nothing usable" arms the
+  backoff, "the model was never reached" does not. An unreachable backend keeps its
+  substitution — two honest no-action cycles, then the safe rule action from the third, so the
+  loop stays productive and the shell still reports `BACKEND_FAILURE` — but recovery is
+  immediate once the server answers again.
+- The model-backed scenario warms the endpoint before it measures: it tries *every* candidate
+  name rather than the first listed (this machine lists a second 27B that cannot load — it asks
+  for 64.74 GB — beside the one that works, in an order that is not stable), waits with a
+  timeout long enough to **load** a model rather than only to serve one, and records in the
+  transcript which model answered or that nothing did.
+- The scenario's default prompt is a sentence the node must *decide* ("the charger is warm to
+  the touch…"). The battery question was answered by the node's own command router, so the
+  transcript showed a rule where this claim is about the model.
+
 ### A node can be asked to run a named task on itself
 
 The hive could ask a peer to speak or to host an RPC peripheral, and nothing else: every other

@@ -22,6 +22,7 @@ signal approvals_changed(payload: Dictionary)
 signal approval_resolved(request_id: String, decision: String, ok: bool)
 signal sensor_window_changed(payload: Dictionary)
 signal config_changed()
+signal task_result(payload: Dictionary)
 
 const DEFAULT_BASE_URL := "http://127.0.0.1:11434"
 const DEFAULT_POLL_SECONDS := 2.0
@@ -288,7 +289,13 @@ func _on_http_completed(_result: int, code: int, _headers_in: Array,
 		"resolve":
 			_apply_resolve_json(text)
 		_:
-			# task results are surfaced through the console, not spoken.
+			# The gated task path. Its result is the engine's own outcome (status,
+			# stages, the action it took), which the console shows rather than
+			# speaks -- so surface it instead of discarding it, or a surface that
+			# submitted a task can never show what the agent did with it.
+			var parsed_task: Variant = JSON.parse_string(text)
+			if parsed_task is Dictionary:
+				task_result.emit(parsed_task)
 			_mark_online()
 
 

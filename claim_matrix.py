@@ -524,7 +524,14 @@ CLAIMS: List[Dict[str, Any]] = [
      "doc": "platforms/godot/README.md (SHUGOCORE_XR_AGENT_URL, desktop_preview)",
      "checks": [{"kind": "command", "argv": ["__PY__", "-m", "unittest",
                                              "tests.test_xr_scaffold"]},
-                {"kind": "live", "name": "world_engagement", "path": ""}]},
+                # A headless session against a real desktop server: the scaffold's own
+                # autoloads reach the agent and the operator's words arrive as a gated task.
+                # The reply is the remaining gap -- a headless server has no speech output,
+                # so `speak` there is honestly `no_output` -- and until that half is recorded
+                # this row stays unproven. Unproven is not failed.
+                {"kind": "command", "argv": ["__PY__", "runtime/tools/xr_session.py"]},
+                {"kind": "live", "name": "world_engagement",
+                 "path": "runtime/evidence/world.xr.txt"}]},
     {"id": "world.sandbox",
      "claim": "the agent proposes a sandboxed action, the gate judges it, and it answers",
      "doc": "README 'Actuation sandbox', actuation_sandbox.py",

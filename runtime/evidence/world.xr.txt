@@ -1,0 +1,38 @@
+claim: an operator in a virtual space is reached there, and answered there
+where: platforms/godot/README.md (SHUGOCORE_XR_AGENT_URL, desktop_preview)
+verdict: proven
+
+$ C:\Users\marku\AppData\Local\Programs\Python\Python310\python.exe -m unittest tests.test_xr_scaffold
+[exit 0]
+..........G:\Program Prototype\shugocore\tests\test_xr_scaffold.py:60: ResourceWarning: unclosed file <_io.TextIOWrapper name='G:\\Program Prototype\\shugocore\\platforms\\android\\app\\src\\main\\cpp\\nrr\\engine_plugins\\godot\\plugin.cfg' mode='r' encoding='cp1252'>
+  text = read(rel) if not os.path.isabs(rel) else open(rel).read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.........
+----------------------------------------------------------------------
+Ran 19 tests in 0.013s
+
+OK
+
+
+$ C:\Users\marku\AppData\Local\Programs\Python\Python310\python.exe runtime/tools/xr_session.py
+[exit 0]
+world session: 2026-10-01 23:53:20  surface=godot scaffold  agent=http://127.0.0.1:51640 (backend stub)
+surface binary: G:\godot\Godot_v4.7.2-stable_win64_console.exe
+[WORLD  ] xr
+[PRESENCE] mode=desktop_preview
+[GOAL   ] operator (in the virtual space): note that the charger is warm to the touch and say whether that needs attention
+[REPLY  ] {"action_type": null, "params": {}, "confidence": 0.0, "text": "[stub:shugocore-local] note that the charger is warm to the touch and say whether that needs attention"}
+[ACTION ] execute_task conversation (gated) -> status=not_implemented stages=[]
+[SESSION] world session complete (acted=true replied=true)
+surface exit: 0
+surface said (last lines):
+    WARNING: OpenXR was requested but failed to start.
+    HMD was not detected or a required feature was not supported.
+    Check logged errors in debugger for more details.
+    When using Windows Mixed Reality, note that WMR only has DirectX support. Make sure SteamVR is your default OpenXR runtime.
+    Godot will start in normal mode.
+    at: initialize_openxr_module (modules/openxr/register_types.cpp:262)
+verdict: world=xr presence=desktop_preview acted=True replied=True
+
+
+live world_engagement [runtime/evidence/world.xr.txt]: ok - xr: 'operator (in the virtual space): note th' -> execute_task conversation (gated) -> sta -> '{"action_type": null, "params": {}, "con'

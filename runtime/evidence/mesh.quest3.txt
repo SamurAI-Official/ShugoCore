@@ -1,0 +1,22 @@
+claim: the operator's headset reaches the agent over the LAN, its task is executed there, and the request is gated
+where: platforms/godot/README.md 'The headset on the desk'
+verdict: unproven
+
+$ C:\Users\marku\AppData\Local\Programs\Python\Python310\python.exe -m unittest tests.test_quest_probe
+[exit 0]
+................
+----------------------------------------------------------------------
+Ran 16 tests in 0.012s
+
+OK
+
+
+$ C:\Users\marku\AppData\Local\Programs\Python\Python310\python.exe runtime/tools/quest_probe.py
+[exit 0]
+quest probe: 2026-10-02 08:34:03  desktop=unknown
+error=no Quest headset is attached over adb, so nothing was probed (unproven, not failed)
+[HEAD  ] no Quest headset is attached over adb
+verdict: reached=False task=0 answer=False auth=0
+
+
+live quest3_reach [runtime/evidence/quest3.reach.txt]: not run - no headset was attached, so the claim could not be evaluated

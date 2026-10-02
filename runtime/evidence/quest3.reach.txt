@@ -1,0 +1,4 @@
+quest probe: 2026-10-02 08:34:03  desktop=unknown
+error=no Quest headset is attached over adb, so nothing was probed (unproven, not failed)
+[HEAD  ] no Quest headset is attached over adb
+verdict: reached=False task=0 answer=False auth=0

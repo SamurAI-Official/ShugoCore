@@ -30,6 +30,49 @@ ROLE_RE = re.compile(r"role=(\w+)")
 IMPORTED_RE = re.compile(r"imported=(\d+)")
 
 
+def quest3_reach(status_text: str) -> tuple:
+    """A Quest 3 reached an agent over the LAN, its task was executed, and auth held.
+
+    Read from a transcript a headset produced: the device's own identity, a 200 from the agent
+    for both a status read and a task execution, the agent's answer as the *server's* log
+    recorded it, and a 401 for the same request with no token.
+
+    The 401 is half the claim. A headset on the LAN reaching an agent that lets anyone in is
+    not the same thing as a headset reaching *its* agent, and the token gate is what makes the
+    difference -- so a transcript without it is not evidence for this.
+
+    Returns ``(None, reason)`` when no headset was attached: the claim then *could not be
+    evaluated* rather than being contradicted, and the row is unproven. A headset that goes to
+    sleep is not a claim that failed.
+    """
+    body = status_text or ""
+    if not re.search(r"^\[HEAD\s*\]\s*device=", body, re.MULTILINE):
+        if "no Quest headset is attached" in body:
+            return None, "no headset was attached, so the claim could not be evaluated"
+        return False, "no headset was identified in the transcript"
+    head = re.search(r"^\[HEAD\s*\]\s*device=(.+?)\s+serial=(\S+).*?ip=(\S+)",
+                     body, re.MULTILINE)
+    if not head:
+        return False, "the headset line is not readable"
+    model, serial, address = head.group(1), head.group(2), head.group(3)
+    if "quest" not in model.lower():
+        return False, f"the device identified itself as '{model}', which is not a Quest"
+    if not re.search(r"^\[STATUS\]\s*GET\s+/api/v1/status\s*->\s*200", body, re.MULTILINE):
+        return False, "the headset never got a 200 for the agent's status"
+    if not re.search(r"^\[TASK\s*\]\s*POST\s+/api/v1/task\s*->\s*200", body, re.MULTILINE):
+        return False, "the headset's task was not executed (no 200)"
+    answer = re.search(r"^\[ANSWER\]\s*(?:the agent decided|what the agent said):\s*(\S.*)$",
+                       body, re.MULTILINE)
+    if not answer:
+        return False, "the agent's answer was never recorded"
+    if not re.search(r"^\[AUTH\s*\]\s*GET\s+/api/v1/status\s+with\s+no\s+token\s*->\s*401",
+                     body, re.MULTILINE):
+        return False, ("a request with no token was not refused, so it is not proven that the "
+                       "agent the headset reached was gated")
+    return True, (f"{model} ({serial}, {address}) reached the agent, its task ran, and the "
+                  f"token gate refused an unauthenticated read")
+
+
 def dev_task_ran(status_text: str) -> tuple:
     """A peer ran a task the hub named, and the hub recorded the peer's own verdict.
 
@@ -368,6 +411,7 @@ LIVE_CHECKS: Dict[str, Callable[[str], tuple]] = {
     "hub_role": hub_role,
     "hub_imported": hub_imported,
     "dev_task_ran": dev_task_ran,
+    "quest3_reach": quest3_reach,
     "phone_quiet": phone_quiet,
     "audit_chain": chain_present,
     "timer_fired": timer_fired,
@@ -538,6 +582,18 @@ CLAIMS: List[Dict[str, Any]] = [
      "checks": [{"kind": "command", "argv": ["__PY__", "-m", "unittest",
                                              "tests.test_actuation_sandbox"]},
                 {"kind": "live", "name": "world_engagement", "path": ""}]},
+    {"id": "mesh.quest3",
+     "claim": "the operator's headset reaches the agent over the LAN, its task is executed "
+              "there, and the request is gated",
+     "doc": "platforms/godot/README.md 'The headset on the desk'",
+     "checks": [{"kind": "command", "argv": ["__PY__", "-m", "unittest",
+                                             "tests.test_quest_probe"]},
+                # The request leaves the headset and the answer is read from the *server's*
+                # log, so neither side's word for it is the evidence. Needs the headset
+                # attached: with none it says so, and the row stays unproven (not failed).
+                {"kind": "command", "argv": ["__PY__", "runtime/tools/quest_probe.py"]},
+                {"kind": "live", "name": "quest3_reach",
+                 "path": "runtime/evidence/quest3.reach.txt"}]},
     {"id": "world.desktop",
      "claim": "the operator terminal reaches the agent, and labels words honestly",
      "doc": "README 'Operator engagement terminal'",
@@ -597,8 +653,14 @@ def run_claim(claim: Dict[str, Any], *, repo: str = REPO_ROOT,
                 continue
             passed, detail = func(text)
             lines.append(f"live {check.get('name')} [{path}]: "
-                         f"{'ok' if passed else 'FAILED'} - {detail}")
-            if not passed:
+                         f"{'ok' if passed else 'FAILED' if passed is False else 'not run'} "
+                         f"- {detail}")
+            if passed is None:
+                # The checker could not evaluate the claim (its instrument was absent, say),
+                # which is a third state on purpose: unproven, never failed.
+                if verdict == "proven":
+                    verdict = "unproven"
+            elif not passed:
                 verdict = "failed"
     target = os.path.join(repo, artifacts, claim["id"] + ".txt")
     os.makedirs(os.path.dirname(target), exist_ok=True)

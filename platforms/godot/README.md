@@ -70,6 +70,51 @@ launch.
 4. Confirm the headset can reach the Mac (same Wi-Fi, no client isolation):
    `curl http://<mac-lan-ip>:11435/health` from a laptop on that network.
 
+### The headset on the desk (verified 2026-10-02)
+
+Checked over adb, because "is there a headset?" is a question with an answer rather than an
+assumption. Everything below was observed, not inferred:
+
+- **It is attached.** `adb devices -l` lists
+  `2G97C5ZH5P01GZ  device product:eureka model:Quest_3` — a Meta Quest 3 (`eureka`), maker
+  `Oculus`, Android 14 / SDK 34, `arm64-v8a`.
+- **The XR client is installed and not running.** `com.samurai.shugocore.xr` v1.0 (installed
+  2026-09-22, updated 2026-09-23). It has **no** `user://shugocore_xr.json`, so it is still
+  pointed at the shipped placeholder `http://192.0.2.10:11435` — TEST-NET-1, unreachable by
+  design. Writing that file (or using the in-headset Settings panel) is what makes it reach
+  anything at all.
+- **It can reach the fleet's LAN.** The headset is `192.168.1.151`; this desktop is
+  `192.168.1.152`; the Mac node is `192.168.1.162`. An HTTP request from the headset to this
+  desktop answers `HTTP/1.0 200 OK`, on 11434 and on a fresh port 11435.
+- **`ping` lies here, so reachability is proven with a request.** The same headset reports
+  100% packet loss to this desktop while an HTTP request to it succeeds: Windows blocks ICMP,
+  so a failed ping is not evidence of an unreachable host.
+- **Nothing on the LAN serves the engine API the bridge needs yet.** The Mac answers on 11434
+  (Ollama: `/api/generate` works, `/api/v1/*` is 404) and its 9000 is the *raw mesh transport*,
+  not HTTP; this desktop is the same. A configured headset would therefore still find no
+  agent until a desktop server is started:
+
+  ```bash
+  py -3.10 shugocore_server.py --host 0.0.0.0 --port 11435
+  # loopback binds need no token; a LAN bind does, unless --allow-unauthenticated
+  ```
+
+  then point the headset at that host (the Settings panel does exactly this by hand):
+
+  ```bash
+  adb shell 'mkdir -p /sdcard/Android/data/com.samurai.shugocore.xr/files'
+  # write {"agent_url": "http://192.168.1.152:11435", "bearer_token": ""} to
+  #   /sdcard/Android/data/com.samurai.shugocore.xr/files/shugocore_xr.json
+  adb shell monkey -p com.samurai.shugocore.xr -c android.intent.category.LAUNCHER 1
+  ```
+
+- **The desktop's own Oculus runtime is not usable from Godot headless.** `OVRService`,
+  `OVRServer_x64` and `OculusDash` all run on the PC, yet Godot's OpenXR init fails with
+  `XR_ERROR_FORM_FACTOR_UNAVAILABLE` (the runtime has no system for the form factor Godot
+  asks for) and the engine honestly falls back to `desktop_preview`. That is why
+  `runtime/tools/xr_session.py` records `desktop_preview`: it is the desktop path, and a
+  real headset session needs the headset to run the client.
+
 ## Desktop preview vs XR
 
 - **No OpenXR runtime** → `XRBootstrap` reports `mode = "desktop_preview"`,

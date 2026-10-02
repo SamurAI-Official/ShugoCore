@@ -6,6 +6,37 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### The Quest 3 on the desk: what it is, and what it can actually do
+
+The XR work had been reasoned about from the scaffold's side only. Checking the device itself
+over adb changed two conclusions.
+
+- **A Quest 3 is attached and has the client installed.** `adb devices -l` lists
+  `2G97C5ZH5P01GZ  product:eureka  model:Quest_3` (Android 14, arm64-v8a), and
+  `com.samurai.shugocore.xr` v1.0 is installed on it. The headset is on the fleet's LAN
+  (`192.168.1.151`) and reaches this desktop (`192.168.1.152`) and the Mac (`192.168.1.162`):
+  an HTTP request from the headset to either answers, while `ping` from the same headset
+  reports 100% loss — Windows blocks ICMP, so a failed ping is not an unreachable host.
+- **The client is unconfigured.** It has no `user://shugocore_xr.json`, so it still points at
+  the shipped placeholder `http://192.0.2.10:11435` (TEST-NET-1). Nothing on the LAN serves the
+  engine API either — the Mac answers on 11434 (Ollama) and its 9000 is the raw mesh transport,
+  not HTTP. So the headset has never reached an agent, and no headset would until one is up.
+- `runtime/tools/quest_probe.py` starts a LAN-bound, token-gated desktop server and lets the
+  **headset** make the requests: its status, a task, and the same request with no token. The
+  answer is read from the *server's* log, so neither side's word for it is the evidence.
+  `mesh.quest3` is proven while the headset is attached, and reads `unproven` when it is not.
+- **Found by doing it:** the agent answered the headset's message — it decided
+  `{'action_type': 'speak', 'params': {'text': "I'm here — what did you want to talk about?"}}`
+  — and the surface received `not_implemented: no speech provider registered for 'speak'`. A
+  headless server has no loudspeaker, so **no remote surface (Quest, XR, phone, node) can
+  receive the agent's answer**. That error is the whole of the missing "answered there" half,
+  and it is now reproducible on demand instead of inferred.
+- The matrix gained a third state for live checks: a checker may return `None` for "could not
+  be evaluated" (its instrument was absent), which is `unproven` — never `failed`. A headset
+  that has gone to sleep is not a claim that failed.
+
+
+
 ### A backend outage is the machine's weather, not the model's judgment
 
 Three failed requests — a server still loading its weights, a refused connection — were counted

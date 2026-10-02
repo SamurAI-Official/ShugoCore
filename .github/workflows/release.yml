@@ -11,7 +11,12 @@ on:
 
 permissions:
   contents: write
+  # Trusted publishing authenticates by OIDC token exchange -- and the same token
+  # signs the PEP 740 provenance that `attestations: true` below asks for. Without
+  # `attestations: write` the publish step is refused when it writes the
+  # attestation back, whatever the PyPI publisher config says.
   id-token: write
+  attestations: write
 
 jobs:
   publish-python:

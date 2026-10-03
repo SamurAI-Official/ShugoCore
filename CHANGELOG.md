@@ -412,6 +412,18 @@ Found while fixing the above, and fixed with it: `test_memory_lifecycle` asserte
 sandbox's live databases and failed on Windows for another suite's files. It went unseen
 because `os.replace` always succeeds on Linux, and because pytest's conftest chdirs each
 test out of the repository -- the same "green only where it was run" shape.
+
+Fixing those four unblocked a fifth that had been invisible behind them. On Python 3.13 the
+sandbox's TLS target failed with `SSL: CERTIFICATE_VERIFY_FAILED ... Missing Authority Key
+Identifier`. The sandbox builds its own CA and leaf certificate so its loopback target can
+be *trusted* rather than have verification switched off, and they carried the minimum -- a
+SAN and `basicConstraints`. OpenSSL 3.x requires the leaf to name the key id of the issuer,
+and refuses the chain without it; OpenSSL 1.1.1 (Python 3.9-3.12 on CI, and this bench)
+does not. The CA publishes a `subjectKeyIdentifier` now, the leaf names it back in an
+`authorityKeyIdentifier`, and both carry `keyUsage` with `extendedKeyUsage: serverAuth`.
+Being invisible to the local OpenSSL is exactly why it is asserted directly:
+`test_the_certificate_chain_names_its_issuer` reads the profile back off the generated PEM,
+which holds on any OpenSSL.
 ## [1.30.24] - 2026-09-28 — audio perception, in layers
 
 `sound/` is the contract layer for hearing, which is the NRR pattern applied to audio: a

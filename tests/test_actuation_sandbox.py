@@ -8,6 +8,7 @@ import os
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -57,6 +58,34 @@ class TargetTestCase(unittest.TestCase):
                 else:
                     os.environ["REQUESTS_CA_BUNDLE"] = saved
                 target.stop()
+
+    def test_the_certificate_chain_names_its_issuer(self):
+        """The CA publishes a key id, and the leaf names it back.
+
+        Not decoration: OpenSSL 3.x refuses a leaf whose issuer has a key id that the
+        leaf does not reference -- "Missing Authority Key Identifier" -- so this
+        sandbox verified on Python 3.9-3.12 and failed on 3.13. Asserting the profile
+        directly is what makes it checkable here: the local OpenSSL (1.1.1) is lenient
+        enough to accept the certificate either way.
+        """
+        from cryptography import x509
+
+        def names(cert):
+            return {extension.oid._name for extension in cert.extensions}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = sb.LoopbackActuationTarget(tls=True, cert_dir=tmp)
+            try:
+                ca = x509.load_pem_x509_certificate(Path(target.ca_path).read_bytes())
+                leaf = x509.load_pem_x509_certificate(
+                    Path(tmp, "sandbox_server.pem").read_bytes())
+            finally:
+                target.stop()
+        self.assertIn("basicConstraints", names(ca))
+        self.assertIn("subjectKeyIdentifier", names(ca))
+        self.assertIn("authorityKeyIdentifier", names(leaf))
+        self.assertIn("subjectAltName", names(leaf))
+        self.assertIn("extendedKeyUsage", names(leaf))
 
 
 class WorkspaceTestCase(unittest.TestCase):

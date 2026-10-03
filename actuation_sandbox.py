@@ -56,7 +56,7 @@ def _tls_context(cert_dir: str = None):
         from cryptography import x509
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import rsa
-        from cryptography.x509.oid import NameOID
+        from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
     except ImportError as exc:              # pragma: no cover - host-dependent
         raise RuntimeError(
             "the actuation sandbox's TLS target needs 'cryptography' "
@@ -80,6 +80,21 @@ def _tls_context(cert_dir: str = None):
                .not_valid_after(window["not_valid_after"])
                .add_extension(x509.BasicConstraints(ca=True, path_length=0),
                               critical=True)
+               .add_extension(
+                   x509.KeyUsage(digital_signature=False, content_commitment=False,
+                                 key_encipherment=False, data_encipherment=False,
+                                 key_agreement=False, key_cert_sign=True,
+                                 crl_sign=True, encipher_only=False,
+                                 decipher_only=False),
+                   critical=True)
+               # OpenSSL 3.x refuses a leaf whose issuer has a key id but does not
+               # name it back ("Missing Authority Key Identifier"), so the CA has to
+               # publish its own. Without this the sandbox verified on Python 3.9-3.12
+               # and failed on 3.13, which is the sort of difference that looks like a
+               # code defect and is actually the certificate.
+               .add_extension(
+                   x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()),
+                   critical=False)
                .sign(ca_key, hashes.SHA256()))
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     leaf_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
@@ -92,6 +107,28 @@ def _tls_context(cert_dir: str = None):
             .add_extension(x509.SubjectAlternativeName([
                 x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
                 x509.DNSName("localhost")]), critical=False)
+            # A complete server profile, not just the SAN: a verifier that checks key
+            # usage or the extended key usage of a server certificate should have
+            # nothing to complain about here either.
+            .add_extension(
+                x509.KeyUsage(digital_signature=True, content_commitment=False,
+                              key_encipherment=True, data_encipherment=False,
+                              key_agreement=False, key_cert_sign=False,
+                              crl_sign=False, encipher_only=False,
+                              decipher_only=False),
+                critical=True)
+            .add_extension(
+                x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
+                critical=False)
+            # The leaf's half of the pair: name the CA that signed it, so a stricter
+            # verifier has no reason to reject a chain this sandbox built itself.
+            .add_extension(
+                x509.SubjectKeyIdentifier.from_public_key(key.public_key()),
+                critical=False)
+            .add_extension(
+                x509.AuthorityKeyIdentifier.from_issuer_public_key(
+                    ca_key.public_key()),
+                critical=False)
             .sign(ca_key, hashes.SHA256()))
     ca_path = os.path.join(directory, "sandbox_ca.pem")
     server_path = os.path.join(directory, "sandbox_server.pem")

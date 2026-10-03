@@ -36,7 +36,8 @@ jobs:
           # / 1.28 MB measured locally: a 950 KB wheel where a clean build is
           # 340 KB). Runners are fresh; clean anyway so the published artifact
           # is always byte-for-byte what the sources produce.
-          rm -rf build dist
+          rm -rf build dist attestations
+          mkdir -p attestations
           pip install --upgrade build
           python -m build --sdist --wheel --outdir dist
       - name: Generate SBOM (SPDX)
@@ -44,11 +45,26 @@ jobs:
         with:
           path: ./
           format: spdx-json
-          output-file: ./dist/shugocore-sbom.spdx.json
+          # Not `dist/`: the publish step below scans that directory for
+          # distributions and rejects anything else ("InvalidDistribution:
+          # Unknown distribution format"). The SBOM is evidence *about* the
+          # release, not part of it.
+          output-file: ./attestations/shugocore-sbom.spdx.json
       - name: Sign artifacts with Sigstore
         uses: sigstore/gh-action-sigstore-python@v3.0.0
         with:
           inputs: ./dist/*
+      # Sigstore writes each bundle next to the file it signed, which puts
+      # `*.whl.sigstore.json` into the one directory the publish step trusts.
+      # `twine check` refuses it there -- "Unknown distribution format" -- and the
+      # release dies after building and signing cleanly. Only distributions may
+      # remain in `dist/`; everything else is evidence, and evidence belongs in
+      # `attestations/`, which is what gets attached to the GitHub release.
+      - name: Keep only distributions in the publish directory
+        run: |
+          find dist -maxdepth 1 -type f ! -name '*.whl' ! -name '*.tar.gz' \
+            -exec mv {} attestations/ \;
+          ls -1 dist attestations
       - name: Publish to PyPI (trusted / OIDC, no static token)
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
@@ -56,7 +72,10 @@ jobs:
       - name: Attach SBOM + signatures to the GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          # `.sigstore.json`, not `.sigstore`: the earlier pattern matched
+          # nothing, so the release shipped without the signatures that the
+          # signing step had just paid to produce.
           files: |
-            dist/*.spdx.json
-            dist/*.pem
-            dist/*.sigstore
+            attestations/*.spdx.json
+            attestations/*.pem
+            attestations/*.sigstore.json

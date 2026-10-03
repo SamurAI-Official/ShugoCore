@@ -339,6 +339,39 @@ cache recorded, then `PATH`. That unskipped the two JNI contract tests on a mach
 a complete NDK and a built APK were both present but `ANDROID_NDK_HOME` was unset, so the
 shipped `.so` symbols are now actually read instead of silently skipped.
 
+### The release pipeline had never once run to completion
+
+Three faults sat in a queue on the publish path, each hidden behind the one in front of
+it. Every tag since `v1.30.4` failed, and the releases that did reach PyPI -- 1.30.4,
+1.30.5, 1.30.23 -- were uploaded by hand, so nothing ever surfaced the reason.
+
+- **The PyPI trusted publisher named the wrong workflow.** It was registered against
+  `ci.yml`; publishing happens in `release.yml`. PyPI said so plainly --
+  `invalid-publisher: valid token, but no corresponding publisher` -- which is the server
+  reporting that authentication *succeeded* and only the matching record is missing. And
+  `ci.yml` has no publish step at all, so that registration could never have fired.
+- **The job asked for provenance it had not been granted.** `attestations: true` needs
+  `attestations: write`, and the block carried only `id-token: write`. Authenticating by
+  OIDC and writing the Sigstore attestation are two different permissions, and the step is
+  refused at the second.
+- **The publish step tripped over its own evidence.** `sigstore/gh-action-sigstore-python`
+  writes each bundle beside the file it signed, so `dist/` held
+  `shugocore-*.whl.sigstore.json` -- and `pypa/gh-action-pypi-publish` `twine check`s every
+  file in that directory, rejecting anything that is not a distribution
+  (`InvalidDistribution: Unknown distribution format`). The SBOM was written there for the
+  same reason and would have failed one file later. `dist/` now holds distributions and
+  nothing else; the SBOM and the signatures go to `attestations/`, which is what the GitHub
+  release is fed from.
+
+A fourth fault was cosmetic until it mattered: the release step's glob was `*.sigstore`,
+which cannot match `.sigstore.json`, so the signatures were dropped even by a run that
+succeeded. The release for `v1.30.24` carries them.
+
+The published wheel answers
+`https://pypi.org/integrity/shugocore/1.30.24/shugocore-1.30.24-py3-none-any.whl/provenance`
+with a publisher reading `kind=GitHub, repository=SamurAI-Official/ShugoCore,
+workflow=release.yml`: the artifact naming the workflow that built it, which is exactly the
+claim that had been failing to match.
 ## [1.30.24] - 2026-09-28 — audio perception, in layers
 
 `sound/` is the contract layer for hearing, which is the NRR pattern applied to audio: a

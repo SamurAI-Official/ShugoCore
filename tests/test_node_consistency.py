@@ -7,6 +7,7 @@ repo is internally consistent, which is what a node fresh from `git pull` and
 import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -24,12 +25,69 @@ class ThisRepoTestCase(unittest.TestCase):
 
     def test_the_submodule_pin_agrees_with_the_checkout(self):
         state = nc.submodule_state(ROOT)
+        # The pin is readable from the parent repo whether or not the tree has been
+        # fetched, so that half of the claim is always checkable.
+        self.assertEqual(len(state["pin"]), 40, state)
+        if not state["present"]:
+            # CI fetches only the NRR submodule on purpose (cloning llama.cpp's whole
+            # history onto all five matrix legs is not worth it), so on a runner there
+            # is no checkout to compare against. Saying so is the honest report; the
+            # alternative was a red suite that meant "not fetched", not "drifted".
+            self.skipTest("the llama.cpp submodule is not checked out here; "
+                          "the pin needs a tree to be compared against")
         self.assertTrue(state["agree"], state)
 
     def test_head_and_branch_are_readable(self):
         state = nc.repo_state(ROOT)
         self.assertEqual(len(state["head"]), 40, state)
         self.assertEqual(state["branch"], "main")
+
+
+class SubmoduleStateTestCase(unittest.TestCase):
+    """Absent and mismatched are different findings, and are reported differently.
+
+    A checker that calls both of them "drift" sends an operator to rebuild a tree
+    that was never fetched. The three states are pinned here with a fake git, so
+    the distinction does not depend on which submodules this machine happens to have.
+    """
+
+    PIN = "b" * 40
+    PATH = nc.SUBMODULE_REL.as_posix()
+
+    class _Runner:
+        """A fake git answering ``submodule status`` and ``ls-tree`` from the test."""
+
+        def __init__(self, status, ls_tree):
+            self.status = status
+            self.ls_tree = ls_tree
+
+        def __call__(self, argv, **_kwargs):
+            out = self.ls_tree if "ls-tree" in argv else self.status
+            return types.SimpleNamespace(stdout=out, returncode=0)
+
+    def _state(self, checkout):
+        runner = self._Runner(
+            status=(f"-{self.PIN} {self.PATH}" if checkout == ""
+                    else f" {checkout} {self.PATH} (describe)"),
+            ls_tree=f"160000 commit {self.PIN}\t{self.PATH}")
+        return nc.submodule_state(Path("."), runner=runner)
+
+    def test_an_unfetched_submodule_is_absent_not_mismatched(self):
+        state = self._state("")
+        self.assertEqual(state["pin"], self.PIN)        # recorded by the parent
+        self.assertEqual(state["checkout"], "")
+        self.assertFalse(state["present"])
+        self.assertFalse(state["agree"])
+
+    def test_a_checkout_at_the_pin_agrees(self):
+        state = self._state(self.PIN)
+        self.assertTrue(state["present"])
+        self.assertTrue(state["agree"])
+
+    def test_a_checkout_away_from_the_pin_does_not_agree(self):
+        state = self._state("c" * 40)
+        self.assertTrue(state["present"])               # present, and wrong
+        self.assertFalse(state["agree"])
 
 
 class BundleDifferencesTestCase(unittest.TestCase):
@@ -93,6 +151,16 @@ class RenderTestCase(unittest.TestCase):
         repo = dict(self.CLEAN[0], head="1234abcd" + "0" * 32)
         _, ok = nc.render(repo, *(self.CLEAN[1:]), expect_commit="deadbeef")
         self.assertFalse(ok)
+
+    def test_a_submodule_that_was_never_fetched_says_so(self):
+        """Absent is not the same finding as checked out at the wrong commit."""
+        submodule = {"pin": "b" * 40, "checkout": "", "present": False,
+                     "agree": False}
+        lines, ok = nc.render(self.CLEAN[0], submodule, *self.CLEAN[2:])
+        self.assertFalse(ok)            # the node still cannot build the host
+        joined = "\n".join(lines)
+        self.assertIn("not checked out on this host", joined)
+        self.assertNotIn("build both ends", joined)     # that is the drift message
 
 
 class HostToolTestCase(unittest.TestCase):

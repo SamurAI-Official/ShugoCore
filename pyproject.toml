@@ -21,6 +21,13 @@ termux = ["websocket-client>=1.6"]
 shogunet = ["shugonet>=0.1.0"]
 postgres = ["psycopg2-binary>=2.9"]
 simulation = ["mujoco>=3.0", "numpy>=1.24"]
+# ``sandbox`` is what the shipped ``shugocore-actuation-sandbox`` tool needs for the
+# TLS half of its containment proof: a real certificate, and a CA the client trusts
+# through REQUESTS_CA_BUNDLE. Nothing in the runtime imports ``cryptography`` -- only
+# the sandbox does -- so it belongs in an extra rather than in ``dependencies``. It
+# was absent everywhere, which surfaced as two *errors* on CI (the sandbox's own TLS
+# test and the scenario it belongs to) instead of as the tests running.
+sandbox = ["cryptography>=41"]
 # ``dev`` is the toolchain CI installs (see .github/workflows/ci.yml). It
 # carries the optional dependencies the *suite* genuinely exercises — numpy
 # arrays (simulation), real psycopg2.sql identifier composition (postgres) and
@@ -28,7 +35,8 @@ simulation = ["mujoco>=3.0", "numpy>=1.24"]
 # paths erroring on CI while passing locally, where the venv happened to have
 # them: a "works on my machine" gap, not a code bug.
 dev = ["pytest", "ruff>=0.6", "bandit>=1.7",
-       "numpy>=1.24", "psycopg2-binary>=2.9", "opentelemetry-api>=1.20"]
+       "numpy>=1.24", "psycopg2-binary>=2.9", "opentelemetry-api>=1.20",
+       "cryptography>=41"]
 
 [project.scripts]
 shugocore-verify-audit = "audit:cli_main"

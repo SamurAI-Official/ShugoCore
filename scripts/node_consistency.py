@@ -101,7 +101,11 @@ def submodule_state(repo_root=REPO_ROOT, submodule_rel=SUBMODULE_REL,
                                     runner=runner)
     pin = blr.submodule_pin(repo_root=repo_root, submodule=submodule_rel,
                             runner=runner)
-    return {"pin": pin, "checkout": checkout,
+    # ``present`` is reported separately because "never fetched" and "checked out at
+    # the wrong commit" are different findings: only the second means two ends can
+    # disagree about the wire protocol, and CI deliberately fetches only NRR, so the
+    # first is the normal state on a runner.
+    return {"pin": pin, "checkout": checkout, "present": bool(checkout),
             "agree": bool(pin and checkout and pin == checkout)}
 
 
@@ -163,10 +167,15 @@ def render(repo, submodule, bundle, tools, identity, expect_commit="") -> tuple:
         row("upstream", f"ahead {ahead}, behind {behind}",
             ahead in ("", "0") and behind in ("", "0"),
             "push or pull so nodes agree")
+    checkout = str((submodule or {}).get("checkout", ""))
+    present = (submodule or {}).get("present", bool(checkout))
     pinned = (submodule or {}).get("agree")
-    row("llama.cpp pin", (submodule or {}).get("checkout", "")[:12] or "unknown",
+    row("llama.cpp pin", checkout[:12] or ("not fetched" if not present else "unknown"),
         pinned, "" if pinned else
-        "checkout != pin: build both ends from the pinned commit")
+        ("the submodule is not checked out on this host (git submodule update "
+         f"--init {SUBMODULE_REL.as_posix()}): the pin cannot be compared here"
+         if not present else
+         "checkout != pin: build both ends from the pinned commit"))
     row("android bundle", f"{len(bundle)} difference(s)", not bundle,
         "; ".join(f"{name}: {why}" for name, why in (bundle or [])[:3]))
     server = (tools or {}).get("llama_server")

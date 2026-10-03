@@ -545,7 +545,7 @@ def _peer_hosts(agent) -> Dict[str, str]:
         return {}
 
 
-def _resolve_persona(agent, shaper, *, announce: bool = False) -> bool:
+def _resolve_persona(agent, shaper, *, announce: bool = False, connect=None) -> bool:
     """Point the shaper at whichever live peer advertises the phrasing service.
 
     Called at startup *and* on a cadence, because a service that appears a moment after
@@ -553,12 +553,17 @@ def _resolve_persona(agent, shaper, *, announce: bool = False) -> bool:
     mid-restart when the PC starts. A resolution that finds nobody leaves the shaper as it
     is: a service found once and then gone quiet is better retried (and failed open) than
     forgotten. Returns True when the locator changed.
+
+    ``connect`` is the reachability probe, and exists so a test can answer for a peer that
+    is not on this LAN; production passes nothing and the real socket is used, which is
+    what makes "advertised is not usable" true rather than assumed.
     """
     try:
         peers = list(agent.mesh_election.live_peers())
     except Exception:
         peers = []
-    resolved = CapabilityMap(peers, verify=True, hosts=_peer_hosts(agent)).resolve("persona")
+    resolved = CapabilityMap(peers, verify=True, connect=connect,
+                             hosts=_peer_hosts(agent)).resolve("persona")
     locator = str(resolved.get("locator") or "")
     if locator:
         endpoint = _persona_endpoint(locator)

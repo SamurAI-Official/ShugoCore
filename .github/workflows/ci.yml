@@ -45,6 +45,17 @@ jobs:
         run: python -m compileall -q .
       - name: Run security & integration tests
         run: python -m unittest discover -s tests -v
+      - name: Run the pytest-style suites (unittest discovery cannot see them)
+        # `unittest discover` collects TestCase subclasses only, so plain classes and
+        # module-level test functions are silently never run -- and a module-level skip
+        # (the idiomatic `pytest.importorskip`) is reported as an *error*, not a skip.
+        # Two files are written that way: the sound provider contract, whose 27 tests had
+        # never executed here, and the model-behaviour suite, which skips until the audio
+        # models are fetched. `-p no:unittest` is what keeps this complementary: without
+        # it, pytest would re-run every TestCase the step above already ran.
+        run: >-
+          python -m pytest tests -p no:unittest -q
+          -W "ignore::pytest.PytestCollectionWarning"
 
   lint:
     runs-on: ubuntu-latest

@@ -372,6 +372,46 @@ The published wheel answers
 with a publisher reading `kind=GitHub, repository=SamurAI-Official/ShugoCore,
 workflow=release.yml`: the artifact naming the workflow that built it, which is exactly the
 claim that had been failing to match.
+### The suite was green only where it was run
+
+Nine tests failed on CI for four reasons, none of which was the code they were about: the
+suite had grown dependencies on this bench. Each is now checked rather than assumed.
+
+- **`cryptography` was never declared anywhere.** The actuation sandbox generates a real
+  certificate for its TLS target, and its own docstring claimed the library "ships with
+  this fleet (it is a dependency of the memory stack)" -- which was untrue: no declared
+  dependency carried it, and no other module imports it. Two tests errored on CI for a
+  missing extra. It is `shugocore[sandbox]` now, and in `dev` (which is what CI installs),
+  and the failure names the extra instead of surfacing as a bare `ImportError`.
+- **Five persona tests needed the Mac to be awake.** They passed only because this LAN
+  answers at `192.168.1.162:11434`. Two failed because the endpoint was asked which model
+  to use -- a network call -- so the error the test had injected was never reached; and two
+  more *passed* without ever reaching the poster they were built around, so away from this
+  LAN they asserted nothing at all. The reachability probe is injectable now
+  (`_resolve_persona(connect=...)`, the same seam `CapabilityMap` already accepted) and the
+  model is named. The suite is proven network-free rather than assumed to be:
+  `runtime/tools/persona_offline_proof.py` re-runs it with every outbound connection
+  refused -- 26 tests, 0 attempts.
+- **"Not fetched" was reported as "drifted".** `submodule_state` folded an unfetched
+  llama.cpp submodule into `agree: False`, so the check on a runner read as a node out of
+  step with its own pin. Absent and mismatched are separate findings now, in the state and
+  in the checker's own output (`not fetched`, not `checkout != pin`).
+- **A pytest-only file could not be skipped under `unittest`.** `pytest.importorskip` at
+  module scope raises while the module is being *imported*, which `unittest discover`
+  reports as an error rather than a skip. Naming unittest's own exception skips cleanly
+  under both runners.
+
+That last one led to a finding worth more than the fix: `unittest discover` collects
+`TestCase` subclasses only, so the two pytest-style files in `tests/` had never run on CI at
+all -- 27 contract tests in `test_sound_provider_contract.py` among them. CI runs them
+explicitly now, with `-p no:unittest` so the step stays complementary rather than becoming a
+second run of the whole suite.
+
+Found while fixing the above, and fixed with it: `test_memory_lifecycle` asserted that
+*every* `.db` under the working directory was renamable, which swept in the actuation
+sandbox's live databases and failed on Windows for another suite's files. It went unseen
+because `os.replace` always succeeds on Linux, and because pytest's conftest chdirs each
+test out of the repository -- the same "green only where it was run" shape.
 ## [1.30.24] - 2026-09-28 — audio perception, in layers
 
 `sound/` is the contract layer for hearing, which is the NRR pattern applied to audio: a

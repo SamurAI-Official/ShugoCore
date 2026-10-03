@@ -45,15 +45,24 @@ _INTERNET_TARGET = "https://api.example.com/v1/actuate"
 def _tls_context(cert_dir: str = None):
     """A server TLS context plus its CA bundle, generated on the spot.
 
-    ``cryptography`` ships with this fleet (it is a dependency of the memory
-    stack), so the sandbox can present a *real* TLS endpoint and have the client
-    trust it through ``REQUESTS_CA_BUNDLE`` -- rather than the far worse option of
-    switching certificate verification off in a security test.
+    The sandbox presents a *real* TLS endpoint and has the client trust it through
+    ``REQUESTS_CA_BUNDLE`` -- rather than the far worse option of switching
+    certificate verification off in a security test. That needs ``cryptography``
+    (the ``shugocore[sandbox]`` extra), which this module is the *only* user of:
+    it is not a runtime dependency, so it is asked for rather than assumed, and
+    the failure below names the extra instead of surfacing as a bare ImportError.
     """
-    from cryptography import x509
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
-    from cryptography.x509.oid import NameOID
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID
+    except ImportError as exc:              # pragma: no cover - host-dependent
+        raise RuntimeError(
+            "the actuation sandbox's TLS target needs 'cryptography' "
+            "(pip install 'shugocore[sandbox]'); a plaintext fallback is not "
+            "offered, because verification off is not a security test"
+        ) from exc
 
     directory = cert_dir or tempfile.mkdtemp(prefix="shugo_sandbox_tls_")
     os.makedirs(directory, exist_ok=True)

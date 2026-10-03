@@ -66,16 +66,33 @@ class TestAgentCleanupReleasesTheDatabase(unittest.TestCase):
     def test_cleanup_leaves_no_locked_database(self):
         """The regression test for the defect that hid 48 failures: an agent whose handle
         outlived it. Renaming is the assertion, because Windows refuses to move a file that
-        another handle still has open."""
+        another handle still has open.
+
+        Only databases *this agent* created are asserted over. ``working`` is still walked,
+        so a database that leaked outside ``data_dir`` is caught -- but it is compared
+        against a snapshot taken first, because the repository root is shared: the
+        actuation sandbox keeps its own databases open under ``runtime/`` on purpose, and
+        demanding those be movable made this suite fail on Windows for another suite's
+        files (it went unnoticed because ``os.replace`` always succeeds on Linux, and
+        because pytest's conftest chdirs each test out of the repository).
+        """
         data_dir = tempfile.mkdtemp(prefix="shugo_mem_")
         working = os.getcwd()
+        existing = set(self._databases([working]))
         agent = create_agent(device_caps="Exynos-1380", data_dir=data_dir)
         try:
-            databases = self._databases([data_dir, working])
+            databases = [path for path in self._databases([data_dir, working])
+                         if path not in existing]
             self.assertTrue(databases, "the agent created no database to check")
             agent.cleanup()
+            # Renamed *out of* the tree rather than beside itself: the assertion is
+            # that Windows lets go of the file, and a leftover ``.db.moved`` in the
+            # repository root is state the suite left behind (`*.db` is gitignored,
+            # `*.db.moved` is not).
+            graveyard = tempfile.mkdtemp(prefix="shugo_mem_moved_")
             for database in databases:
-                os.replace(database, database + ".moved")
+                os.replace(database, os.path.join(graveyard,
+                                                  os.path.basename(database) + ".moved"))
         finally:
             agent.cleanup()
 

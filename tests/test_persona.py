@@ -37,7 +37,30 @@ def _reply(text):
     return {"choices": [{"message": {"role": "assistant", "content": text}}]}
 
 
+class _OpenConnection:
+    """What a successful ``connect()`` returns: a context manager that closes quietly."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
 class PersonaShaperTestCase(unittest.TestCase):
+    @staticmethod
+    def _shaper(reply=None, error=None, url="mac:11434"):
+        """A shaper whose model is *named*, so no test here asks the endpoint for one.
+
+        An empty model is the documented "ask the endpoint which model it has" path, and
+        that is a network call: it made these tests depend on this fleet's LAN answering
+        at :11434. Off-LAN they failed with "the endpoint lists no model to ask" instead
+        of whatever the test injected -- and, worse, two of them passed without ever
+        reaching the poster they were built around.
+        """
+        return persona.PersonaShaper(url, "persona-under-test",
+                                     poster=_Recorder(reply=reply, error=error))
+
     def test_a_node_without_a_persona_speaks_its_own_draft(self):
         shaper = persona.PersonaShaper()
         self.assertFalse(shaper.enabled)
@@ -69,8 +92,7 @@ class PersonaShaperTestCase(unittest.TestCase):
         self.assertEqual(sent["payload"]["model"], "mac-persona")
 
     def test_an_unreachable_persona_speaks_the_draft_and_says_why(self):
-        poster = _Recorder(error=OSError("connection refused"))
-        shaper = persona.PersonaShaper("mac:11434", poster=poster)
+        shaper = self._shaper(error=OSError("connection refused"))
         result = shaper.shape("the capital of France is Paris")
         self.assertEqual(result["source"], "unavailable")
         self.assertEqual(result["text"], "the capital of France is Paris")
@@ -78,13 +100,13 @@ class PersonaShaperTestCase(unittest.TestCase):
         self.assertEqual(shaper.fallbacks, 1)
 
     def test_an_empty_completion_is_a_failure_not_an_empty_line(self):
-        shaper = persona.PersonaShaper("mac:11434", poster=_Recorder(reply=_reply("")))
+        shaper = self._shaper(reply=_reply(""))
         result = shaper.shape("something to say")
         self.assertEqual(result["source"], "unavailable")
         self.assertEqual(result["text"], "something to say")
 
     def test_a_reply_with_no_choices_is_not_read_as_text(self):
-        shaper = persona.PersonaShaper("mac:11434", poster=_Recorder(reply={}))
+        shaper = self._shaper(reply={})
         self.assertEqual(shaper.shape("something to say")["source"], "unavailable")
 
     def test_endpoint_forms_are_normalised(self):
@@ -115,7 +137,12 @@ class PersonaInDecisionTestCase(unittest.TestCase):
         return engine
 
     def _shaper(self, reply=None, error=None):
-        return persona.PersonaShaper("mac:11434",
+        # The model is *named* on purpose. Leaving it empty is the documented
+        # "ask the endpoint which model it has" path, which is a network call --
+        # it made these tests depend on this fleet's LAN, and on CI they failed
+        # with "the endpoint lists no model to ask" instead of the injected error.
+        # Discovery is the subject of PersonaModelChoiceTestCase below, on its own.
+        return persona.PersonaShaper("mac:11434", "persona-under-test",
                                      poster=_Recorder(reply=reply, error=error))
 
     def test_a_speech_decision_is_phrased_and_both_drafts_are_recorded(self):
@@ -236,11 +263,28 @@ class PersonaResolutionTestCase(unittest.TestCase):
         return {"node_id": "shugo-mac", "mem_available_bytes": 1_900_000_000,
                 "caps": {"persona": locator}}
 
+    @staticmethod
+    def _probe(reachable=True):
+        """A stand-in for the socket probe, so resolution never needs the LAN.
+
+        The real probe is a connect to the advertised locator -- the thing that makes
+        "advertised is not usable" true. Answering it here keeps each test about the
+        *rule* (adopt a live locator, never adopt a dead one) rather than about
+        whether the Mac happens to be awake, which is how these passed on the bench
+        and failed on a runner.
+        """
+        def connect(_address, timeout=None, **_kwargs):
+            if not reachable:
+                raise OSError("connection refused")
+            return _OpenConnection()
+        return connect
+
     def test_it_points_the_shaper_at_the_peer_that_advertises_it(self):
         module = _desktop_module()
         shaper = persona.PersonaShaper("", "mac-persona")
         self.assertFalse(shaper.enabled)
-        changed = module._resolve_persona(self._agent([self._mac()]), shaper)
+        changed = module._resolve_persona(self._agent([self._mac()]), shaper,
+                                          connect=self._probe())
         self.assertTrue(changed)
         self.assertEqual(shaper.url, "http://192.168.1.162:11434/v1/chat/completions")
         self.assertEqual(shaper.label(), "mac-persona@192.168.1.162:11434")
@@ -249,7 +293,8 @@ class PersonaResolutionTestCase(unittest.TestCase):
         """The cadence must not rewrite the shaper every minute."""
         module = _desktop_module()
         shaper = persona.PersonaShaper("http://192.168.1.162:11434", "mac-persona")
-        self.assertFalse(module._resolve_persona(self._agent([self._mac()]), shaper))
+        self.assertFalse(module._resolve_persona(self._agent([self._mac()]), shaper,
+                                                 connect=self._probe()))
 
     def test_a_fleet_that_does_not_offer_it_leaves_the_shaper_alone(self):
         module = _desktop_module()
@@ -276,17 +321,23 @@ class PersonaResolutionTestCase(unittest.TestCase):
         shaper = persona.PersonaShaper("", "mac-persona")
         agent = self._agent([self._mac()])
         agent.personality = PersonalityProfile()
-        module._resolve_persona(agent, shaper)
+        module._resolve_persona(agent, shaper, connect=self._probe())
         self.assertTrue(shaper.enabled)
         self.assertTrue(shaper.instructions)
 
     def test_an_advertised_locator_that_does_not_answer_is_not_adopted(self):
-        """Advertised is not usable -- the same rule as everywhere else."""
+        """Advertised is not usable -- the same rule as everywhere else.
+
+        The locator is a real unroutable one (TEST-NET-1) so the case reads like the
+        fleet's, but the answer comes from the probe rather than from the network:
+        whether *this* machine can reach 192.0.2.1 is not the claim under test, and
+        CapabilityMap's own suite covers the probe itself with a refusing connect.
+        """
         module = _desktop_module()
         shaper = persona.PersonaShaper("", "mac-persona")
-        # TEST-NET-1: routeless, so the connect fails and the claim is not adopted.
         self.assertFalse(module._resolve_persona(
-            self._agent([self._mac("http://192.0.2.1:11434")]), shaper))
+            self._agent([self._mac("http://192.0.2.1:11434")]), shaper,
+            connect=self._probe(False)))
         self.assertFalse(shaper.enabled)
 
 

@@ -12,12 +12,21 @@ import pytest
 
 import os
 import sys
+import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sound.models import SILERO_VAD, YAMNET_ONNX, find_model  # noqa: E402
 
-ort = pytest.importorskip("onnxruntime", reason="onnxruntime is needed to run the models")
+try:
+    import onnxruntime as ort
+except ImportError:
+    # ``pytest.importorskip`` is the idiomatic form and is what this was, but an
+    # exception raised while a module is being *imported* is an ERROR under the
+    # ``unittest`` discovery CI runs -- not a skip -- so the suite went red for a
+    # missing optional dependency. unittest's own exception skips cleanly under
+    # both runners, and under pytest the effect is identical.
+    raise unittest.SkipTest("onnxruntime is needed to run the models")
 pytestmark = pytest.mark.skipif(
     not (find_model(SILERO_VAD) and find_model(YAMNET_ONNX)),
     reason="audio models not fetched on this host")

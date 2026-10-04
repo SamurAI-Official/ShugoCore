@@ -9,30 +9,31 @@ $ C:\Users\marku\AppData\Local\Programs\Python\Python310\python.exe -m unittest 
 ResourceWarning: Enable tracemalloc to get the object allocation traceback
 .........
 ----------------------------------------------------------------------
-Ran 19 tests in 0.012s
+Ran 19 tests in 0.007s
 
 OK
 
 
 $ C:\Users\marku\AppData\Local\Programs\Python\Python310\python.exe runtime/tools/xr_session.py
 [exit 0]
-world session: 2026-10-03 22:00:19  surface=godot scaffold  agent=http://127.0.0.1:63289 (backend stub)
+[SESSION] the headless surface exited 3221225477 with no transcript; retrying with a display surface
+world session: 2026-10-03 23:15:50  surface=godot scaffold  agent=http://127.0.0.1:57504 (backend stub)
 surface binary: G:\godot\Godot_v4.7.2-stable_win64_console.exe
 [WORLD  ] xr
+[PRESENCE] mode=xr
 [GOAL   ] operator (in the virtual space): note that the charger is warm to the touch and say whether that needs attention
 [REPLY  ] {"action_type": null, "params": {}, "confidence": 0.0, "text": "[stub:shugocore-local] note that the charger is warm to the touch and say whether that needs attention"}
 [ACTION ] execute_task conversation (gated) -> status=not_implemented stages=[]
-[PRESENCE] mode=unavailable
 [SESSION] world session complete (acted=true replied=true)
-surface exit: 3221225477
+surface exit: 0
 surface said (last lines):
-    [3] 7ffde7075e9e (ntdll.dll+a5e9e) - no debug info in PE/COFF executable
-    [4] 7ffde6fee8c5 (ntdll.dll+1e8c5) - no debug info in PE/COFF executable
-    [5] 7ffde7074e9d (ntdll.dll+a4e9d) - no debug info in PE/COFF executable
-    [6] -1 (main+-7ff724420001) - no debug info in PE/COFF executable
-    -- END OF C++ BACKTRACE --
-    ================================================================
-verdict: world=xr presence=unavailable acted=True replied=True
+    [RuntimeIPCSystem [RUNTIMEIPC]] [INFO] Shutdown: complete WindowsProcess
+    ERROR: 2 RID allocations of type 'N9OpenXRAPI18InteractionProfileE' were leaked at exit.
+    WARNING: Object picking can't be used when stereo rendering, this will be turned off!
+    at: _process_picking (scene/main/viewport.cpp:801)
+    ERROR: Attempt to disconnect a nonexistent connection from '<OpenXRSpatialEntityExtension#4546625775>'. Signal: 'spatial_discovery_recommended', callable: 'OpenXRSpatialMarkerTrackingCapability::_on_spatial_discovery_recommended'.
+    at: _disconnect (core/object/object.cpp:1640)
+verdict: world=xr presence=xr acted=True replied=True
 
 
 live world_engagement [runtime/evidence/world.xr.txt]: ok - xr: 'operator (in the virtual space): note th' -> execute_task conversation (gated) -> sta -> '{"action_type": null, "params": {}, "con'

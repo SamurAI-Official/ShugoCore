@@ -43,6 +43,12 @@ if str(ROOT) not in sys.path:
 
 PROJECT = "platforms/godot"
 DEFAULT_OUT = os.path.join("runtime", "evidence", "world.xr.txt")
+## The operator session logs to its own file. It is not a transcript of the claim -- it has
+## no end and no single exchange to judge -- and it must never overwrite the scripted one
+## that the claims matrix reads. Absolute for the same reason `session_log_path` is: Godot
+## resolves the path itself, and a relative one with backslashes fails to open.
+INTERACTIVE_LOG = str(Path(os.path.dirname(DEFAULT_OUT) or ".").resolve()
+                      / "world.xr.interactive.log")
 DEFAULT_DATA = os.path.join("runtime", "xr_node")
 WORLD_KEYS = ("[WORLD", "[PRESENCE]", "[GOAL", "[ACTION", "[REPLY", "[SESSION")
 GODOT_HINTS = ("godot", "Godot_v4", "godot4")
@@ -66,6 +72,10 @@ def parse_args(argv=None):
     ap.add_argument("--model", default="shugocore-local")
     ap.add_argument("--timeout", type=float, default=240.0)
     ap.add_argument("--out", default=DEFAULT_OUT)
+    ap.add_argument("--interactive", action="store_true",
+                    help="run the scaffold in front of an operator instead of scripting it: "
+                         "a real XR session (no --headless), no frame budget, no auto-quit. "
+                         "Ctrl+C stops it")
     return ap.parse_args(argv)
 
 
@@ -101,15 +111,22 @@ def project_imported(project: Path) -> bool:
     return (project / ".godot" / "global_script_class_cache.cfg").is_file()
 
 
-def run_godot(godot: str, project: str, extra, url: str, timeout: float):
-    """Run Godot headless and return ``(returncode, output)``, both streams kept."""
+def run_godot(godot: str, project: str, extra, url: str, timeout: float,
+              headless: bool = True):
+    """Run Godot and return ``(returncode, output)``, both streams kept.
+
+    ``headless`` is the scripted default, so the claim needs no display. It is *not* safe
+    while a headset is streaming over Quest Link: a headless engine has no swapchain, and
+    the measured result is an immediate access violation (3 of 3 runs, exit 0xC0000005,
+    before the engine printed anything at all). Callers retry on a display surface.
+    """
     env = dict(os.environ)
     env["SHUGOCORE_XR_AGENT_URL"] = url
     env.setdefault("SHUGOCORE_XR_POLL_SECONDS", "0.5")
+    argv = [godot, *(["--headless"] if headless else []), "--path", project, *extra]
     try:
         proc = subprocess.run(  # noqa: S603 - our own tool, vector args, no shell
-            [godot, "--headless", "--path", project, *extra],
-            cwd=str(ROOT), capture_output=True, text=True, timeout=timeout, env=env,
+            argv, cwd=str(ROOT), capture_output=True, text=True, timeout=timeout, env=env,
             shell=False)
     except subprocess.TimeoutExpired as exc:
         out = (exc.stdout or "") + (exc.stderr or "")
@@ -219,9 +236,17 @@ def session_log_path(out: str) -> str:
     return str(Path(os.path.dirname(out) or ".").resolve() / "world.xr.session.log")
 
 
-def read_session_log(path: str) -> list:
-    """The lines the surface wrote, if it got that far."""
+def read_session_log(path: str, since: float = 0.0) -> list:
+    """The lines the surface wrote *during this run*, if it got that far.
+
+    ``since`` guards against reading a previous run's transcript as this run's evidence. The
+    surface writes its own log file, and a session that dies before opening it leaves the
+    last run's file on disk -- measured: a crashed run reported a transcript from twenty
+    minutes earlier, complete with a presence mode it had never observed.
+    """
     try:
+        if since and Path(path).stat().st_mtime < since:
+            return []
         text = Path(path).read_text(encoding="utf-8", errors="replace")
     except Exception:
         return []
@@ -239,6 +264,52 @@ def write_and_report(args, facts: dict, code: int) -> int:
     for line in lines:
         print(line, flush=True)
     return code
+
+
+def run_interactive(args, godot: str, project: str, url: str, port: int) -> int:
+    """Hand the scaffold to the operator: a real session, no budget, no auto-quit.
+
+    Three differences from the scripted path, each measured rather than chosen:
+
+      * **no ``--headless``.** A headless engine has no swapchain to hand the compositor,
+        so it cannot reach a real XR session at all. Found by running it the other way:
+        with ``--headless`` the engine failed with
+        ``XR_ERROR_GRAPHICS_REQUIREMENTS_CALL_MISSING``, and the same scene run without
+        the flag reached ``XR_SESSION_STATE_FOCUSED`` and rendered to the headset.
+      * **no ``--quit-after``**, and ``--linger`` on the session, so the surface stays up
+        while the operator wears it instead of exiting when the first exchange completes.
+        A few seconds of frame budget is what "it only ran for a few moments" was.
+      * **stdio inherited, not captured**, so the scaffold's own log is visible live
+        instead of only after it exits.
+
+    Nothing here is judged: the scripted path stays the one the claims matrix reads.
+    """
+    log_path = INTERACTIVE_LOG
+    env = dict(os.environ)
+    env["SHUGOCORE_XR_AGENT_URL"] = url
+    env.setdefault("SHUGOCORE_XR_POLL_SECONDS", "0.5")
+    extra = ["--path", project, "--", "--world-session", "--linger",
+             f"--agent-url={url}", f"--session-out={log_path}"]
+    print(f"[SESSION] interactive — the scaffold is live against {url}")
+    print(f"[SESSION] session log: {log_path}")
+    print("[SESSION] put the headset on; Ctrl+C here stops it")
+    try:
+        proc = subprocess.Popen(  # noqa: S603 - our own tool, vector args, no shell
+            [godot, *extra], cwd=str(ROOT), env=env, shell=False)
+    except Exception as exc:
+        print(f"[SESSION] could not start the surface: {type(exc).__name__}: {exc}")
+        return 1
+    try:
+        code = int(proc.wait())
+    except KeyboardInterrupt:
+        print("\n[SESSION] interrupted — stopping the surface")
+        stop_process(proc)
+        code = 130
+    lines = read_session_log(log_path)
+    print(f"[SESSION] surface exited ({code}); it recorded {len(lines)} line(s):")
+    for line in lines:
+        print("    " + line)
+    return 0
 
 
 def main(argv=None) -> int:
@@ -273,22 +344,40 @@ def main(argv=None) -> int:
         if not wait_for_server(port):
             facts["error"] = "the desktop server never answered /health"
             return write_and_report(args, facts, 1)
+        if args.interactive:
+            # The operator path: no frame budget, no --headless, no transcript written.
+            # It returns here rather than falling through, so the scripted run below keeps
+            # producing the evidence the claims matrix reads.
+            return run_interactive(args, godot, project, url, port)
         log_path = session_log_path(args.out)
         # ``--quit-after`` is frames, and it is the belt to the harness's braces: the session
         # asks the tree to quit when it is done, but an engine that is asked to quit from an
         # autoload has been observed to keep running here, so the surface is given a hard
         # frame budget just past its own deadline as well.
         frames = max(900, int(args.timeout * 60))
-        rc, output = run_godot(
-            godot, project,
-            ["--quit-after", str(frames), "--", "--world-session",
-             f"--agent-url={url}", f"--session-out={log_path}"],
-            url, args.timeout)
+        world_args = ["--quit-after", str(frames), "--", "--world-session",
+                      f"--agent-url={url}", f"--session-out={log_path}"]
+        # Recorded so the transcript cannot come from a previous run's log file.
+        started = time.time()
+        rc, output = run_godot(godot, project, world_args, url, args.timeout)
         facts["rc"] = rc
         facts["raw"] = output
+        if not (read_session_log(log_path, started) or world_lines(output)) \
+                and rc not in (0, 124):
+            # The headless surface died without printing a line -- with a headset streaming
+            # over Quest Link that is exactly what happens (measured 3 of 3: access
+            # violation before any output), so the same scripted session is retried on a
+            # display surface. Once, and loudly: a silent retry would hide the crash.
+            print(f"[SESSION] the headless surface exited {rc} with no transcript; "
+                  "retrying with a display surface")
+            started = time.time()
+            rc, output = run_godot(godot, project, world_args, url, args.timeout,
+                                   headless=False)
+            facts["rc"] = rc
+            facts["raw"] = output
         # Prefer the surface's own log: Godot buffers print() to stdout when it is piped, so a
         # killed run can lose every line the surface printed while its log file kept them.
-        facts["world"] = read_session_log(log_path) or world_lines(output)
+        facts["world"] = read_session_log(log_path, started) or world_lines(output)
         kept = [line.strip() for line in output.splitlines() if line.strip()]
         facts["tail"] = kept[-6:]
         scan_world(facts)

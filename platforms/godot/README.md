@@ -148,6 +148,21 @@ earlier conclusion rather than extending it:
   `SHUGOCORE_XR_TRANSPARENT=0`, or `"transparent_background": false` in
   `user://shugocore_xr.json`, for an opaque background in both places — which is what you
   want when the desktop window is the thing you are looking at.
+- **A headless engine cannot hold a session, and with Link live it does not survive the
+  attempt.** Measured 3 runs of 3: `godot --headless` with a headset streaming exits with an
+  access violation *before printing a single line*, while the same scene without the flag
+  reaches `XR_SESSION_STATE_FOCUSED`. `runtime/tools/xr_session.py` therefore retries the
+  scripted session once on a display surface — loudly, in the transcript — when the headless
+  attempt dies with no output, which is how the `world.xr` evidence came to record
+  `presence=xr` rather than `desktop_preview`. To actually wear it:
+
+  ```bash
+  py -3.10 runtime/tools/xr_session.py --interactive
+  ```
+
+  starts the surface against a local agent, hands you the headset, and keeps running (writing
+  its own log, `runtime/evidence/world.xr.interactive.log`, so an operator session never
+  overwrites the scripted transcript) until you Ctrl+C.
 - **The mode settles late, so the bootstrap observes instead of concluding.** Autoloads run
   before the session reaches READY, so a one-shot check at `_ready()` reported
   `desktop_preview` while the operator was wearing the headset and looking at the scene.

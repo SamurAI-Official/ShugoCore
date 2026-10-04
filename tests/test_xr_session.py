@@ -62,6 +62,33 @@ class TheSurfaceReaderTestCase(unittest.TestCase):
         self.assertTrue(path.endswith("world.xr.session.log"))
 
 
+class TheTranscriptIsThisRunsTestCase(unittest.TestCase):
+    """A transcript has to come from *this* run, or it is evidence of nothing.
+
+    Measured: a scripted session crashed before its surface opened the log, and the harness
+    reported the previous run's file instead -- a transcript from twenty minutes earlier,
+    complete with a presence mode that run had never observed.
+    """
+
+    def test_a_log_older_than_the_run_is_not_this_runs_evidence(self):
+        import tempfile
+        import time
+
+        body = ("[WORLD  ] xr\n[PRESENCE] mode=desktop_preview\n"
+                "[REPLY  ] an answer from an earlier run\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "session.log")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(body)
+            stale = time.time() - 600.0
+            os.utime(path, (stale, stale))
+            self.assertEqual(XR.read_session_log(path, time.time()), [])
+            # The guard narrows, it does not disable: the same file is evidence when no
+            # `since` is given, and when the run is the one that wrote it.
+            self.assertTrue(XR.read_session_log(path, 0.0))
+            self.assertTrue(XR.read_session_log(path, stale - 60.0))
+
+
 class TheVerdictTestCase(unittest.TestCase):
     """The transcript a session writes must satisfy the real parser -- or say why not."""
 

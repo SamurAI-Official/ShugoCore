@@ -484,6 +484,26 @@ about itself rather than a missing feature.
 Both are locked from Python (`tests/test_quest_build.py`), since a source-level regression
 is what let the passthrough error live through four release runs.
 
+### The surface can be worn, and a headless engine cannot hold a session
+
+- **`xr_session.py --interactive`** starts the scaffold against a local agent with no
+  `--headless`, no frame budget and no auto-quit, writing its own log
+  (`runtime/evidence/world.xr.interactive.log`) so an operator session never overwrites the
+  scripted transcript the claims matrix reads. "It only ran for a few moments" was a
+  `--quit-after` of a few seconds, plus a world session that exits as soon as its first
+  exchange completes. Measured with a headset worn: `[PRESENCE] mode=xr`, still up after 45s.
+- **A headless engine crashes with a live Link session** — 3 runs of 3, access violation,
+  before the engine printed anything — where the same scene with a display reaches
+  `XR_SESSION_STATE_FOCUSED`. The scripted path retries once on a display surface and says so
+  in the transcript, rather than reporting a crash as a session that never answered. That is
+  why `world.xr` now records `presence=xr`, a real session, instead of `desktop_preview`.
+- **A transcript must come from this run.** A crashed surface left the previous run's log on
+  disk and the harness reported it as this run's evidence — a transcript twenty minutes old,
+  carrying a presence mode that run never observed. A log older than the run is ignored now.
+- **Presence is reported when it settles**, and when it does not settle the transcript says
+  so instead of printing the bootstrap's initial placeholder as though it were an
+  observation.
+
 ## [1.30.24] - 2026-09-28 — audio perception, in layers
 
 `sound/` is the contract layer for hearing, which is the NRR pattern applied to audio: a

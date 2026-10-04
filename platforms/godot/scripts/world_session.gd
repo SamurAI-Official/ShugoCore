@@ -32,13 +32,17 @@ var _done := false
 var _deadline := 0.0
 var _file: FileAccess = null
 var _presence_reported := ""
+## Operator sessions do not end themselves: no deadline, no quit after the first
+## exchange. Set by `--linger`, which is what `xr_session.py --interactive` passes.
+var _linger := false
 
 
 func _ready() -> void:
     if not OS.get_cmdline_user_args().has("--world-session"):
         return                      # an ordinary run: the scene plays as usual
     _open_session_log()
-    _deadline = _now() + WAIT_S
+    _linger = OS.get_cmdline_user_args().has("--linger")
+    _deadline = 0.0 if _linger else _now() + WAIT_S
     var url := _agent_url_arg()
     if url != "":
         _write_user_config(url)
@@ -111,6 +115,8 @@ func _now() -> float:
 func _process(_delta: float) -> void:
     if _done or _deadline == 0.0:
         return
+    if _linger:
+        return      # an operator session ends when the operator ends it
     if _now() > _deadline:
         _emit("[SESSION] world session timed out (acted=%s replied=%s)" % [_acted, _replied])
         _finish()
@@ -134,8 +140,8 @@ func _on_connection(online: bool) -> void:
 
 
 func _on_task(payload: Dictionary) -> void:
-    if _acted:
-        return
+    if _acted and not _linger:
+        return                  # scripted: the transcript records the first exchange
     _acted = true
     _emit("[ACTION ] execute_task conversation (gated) -> status=%s stages=%s" % [
             str(payload.get("status", "unknown")),
@@ -146,7 +152,7 @@ func _on_task(payload: Dictionary) -> void:
 
 
 func _on_reply(text: String) -> void:
-    if _replied or text.strip_edges() == "":
+    if text.strip_edges() == "" or (_replied and not _linger):
         return
     _replied = true
     _emit("[REPLY  ] " + text.strip_edges())
@@ -184,7 +190,11 @@ func _report_presence() -> void:
         if str(XRBootstrap.mode) != "unavailable":
             _emit_presence()
             return
-    _emit_presence()                # nothing settled: "unavailable" is what it is
+    # Nothing settled. The bootstrap's "unavailable" is its *initial* value -- "not yet
+    # determined" -- and writing that into the transcript presents a placeholder as an
+    # observation. Say what actually happened instead.
+    _presence_reported = "not observed before the session ended"
+    _emit("[PRESENCE] mode=" + _presence_reported)
 
 
 func _on_presence_changed(_mode: String) -> void:
@@ -204,12 +214,11 @@ func _finish() -> void:
         return
     _done = true
     if _presence_reported == "":
-        # The mode never settled before the session ended. Emitting the bootstrap's
-        # *initial* value ("unavailable") here would present a placeholder as an
-        # observation, which is the one thing this scaffold refuses to do -- so say what
-        # actually happened instead. Found by doing this against a live headset: the
-        # exchange finishes in fewer frames than the presence takes to settle.
-        _emit("[PRESENCE] mode=not observed before the session ended")
+        # The transcript carries the presence, so it is worth waiting for the observation
+        # rather than closing with a placeholder in the file. Found by running the
+        # scripted path and reading `mode=unavailable`: the exchange finishes in fewer
+        # frames than the presence takes to settle, so the wait has to happen here.
+        await _report_presence()
     _emit("[SESSION] world session complete (acted=%s replied=%s)" % [_acted, _replied])
     if _file != null:
         _file.close()

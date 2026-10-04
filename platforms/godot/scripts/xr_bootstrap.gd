@@ -36,6 +36,17 @@ func _ready() -> void:
 		print("[xr] no OpenXR interface is compiled in — unavailable")
 		_set_mode("unavailable")
 		return
+	if DisplayServer.get_name() == "headless":
+		# A headless engine has no swapchain to hand the compositor, so no XR session can
+		# begin however present the runtime is: measured, session creation fails with
+		# XR_ERROR_GRAPHICS_REQUIREMENTS_CALL_MISSING under --headless, while the same scene
+		# without the flag reaches XR_SESSION_STATE_FOCUSED and renders to the headset.
+		# Saying so at once is both the truth and cheaper than watching for a session that
+		# cannot start -- and it is what lets the scripted transcript settle instead of
+		# recording the placeholder this started as.
+		print("[xr] headless display: no XR session is possible — desktop preview")
+		_set_mode("desktop_preview")
+		return
 	print("[xr] interface found; initialized=%s" % [_xr_interface.is_initialized()])
 	# IDEMPOTENT: this script is registered BOTH as the XRBootstrap autoload
 	# and as the main scene root script, so _ready() runs twice. Calling

@@ -1,19 +1,187 @@
 Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
 OpenXR: Created instance for OpenXR 1.1.54
 OpenXR: Running on OpenXR runtime:  Oculus   1.208.0
+OpenGL API 3.3.0 NVIDIA 610.88 - Compatibility - Using Device: NVIDIA - NVIDIA GeForce RTX 4070 Ti
 
-
-================================================================
-CrashHandlerException: Program crashed with signal 11
-Engine version: Godot Engine v4.7.2.stable.official (ed1daf0bf001b61586d9930840f2f1394092c079)
-Dumping the backtrace. Please include this when reporting the bug on: https://github.com/godotengine/godot/issues
-Load address: 7ff5e4420000
-
-[1] 7ff7284f4d61 (main+40d4d61) - no debug info in PE/COFF executable
-[2] 7ffde705f846 (ntdll.dll+8f846) - no debug info in PE/COFF executable
-[3] 7ffde7075e9e (ntdll.dll+a5e9e) - no debug info in PE/COFF executable
-[4] 7ffde6fee8c5 (ntdll.dll+1e8c5) - no debug info in PE/COFF executable
-[5] 7ffde7074e9d (ntdll.dll+a4e9d) - no debug info in PE/COFF executable
-[6] -1 (main+-7ff724420001) - no debug info in PE/COFF executable
--- END OF C++ BACKTRACE --
-================================================================
+OpenXR: Requested OpenGL version does not meet the minimum version this runtime supports.
+- desired_version  3.3.0
+- minApiVersionSupported  4.0.0
+- maxApiVersionSupported  4.6.0
+OpenXR: Trying to initialize with OpenGL anyway...
+[RuntimeIPCLoader [RUNTIMEIPC]] [INFO] RuntimeIPC: Successfully loaded library
+[RuntimeIPCSystem [RUNTIMEIPC]] [INFO] RuntimeIPCSystem: Init called: Version: 87, Platform: Windows, Build Date: 1, Build Time: 1, BuildMode: shared
+[RipcClientConnection [RUNTIMEIPC]] [INFO] CheckShouldSpawnProxy: Transport name explicitly set. transportName: link, package: , server: MrSystemServiceIPCServer
+[RipcClientConnection [RUNTIMEIPC]] [INFO] CheckShouldSpawnProxy: Transport name explicitly set. transportName: link, package: , server: MrSystemServiceIPCServer
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] establishConnection: BEGIN: friendlyName=Client: :, Server: WindowsPackage:WindowsProcess:0 (MrSystemServiceIPCServer)
+[RipcClient [RUNTIMEIPC]] [INFO] SendConnectEventInternal: BEGIN: type=1, friendlyName=Client: :, Server: WindowsPackage:WindowsProcess:0 (MrSystemServiceIPCServer)
+[RipcClient [RUNTIMEIPC]] [INFO] SendConnectEventInternal: completed: elapsed_ms=0, friendlyName=Client: :, Server: WindowsPackage:WindowsProcess:0 (MrSystemServiceIPCServer)
+[RipcLocalTransportMgr [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] RipcLocalProxyServerMgr::EnableProxyServer SUCCESS MrSystemServiceIPCServer
+[IPCSharedMemory [RUNTIMEIPC]] [WARN] IPCSharedMemory::MapSharedMemory: VirtualLock failed for 16 bytes: 1453
+[IPCSharedMemory [RUNTIMEIPC]] [WARN] IPCSharedMemory::MapSharedMemory: VirtualLock failed for 24 bytes: 1453
+[IPCSharedMemory [RUNTIMEIPC]] [WARN] IPCSharedMemory::MapSharedMemory: VirtualLock failed for 20 bytes: 1453
+[RipcClientConnection [RUNTIMEIPC]] [INFO] Event buffer size (client): eventBufferSize=8192
+[IPCSharedMemory [RUNTIMEIPC]] [WARN] IPCSharedMemory::MapSharedMemory: VirtualLock failed for 8216 bytes: 1453
+[RipcClientConnection [RUNTIMEIPC]] [INFO] TryToGetIPCResourcesFromServer: RPC_CONNECTOR_CONNECT_TO_SERVER SUCCESS: Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (MrSystemServiceIPCServer), Version: 87, Platform: Windows, Build Date: 1, Build Time: 1, BuildMode: shared
+[IPCSharedMemory [RUNTIMEIPC]] [WARN] IPCSharedMemory::MapSharedMemory: VirtualLock failed for 3624 bytes: 1453
+[RipcClient [RUNTIMEIPC]] [INFO] SendConnectEventInternal: BEGIN: type=0, friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (MrSystemServiceIPCServer)
+[RipcClientConnection [RUNTIMEIPC]] [INFO] EnsureServerConnection: SUCCESS. Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (MrSystemServiceIPCServer)
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] establishConnection: SUCCESS: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (MrSystemServiceIPCServer)
+[RipcClient [RUNTIMEIPC]] [INFO] SendConnectEventInternal: completed: elapsed_ms=0, friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (MrSystemServiceIPCServer)
+[RipcFramework_Client [RUNTIMEIPC]] [WARN] CallServerRPC FAILED: IsDeviceUsingLegacyPassthrough. Error Code: 8
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] Shutdown: BEGIN: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (MrSystemServiceIPCServer)
+[RipcClient [RUNTIMEIPC]] [INFO] ShutdownLocked: BEGIN: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (MrSystemServiceIPCServer)
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] DisconnectFromServer: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (MrSystemServiceIPCServer)
+[RipcClient [RUNTIMEIPC]] [INFO] ShutdownLocked: COMPLETE: elapsed_ms=0, friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (MrSystemServiceIPCServer)
+[RuntimeIPCNotificationThread [RUNTIMEIPC]] [INFO] RuntimeIPCNotificationThread MainLoop: WaitForNotification canceled during shutdown
+[RuntimeIPCNotificationThread [RUNTIMEIPC]] [INFO] RuntimeIPCNotificationThread MainLoop: exiting
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] Shutdown: COMPLETE: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (MrSystemServiceIPCServer), result=SUCCESS
+[RipcClientMgr [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] DisconnectFromServer DONE: clientId: 6, Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (MrSystemServiceIPCServer)
+[RuntimeIPCLoader [RUNTIMEIPC]] [INFO] RuntimeIPC: Successfully loaded library
+[RuntimeIPCSystem [RUNTIMEIPC]] [INFO] RuntimeIPCSystem: Init called: Version: 87, Platform: Windows, Build Date: 1, Build Time: 1, BuildMode: shared
+[RipcClientConnection [RUNTIMEIPC]] [INFO] CheckShouldSpawnProxy: Android target package detected on Windows. package: com.oculus.systemdriver, server: RuntimeServiceServer (forcing Link transport)
+[RipcClientConnection [RUNTIMEIPC]] [INFO] CheckShouldSpawnProxy: Android target package detected on Windows. package: com.oculus.systemdriver, server: RuntimeServiceServer (forcing Link transport)
+[RipcClientConnection [RUNTIMEIPC]] [INFO] CheckShouldSpawnProxy: Android target package detected on Windows. package: com.oculus.systemdriver, server: RuntimeServiceServer (forcing Link transport)
+[RipcClientConnection [RUNTIMEIPC]] [INFO] CheckShouldSpawnProxy: Android target package detected on Windows. package: com.oculus.systemdriver, server: RuntimeServiceServer (forcing Link transport)
+[RipcClientConnection [RUNTIMEIPC]] [INFO] CheckShouldSpawnProxy: Android target package detected on Windows. package: com.oculus.systemdriver, server: RuntimeServiceServer (forcing Link transport)
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] establishConnection: BEGIN: friendlyName=Client: :, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcClient [RUNTIMEIPC]] [INFO] SendConnectEventInternal: BEGIN: type=1, friendlyName=Client: :, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcClient [RUNTIMEIPC]] [INFO] SendConnectEventInternal: completed: elapsed_ms=0, friendlyName=Client: :, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcLocalTransportMgr [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] RipcLocalProxyServerMgr::EnableProxyServer SUCCESS RuntimeServiceServer
+[IPCSharedMemory [RUNTIMEIPC]] [WARN] IPCSharedMemory::MapSharedMemory: VirtualLock failed for 16 bytes: 1453
+[IPCSharedMemory [RUNTIMEIPC]] [WARN] IPCSharedMemory::MapSharedMemory: VirtualLock failed for 24 bytes: 1453
+[IPCSharedMemory [RUNTIMEIPC]] [WARN] IPCSharedMemory::MapSharedMemory: VirtualLock failed for 20 bytes: 1453
+[RipcClientConnection [RUNTIMEIPC]] [INFO] Event buffer size (client): eventBufferSize=8192
+[IPCSharedMemory [RUNTIMEIPC]] [WARN] IPCSharedMemory::MapSharedMemory: VirtualLock failed for 8216 bytes: 1453
+[RipcClientConnection [RUNTIMEIPC]] [INFO] TryToGetIPCResourcesFromServer: RPC_CONNECTOR_CONNECT_TO_SERVER SUCCESS: Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer), Version: 87, Platform: Windows, Build Date: 1, Build Time: 1, BuildMode: shared
+[IPCSharedMemory [RUNTIMEIPC]] [WARN] IPCSharedMemory::MapSharedMemory: VirtualLock failed for 86744 bytes: 1453
+[RipcClient [RUNTIMEIPC]] [INFO] SendConnectEventInternal: BEGIN: type=0, friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcClientConnection [RUNTIMEIPC]] [INFO] EnsureServerConnection: SUCCESS. Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] establishConnection: SUCCESS: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcClient [RUNTIMEIPC]] [INFO] SendConnectEventInternal: completed: elapsed_ms=0, friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcClientState [RUNTIMEIPC]] [WARN] GetClientStateHandle_Private: Failed to find entry: Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer), State: InputModalityManifestState
+[RipcFramework_ClientState [RUNTIMEIPC]] [WARN] ipc_GetClientStateHandle FAILED: InputModalityManifestState
+[RuntimeIPCLoader [RUNTIMEIPC]] [INFO] RuntimeIPC: Successfully loaded library
+[RuntimeIPCSystem [RUNTIMEIPC]] [INFO] RuntimeIPCSystem: Init called: Version: 87, Platform: Windows, Build Date: 1, Build Time: 1, BuildMode: shared
+[RipcClientConnection [RUNTIMEIPC]] [INFO] CheckShouldSpawnProxy: Android target package detected on Windows. package: com.oculus.systemdriver, server: RuntimeServiceServer (forcing Link transport)
+[RipcClientConnection [RUNTIMEIPC]] [INFO] CheckShouldSpawnProxy: Android target package detected on Windows. package: com.oculus.systemdriver, server: RuntimeServiceServer (forcing Link transport)
+[RipcClientConnection [RUNTIMEIPC]] [INFO] CheckShouldSpawnProxy: Android target package detected on Windows. package: com.oculus.systemdriver, server: RuntimeServiceServer (forcing Link transport)
+[RipcClientConnection [RUNTIMEIPC]] [INFO] CheckShouldSpawnProxy: Android target package detected on Windows. package: com.oculus.systemdriver, server: RuntimeServiceServer (forcing Link transport)
+[RipcClientConnection [RUNTIMEIPC]] [INFO] CheckShouldSpawnProxy: Android target package detected on Windows. package: com.oculus.systemdriver, server: RuntimeServiceServer (forcing Link transport)
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] establishConnection: BEGIN: friendlyName=Client: :, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcClient [RUNTIMEIPC]] [INFO] SendConnectEventInternal: BEGIN: type=1, friendlyName=Client: :, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcClient [RUNTIMEIPC]] [INFO] SendConnectEventInternal: completed: elapsed_ms=0, friendlyName=Client: :, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcLocalTransportMgr [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] RipcLocalProxyServerMgr::EnableProxyServer SUCCESS RuntimeServiceServer
+[IPCSharedMemory [RUNTIMEIPC]] [WARN] IPCSharedMemory::MapSharedMemory: VirtualLock failed for 16 bytes: 1453
+[IPCSharedMemory [RUNTIMEIPC]] [WARN] IPCSharedMemory::MapSharedMemory: VirtualLock failed for 24 bytes: 1453
+[IPCSharedMemory [RUNTIMEIPC]] [WARN] IPCSharedMemory::MapSharedMemory: VirtualLock failed for 20 bytes: 1453
+[RipcClientConnection [RUNTIMEIPC]] [INFO] Event buffer size (client): eventBufferSize=8192
+[IPCSharedMemory [RUNTIMEIPC]] [WARN] IPCSharedMemory::MapSharedMemory: VirtualLock failed for 8216 bytes: 1453
+[RipcClientConnection [RUNTIMEIPC]] [INFO] TryToGetIPCResourcesFromServer: RPC_CONNECTOR_CONNECT_TO_SERVER SUCCESS: Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer), Version: 87, Platform: Windows, Build Date: 1, Build Time: 1, BuildMode: shared
+[IPCSharedMemory [RUNTIMEIPC]] [WARN] IPCSharedMemory::MapSharedMemory: VirtualLock failed for 86744 bytes: 1453
+[RipcClient [RUNTIMEIPC]] [INFO] SendConnectEventInternal: BEGIN: type=0, friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcClientConnection [RUNTIMEIPC]] [INFO] EnsureServerConnection: SUCCESS. Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] establishConnection: SUCCESS: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcClient [RUNTIMEIPC]] [INFO] SendConnectEventInternal: completed: elapsed_ms=0, friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcClientState [RUNTIMEIPC]] [WARN] GetClientStateHandle_Private: Failed to find entry: Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer), State: InputModalityManifestState
+[RipcFramework_ClientState [RUNTIMEIPC]] [WARN] ipc_GetClientStateHandle FAILED: InputModalityManifestState
+[RuntimeIPCSystem [RUNTIMEIPC]] [INFO] RuntimeIPCSystem: Init called: Version: 87, Platform: Windows, Build Date: 1, Build Time: 1, BuildMode: shared
+[RipcClientConnection [RUNTIMEIPC]] [INFO] CheckShouldSpawnProxy: Transport name explicitly set. transportName: link, package: , server: MrServiceIPCServer
+[RipcClientConnection [RUNTIMEIPC]] [INFO] CheckShouldSpawnProxy: Transport name explicitly set. transportName: link, package: , server: MrServiceIPCServer
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] establishConnection: BEGIN: friendlyName=Client: :, Server: WindowsPackage:WindowsProcess:0 (MrServiceIPCServer)
+[RipcClient [RUNTIMEIPC]] [INFO] SendConnectEventInternal: BEGIN: type=1, friendlyName=Client: :, Server: WindowsPackage:WindowsProcess:0 (MrServiceIPCServer)
+[RipcClient [RUNTIMEIPC]] [INFO] SendConnectEventInternal: completed: elapsed_ms=0, friendlyName=Client: :, Server: WindowsPackage:WindowsProcess:0 (MrServiceIPCServer)
+[RipcLocalTransportMgr [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] RipcLocalProxyServerMgr::EnableProxyServer SUCCESS MrServiceIPCServer
+[IPCSharedMemory [RUNTIMEIPC]] [WARN] IPCSharedMemory::MapSharedMemory: VirtualLock failed for 16 bytes: 1453
+[IPCSharedMemory [RUNTIMEIPC]] [WARN] IPCSharedMemory::MapSharedMemory: VirtualLock failed for 24 bytes: 1453
+[IPCSharedMemory [RUNTIMEIPC]] [WARN] IPCSharedMemory::MapSharedMemory: VirtualLock failed for 20 bytes: 1453
+[RipcClientConnection [RUNTIMEIPC]] [INFO] Event buffer size (client): eventBufferSize=8192
+[IPCSharedMemory [RUNTIMEIPC]] [WARN] IPCSharedMemory::MapSharedMemory: VirtualLock failed for 8216 bytes: 1453
+[RipcClientConnection [RUNTIMEIPC]] [INFO] TryToGetIPCResourcesFromServer: RPC_CONNECTOR_CONNECT_TO_SERVER SUCCESS: Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (MrServiceIPCServer), Version: 87, Platform: Windows, Build Date: 1, Build Time: 1, BuildMode: shared
+[IPCSharedMemory [RUNTIMEIPC]] [WARN] IPCSharedMemory::MapSharedMemory: VirtualLock failed for 3624 bytes: 1453
+[RipcClient [RUNTIMEIPC]] [INFO] SendConnectEventInternal: BEGIN: type=0, friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (MrServiceIPCServer)
+[RipcClientConnection [RUNTIMEIPC]] [INFO] EnsureServerConnection: SUCCESS. Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (MrServiceIPCServer)
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] establishConnection: SUCCESS: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (MrServiceIPCServer)
+[RipcClient [RUNTIMEIPC]] [INFO] SendConnectEventInternal: completed: elapsed_ms=0, friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (MrServiceIPCServer)
+[xr] interface found; initialized=true
+[xr] adopting the running OpenXR session â€” presence is xr (blend=alpha_blend)
+[xr] background: transparent=true (blend=alpha_blend, transparent_background=true)
+[xr] passthrough: singleton has no start_passthrough() â€” not started
+[SESSION] user config agent_url=http://127.0.0.1:57504
+[WORLD  ] xr
+[PRESENCE] mode=xr
+[panels] agent no pose -> arc
+[xr] interface found; initialized=true
+[xr] adopting the running OpenXR session â€” presence is xr (blend=alpha_blend)
+[xr] background: transparent=true (blend=alpha_blend, transparent_background=true)
+[xr] passthrough: singleton has no start_passthrough() â€” not started
+[GOAL   ] operator (in the virtual space): note that the charger is warm to the touch and say whether that needs attention
+[REPLY  ] {"action_type": null, "params": {}, "confidence": 0.0, "text": "[stub:shugocore-local] note that the charger is warm to the touch and say whether that needs attention"}
+[ACTION ] execute_task conversation (gated) -> status=not_implemented stages=[]
+[SESSION] world session complete (acted=true replied=true)
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] Shutdown: BEGIN: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcClient [RUNTIMEIPC]] [INFO] ShutdownLocked: BEGIN: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] DisconnectFromServer: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcClient [RUNTIMEIPC]] [INFO] ShutdownLocked: COMPLETE: elapsed_ms=0, friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RuntimeIPCNotificationThread [RUNTIMEIPC]] [INFO] RuntimeIPCNotificationThread MainLoop: WaitForNotification canceled during shutdown
+[RuntimeIPCNotificationThread [RUNTIMEIPC]] [INFO] RuntimeIPCNotificationThread MainLoop: exiting
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] Shutdown: COMPLETE: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer), result=SUCCESS
+[RipcClientMgr [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] DisconnectFromServer DONE: clientId: 7, Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] Shutdown: BEGIN: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcClient [RUNTIMEIPC]] [INFO] ShutdownLocked: BEGIN: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] DisconnectFromServer: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcClient [RUNTIMEIPC]] [INFO] ShutdownLocked: COMPLETE: elapsed_ms=0, friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RuntimeIPCNotificationThread [RUNTIMEIPC]] [INFO] RuntimeIPCNotificationThread MainLoop: WaitForNotification canceled during shutdown
+[RuntimeIPCNotificationThread [RUNTIMEIPC]] [INFO] RuntimeIPCNotificationThread MainLoop: exiting
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] Shutdown: COMPLETE: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer), result=SUCCESS
+[RipcClientMgr [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] DisconnectFromServer DONE: clientId: 8, Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] Shutdown: BEGIN: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (HapticsServer)
+[RipcClient [RUNTIMEIPC]] [INFO] ShutdownLocked: BEGIN: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (HapticsServer)
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] DisconnectFromServer: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (HapticsServer)
+[RipcClient [RUNTIMEIPC]] [INFO] ShutdownLocked: COMPLETE: elapsed_ms=0, friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (HapticsServer)
+[RuntimeIPCNotificationThread [RUNTIMEIPC]] [INFO] RuntimeIPCNotificationThread MainLoop: WaitForNotification canceled during shutdown
+[RuntimeIPCNotificationThread [RUNTIMEIPC]] [INFO] RuntimeIPCNotificationThread MainLoop: exiting
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] Shutdown: COMPLETE: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (HapticsServer), result=SUCCESS
+[RipcClientMgr [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] DisconnectFromServer DONE: clientId: 4, Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (HapticsServer)
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] Shutdown: BEGIN: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (HandInputDataServer)
+[RipcClient [RUNTIMEIPC]] [INFO] ShutdownLocked: BEGIN: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (HandInputDataServer)
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] DisconnectFromServer: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (HandInputDataServer)
+[RipcClient [RUNTIMEIPC]] [INFO] ShutdownLocked: COMPLETE: elapsed_ms=0, friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (HandInputDataServer)
+[RuntimeIPCNotificationThread [RUNTIMEIPC]] [INFO] RuntimeIPCNotificationThread MainLoop: WaitForNotification canceled during shutdown
+[RuntimeIPCNotificationThread [RUNTIMEIPC]] [INFO] RuntimeIPCNotificationThread MainLoop: exiting
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] Shutdown: COMPLETE: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (HandInputDataServer), result=SUCCESS
+[RipcClientMgr [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] DisconnectFromServer DONE: clientId: 5, Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (HandInputDataServer)
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] Shutdown: BEGIN: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (MrServiceIPCServer)
+[RipcClient [RUNTIMEIPC]] [INFO] ShutdownLocked: BEGIN: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (MrServiceIPCServer)
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] DisconnectFromServer: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (MrServiceIPCServer)
+[RipcClient [RUNTIMEIPC]] [INFO] ShutdownLocked: COMPLETE: elapsed_ms=0, friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (MrServiceIPCServer)
+[RuntimeIPCNotificationThread [RUNTIMEIPC]] [INFO] RuntimeIPCNotificationThread MainLoop: WaitForNotification canceled during shutdown
+[RuntimeIPCNotificationThread [RUNTIMEIPC]] [INFO] RuntimeIPCNotificationThread MainLoop: exiting
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] Shutdown: COMPLETE: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (MrServiceIPCServer), result=SUCCESS
+[RipcClientMgr [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] DisconnectFromServer DONE: clientId: 9, Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (MrServiceIPCServer)
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] Shutdown: BEGIN: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcClient [RUNTIMEIPC]] [INFO] ShutdownLocked: BEGIN: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] DisconnectFromServer: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RipcClient [RUNTIMEIPC]] [INFO] ShutdownLocked: COMPLETE: elapsed_ms=0, friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RuntimeIPCNotificationThread [RUNTIMEIPC]] [INFO] RuntimeIPCNotificationThread MainLoop: WaitForNotification canceled during shutdown
+[RuntimeIPCNotificationThread [RUNTIMEIPC]] [INFO] RuntimeIPCNotificationThread MainLoop: exiting
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] Shutdown: BEGIN: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RipcRemoteTransportServer_link)
+[RipcClient [RUNTIMEIPC]] [INFO] ShutdownLocked: BEGIN: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RipcRemoteTransportServer_link)
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] DisconnectFromServer: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RipcRemoteTransportServer_link)
+[RipcClient [RUNTIMEIPC]] [INFO] ShutdownLocked: COMPLETE: elapsed_ms=0, friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RipcRemoteTransportServer_link)
+[RuntimeIPCNotificationThread [RUNTIMEIPC]] [INFO] RuntimeIPCNotificationThread MainLoop: WaitForNotification canceled during shutdown
+[RuntimeIPCNotificationThread [RUNTIMEIPC]] [INFO] RuntimeIPCNotificationThread MainLoop: exiting
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] Shutdown: COMPLETE: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RipcRemoteTransportServer_link), result=SUCCESS
+[RipcClientMgr [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] DisconnectFromServer DONE: clientId: 3, Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RipcRemoteTransportServer_link)
+[RipcClient [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] Shutdown: COMPLETE: friendlyName=Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer), result=SUCCESS
+[RipcClientMgr [RUNTIMEIPC]] [INFO] [RIPC_CONNECT_LOG] DisconnectFromServer DONE: clientId: 2, Client: WindowsPackage:WindowsProcess:34056, Server: WindowsPackage:WindowsProcess:0 (RuntimeServiceServer)
+[RuntimeIPCSystem [RUNTIMEIPC]] [INFO] Shutdown: WindowsProcess
+[RipcServerMgr [RUNTIMEIPC]] [INFO] RipcServerMgr::Shutdown: BEGIN
+[RipcServerMgr [RUNTIMEIPC]] [INFO] RipcServerMgr::Shutdown: completed
+[RipcClientMgr [RUNTIMEIPC]] [INFO] RipcClientMgr::Shutdown
+[IPCDataChannelWindowsOverlappedWrapper [RUNTIMEIPC]] [WARN] waitForOverlapped: I/O FAILED. GetLastError(): 233: No process is on the other end of the pipe.
+[RuntimeIPCSystem [RUNTIMEIPC]] [INFO] Shutdown: complete WindowsProcess
+ERROR: 2 RID allocations of type 'N9OpenXRAPI18InteractionProfileE' were leaked at exit.
+WARNING: Object picking can't be used when stereo rendering, this will be turned off!
+   at: _process_picking (scene/main/viewport.cpp:801)
+ERROR: Attempt to disconnect a nonexistent connection from '<OpenXRSpatialEntityExtension#4546625775>'. Signal: 'spatial_discovery_recommended', callable: 'OpenXRSpatialMarkerTrackingCapability::_on_spatial_discovery_recommended'.
+   at: _disconnect (core/object/object.cpp:1640)

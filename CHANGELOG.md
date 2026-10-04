@@ -504,6 +504,16 @@ is what let the passthrough error live through four release runs.
   so instead of printing the bootstrap's initial placeholder as though it were an
   observation.
 
+- **A skipped poll no longer logs an error.** `poll_status` — and every other request —
+  tested the return value for `ERR_BUSY`, which is too late: Godot has already printed
+  `HTTPRequest is processing a request. Wait for completion or cancel it…`. Measured in a
+  50-second operator session: 17 of them, roughly every third second, for polls that were
+  skipped on purpose — which reads exactly like a crash in the console and is a normal skip.
+  Requests go through an in-flight guard now, so the skip is silent (17 error lines → 0, 87
+  stderr lines → 2). The interactive run also reports what its exit code means
+  (`crashed with an access violation (0xC0000005)…`, `stopped by you`, `was terminated`)
+  instead of printing a raw number that tells an operator nothing.
+
 ## [1.30.24] - 2026-09-28 — audio perception, in layers
 
 `sound/` is the contract layer for hearing, which is the NRR pattern applied to audio: a

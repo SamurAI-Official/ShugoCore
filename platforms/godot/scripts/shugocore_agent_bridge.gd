@@ -68,6 +68,10 @@ var _http_approvals: HTTPRequest
 var _http_resolve: HTTPRequest
 var _poll_accum: float = 0.0
 var _fleet_accum: float = 0.0
+## tag -> a request on that endpoint is still in flight. Keyed by the route tag because
+## _make_http binds exactly one tag per request node (the health poll shares the status
+## node, and therefore its tag, on purpose).
+var _inflight: Dictionary = {}
 
 
 
@@ -108,6 +112,25 @@ func _make_http(name_suffix: String, tag: String) -> HTTPRequest:
 	return http
 
 
+func _request_tagged(node: HTTPRequest, tag: String, url: String,
+		method: int = HTTPClient.METHOD_GET, body: String = "") -> int:
+	## Issue a request unless that endpoint already has one in flight.
+	##
+	## Godot prints its own ERROR when request() is called on a busy node, so testing the
+	## return value for ERR_BUSY is too late to keep the log honest: a skipped poll showed up
+	## as "HTTPRequest is processing a request" -- 17 times in a measured 50-second session,
+	## about every third second -- which reads like a fault and is in fact a normal skip.
+	## The flag is what makes the skip silent. `_on_http_completed` clears it for the tag,
+	## and a request that hits its timeout still completes, so it cannot stick.
+	if _inflight.get(tag, false):
+		return ERR_BUSY
+	_inflight[tag] = true
+	var err := node.request(url, _headers(), method, body)
+	if err != OK:
+		_inflight[tag] = false
+	return err
+
+
 func _clean_url(url: String) -> String:
 	var cleaned := url.strip_edges().trim_suffix("/")
 	return cleaned if cleaned != "" else DEFAULT_BASE_URL
@@ -134,8 +157,7 @@ func _process(delta: float) -> void:
 # -- GET surfaces -----------------------------------------------------------
 
 func poll_status() -> void:
-	var err := _http_status.request(base_url + ROUTE_STATUS, _headers(),
-			HTTPClient.METHOD_GET)
+	var err := _request_tagged(_http_status, "status", base_url + ROUTE_STATUS)
 	if err == ERR_BUSY:
 		# Previous request on this node still in flight: a normal
 		# polling skip, never an offline condition.
@@ -145,8 +167,7 @@ func poll_status() -> void:
 
 
 func poll_sensors() -> void:
-	var err := _http_sensors.request(base_url + ROUTE_SENSORS, _headers(),
-			HTTPClient.METHOD_GET)
+	var err := _request_tagged(_http_sensors, "sensors", base_url + ROUTE_SENSORS)
 	if err == ERR_BUSY:
 		# Previous request on this node still in flight: a normal
 		# polling skip, never an offline condition.
@@ -156,8 +177,8 @@ func poll_sensors() -> void:
 
 
 func health() -> void:
-	var err := _http_status.request(base_url + ROUTE_HEALTH, _headers(),
-			HTTPClient.METHOD_GET)
+	# The liveness probe shares the status node, and therefore its "status" tag.
+	var err := _request_tagged(_http_status, "status", base_url + ROUTE_HEALTH)
 	if err == ERR_BUSY:
 		# Previous request on this node still in flight: a normal
 		# polling skip, never an offline condition.
@@ -171,8 +192,7 @@ func health() -> void:
 func poll_fleet() -> void:
 	## GET /api/v1/fleet -> paired-node registry. Absent registry is
 	## reported by the server as enabled:false (never fabricated here).
-	var err := _http_fleet.request(base_url + ROUTE_FLEET, _headers(),
-			HTTPClient.METHOD_GET)
+	var err := _request_tagged(_http_fleet, "fleet", base_url + ROUTE_FLEET)
 	if err == ERR_BUSY:
 		# Previous request on this node still in flight: a normal
 		# polling skip, never an offline condition.
@@ -183,8 +203,7 @@ func poll_fleet() -> void:
 
 func poll_approvals() -> void:
 	## GET /api/v1/approvals -> pending side-effecting action queue.
-	var err := _http_approvals.request(base_url + ROUTE_APPROVALS,
-			_headers(), HTTPClient.METHOD_GET)
+	var err := _request_tagged(_http_approvals, "approvals", base_url + ROUTE_APPROVALS)
 	if err == ERR_BUSY:
 		# Previous request on this node still in flight: a normal
 		# polling skip, never an offline condition.
@@ -203,9 +222,9 @@ func resolve_approval(request_id: String, approve: bool) -> void:
 		approval_resolved.emit(rid, "rejected", false)
 		return
 	var action := "approve" if approve else "deny"
-	var err := _http_resolve.request(
+	var err := _request_tagged(_http_resolve, "resolve",
 			base_url + ROUTE_APPROVAL_PREFIX + rid + "/" + action,
-			_headers(), HTTPClient.METHOD_POST)
+			HTTPClient.METHOD_POST)
 	if err == ERR_BUSY:
 		# Previous request on this node still in flight: a normal
 		# polling skip, never an offline condition.
@@ -234,9 +253,8 @@ func chat(prompt: String, model: String = "") -> void:
 		return
 	var body := {"model": model, "prompt": prompt.substr(0, MAX_TEXT_CHARS),
 			"stream": false}
-	var err := _http_generate.request(
-			base_url + ROUTE_GENERATE, _headers(), HTTPClient.METHOD_POST,
-			JSON.stringify(body))
+	var err := _request_tagged(_http_generate, "generate", base_url + ROUTE_GENERATE,
+			HTTPClient.METHOD_POST, JSON.stringify(body))
 	if err == ERR_BUSY:
 		# Previous request on this node still in flight: a normal
 		# polling skip, never an offline condition.
@@ -253,7 +271,7 @@ func send_task(type: String, content: String, params: Dictionary = {}) -> void:
 	var body := {"type": type, "content": content.substr(0, MAX_TEXT_CHARS)}
 	if not params.is_empty():
 		body["params"] = params
-	var err := _http_task.request(base_url + ROUTE_TASK, _headers(),
+	var err := _request_tagged(_http_task, "task", base_url + ROUTE_TASK,
 			HTTPClient.METHOD_POST, JSON.stringify(body))
 	if err == ERR_BUSY:
 		# Previous request on this node still in flight: a normal
@@ -270,6 +288,8 @@ func _on_http_completed(_result: int, code: int, _headers_in: Array,
 	## Per-endpoint demultiplexer. Every child HTTPRequest is connected
 	## with its route tag bound (see _make_http), so a response is applied
 	## to the surface that asked for it — never guessed from payload shape.
+	# Cleared first, whatever the result: this is the only place a request finishes.
+	_inflight[tag] = false
 	var text := body.get_string_from_utf8().substr(0, MAX_TEXT_CHARS * 4)
 	if code < 200 or code >= 300:
 		_mark_offline("%s http %d" % [tag, code])

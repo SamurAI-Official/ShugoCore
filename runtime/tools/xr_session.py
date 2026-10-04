@@ -266,6 +266,25 @@ def write_and_report(args, facts: dict, code: int) -> int:
     return code
 
 
+def _describe_exit(code: int) -> str:
+    """Plain language for the exit codes this surface actually produces on Windows.
+
+    ``surface exited (4294967295)`` says nothing to an operator, and an access violation
+    arriving as a large number looks like a mystery where the truth is known -- so the two
+    codes that matter are named rather than printed raw.
+    """
+    if code == 0:
+        return "exited cleanly"
+    if code == 130:
+        return "stopped by you"
+    if code in (3221225477, -1073741819):
+        return ("crashed with an access violation (0xC0000005) -- the engine's teardown "
+                "with a live XR session, not the scaffold")
+    if code in (4294967295, -1):
+        return "was terminated"
+    return f"exited with code {code}"
+
+
 def run_interactive(args, godot: str, project: str, url: str, port: int) -> int:
     """Hand the scaffold to the operator: a real session, no budget, no auto-quit.
 
@@ -306,7 +325,7 @@ def run_interactive(args, godot: str, project: str, url: str, port: int) -> int:
         stop_process(proc)
         code = 130
     lines = read_session_log(log_path)
-    print(f"[SESSION] surface exited ({code}); it recorded {len(lines)} line(s):")
+    print(f"[SESSION] surface {_describe_exit(code)}; it recorded {len(lines)} line(s):")
     for line in lines:
         print("    " + line)
     return 0

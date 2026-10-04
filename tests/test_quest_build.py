@@ -116,6 +116,21 @@ class TestRendererHonesty(unittest.TestCase):
         self.assertLess(guard, call)
 
 
+    def test_a_skipped_poll_is_silent(self):
+        """Godot prints its own ERROR when request() lands on a node that is still busy.
+
+        Testing the return value for ERR_BUSY is too late — the error is already written.
+        Measured in a 50-second operator session: 17 of them, about every third second, for
+        polls that were skipped on purpose, which reads like a fault and is a normal skip.
+        Every request site goes through the guard now, which is why exactly one `.request(`
+        remains: the guard's own.
+        """
+        bridge = read("scripts/shugocore_agent_bridge.gd")
+        self.assertIn("func _request_tagged(", bridge)
+        self.assertIn("_inflight", bridge)
+        self.assertEqual(bridge.count(".request("), 1)
+
+
 class TestBridgeResponseWiring(unittest.TestCase):
     """Lock for the disconnected-handler bug: request nodes wired, demux
     by route tag."""

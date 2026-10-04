@@ -81,6 +81,41 @@ class TestAndroidSafeConfig(unittest.TestCase):
         self.assertIn("config_source", bridge)
 
 
+class TestRendererHonesty(unittest.TestCase):
+    """Two things measured with a headset on, both of which used to lie quietly."""
+
+    def test_transparency_is_a_switch_not_an_assumption(self):
+        """The viewport was made transparent unconditionally.
+
+        Measured over Quest Link: the runtime reports alpha_blend, the headset shows the
+        room through the scene, and the *desktop mirror window* goes black because a
+        mirror has nothing behind it to blend that alpha against. Naming the choice is
+        what makes the black window a setting rather than an unexplained bug.
+        """
+        cfg = read("scripts/shugocore_config.gd")
+        self.assertIn("DEFAULT_TRANSPARENT_BACKGROUND", cfg)
+        self.assertIn("transparent_background", cfg)
+        self.assertIn("load_config_bool", cfg)
+        boot = read("scripts/xr_bootstrap.gd")
+        self.assertIn("transparent_background", boot)
+        # The blend mode is READ from the runtime, never assumed from the project
+        # setting: the setting is what we ask for, and the answer has been "opaque"
+        # in the runtime's own enumeration while the interface reported alpha_blend.
+        self.assertIn("environment_blend_mode", boot)
+
+    def test_passthrough_is_guarded_before_it_is_called(self):
+        """`start_passthrough` raised a SCRIPT ERROR on every session.
+
+        The singleton exists on the Meta runtime over Quest Link and does not expose the
+        call, so the scaffold reported a crash where the truth was "this runtime cannot
+        start passthrough". The guard must precede the call, not follow it.
+        """
+        boot = read("scripts/xr_bootstrap.gd")
+        guard = boot.index('has_method("start_passthrough")')
+        call = boot.index('obj.call("start_passthrough")')
+        self.assertLess(guard, call)
+
+
 class TestBridgeResponseWiring(unittest.TestCase):
     """Lock for the disconnected-handler bug: request nodes wired, demux
     by route tag."""

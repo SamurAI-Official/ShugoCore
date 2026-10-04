@@ -459,6 +459,31 @@ the headset's own address, and the same desk produced a second, larger correctio
   `mode=not observed before the session ended` rather than presenting the bootstrap's initial
   placeholder as an observation.
 
+### Two things wearing the headset showed that the logs did not
+
+Both were found with the headset on, and both were the scaffold reporting the wrong thing
+about itself rather than a missing feature.
+
+- **`start_passthrough()` raised a `SCRIPT ERROR` on every session.** The
+  `OpenXRFbPassthroughExtension` singleton exists on the Meta runtime over Quest Link and
+  does not expose the call, so the scaffold produced a crash where the truth was "this
+  runtime cannot start passthrough" -- logged loudly enough to be a bug report and quietly
+  enough that the scene carried on looking fine. The guard now precedes the call, and the
+  absence is reported as the fact it is. (What a wearer sees behind the scene over Link is
+  the Link environment, not an app passthrough layer.)
+- **The background was made transparent without asking the runtime.** Measured:
+  `XRInterface.environment_blend_mode` reports `alpha_blend` — the value Godot set from
+  `xr/openxr/environment_blend_mode` — while the runtime's own enumeration offers only
+  `XR_ENVIRONMENT_BLEND_MODE_OPAQUE`. The two disagree, so neither is trusted: the granted
+  mode is read back and printed alongside the decision. Transparency is now a named setting
+  (`transparent_background`, env `SHUGOCORE_XR_TRANSPARENT`, default true) instead of a
+  fixed assumption, which is what makes the black desktop mirror window explicable — a
+  mirror has nothing behind it to blend alpha against, while the headset composites the
+  scene over the Link environment. Set it false for an opaque background in both places.
+
+Both are locked from Python (`tests/test_quest_build.py`), since a source-level regression
+is what let the passthrough error live through four release runs.
+
 ## [1.30.24] - 2026-09-28 — audio perception, in layers
 
 `sound/` is the contract layer for hearing, which is the NRR pattern applied to audio: a

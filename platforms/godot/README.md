@@ -57,6 +57,7 @@ launch.
 | `SHUGOCORE_XR_AGENT_URL` | `http://127.0.0.1:11434` | Agent/desktop-server base URL |
 | `SHUGOCORE_SERVER_TOKEN` | *(empty)* | Bearer token (same env the server reads) |
 | `SHUGOCORE_XR_POLL_SECONDS` | `2.0` | Status poll interval (bounded) |
+| `SHUGOCORE_XR_TRANSPARENT` | `true` | Transparent background (alpha blend). The room shows through the scene in the headset, and the **desktop mirror window renders black** — set `0` for an opaque background in both. The JSON key `transparent_background` wins over it, like every other setting here. |
 
 ### Connecting the Quest to a Mac-hosted agent
 
@@ -130,11 +131,23 @@ earlier conclusion rather than extending it:
   the RTX 4070 Ti) removes that warning but makes the runtime **refuse** the session:
   `OpenXR: Failed to create session [ XR_ERROR_GRAPHICS_REQUIREMENTS_CALL_MISSING ]`.
   So `project.godot` keeps `gl_compatibility`, with a comment saying why.
-- **Passthrough is not available over Quest Link.** The runtime offers only
-  `XR_ENVIRONMENT_BLEND_MODE_OPAQUE` (not the alpha blend the project requests for AR), and
-  the Meta runtime-IPC log shows `CallServerRPC FAILED: IsDeviceUsingLegacyPassthrough,
-  Error Code: 8`. The project still requests it for the on-device path; over Link it is
-  simply not granted, and the scaffold does not pretend otherwise.
+- **Passthrough cannot be started on this runtime, and now says so.** The
+  `OpenXRFbPassthroughExtension` singleton exists but does not expose
+  `start_passthrough()`, so the call raised a `SCRIPT ERROR` on every session — reporting a
+  crash where the truth was "this runtime cannot start passthrough". It is guarded and
+  reported now. Relatedly, the runtime's own enumeration offers only
+  `XR_ENVIRONMENT_BLEND_MODE_OPAQUE` while `XRInterface.environment_blend_mode` *reports*
+  `alpha_blend` (the value Godot set from the project setting). Those two disagree, which
+  is why the blend mode is read back and printed rather than inferred from either one. What
+  a wearer sees behind the scene over Link is the Link environment, not an app passthrough
+  layer.
+- **The desktop mirror is black while the background is transparent — now a setting, not a
+  mystery.** With `transparent_background` (default `true`) the framebuffer carries alpha,
+  so the headset composites the scene over the Link environment; a mirror window has
+  nothing behind it to blend that alpha against and renders black. Set
+  `SHUGOCORE_XR_TRANSPARENT=0`, or `"transparent_background": false` in
+  `user://shugocore_xr.json`, for an opaque background in both places — which is what you
+  want when the desktop window is the thing you are looking at.
 - **The mode settles late, so the bootstrap observes instead of concluding.** Autoloads run
   before the session reaches READY, so a one-shot check at `_ready()` reported
   `desktop_preview` while the operator was wearing the headset and looking at the scene.

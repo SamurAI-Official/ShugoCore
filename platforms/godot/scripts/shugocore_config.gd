@@ -26,11 +26,20 @@ const DEFAULT_POLL_SECONDS := 2.0
 const MIN_POLL_SECONDS := 0.5
 const MAX_POLL_SECONDS := 30.0
 const DEFAULT_FLEET_POLL_SECONDS := 5.0
+## Whether the XR viewport renders a transparent background (alpha blending: the room
+## shows through the scene in the headset). Measured with a headset on Quest Link: the
+## runtime reports `alpha_blend`, the scene composites over the Link environment in the
+## headset -- and the *desktop* mirror window is black, because a mirror has nothing
+## behind it to blend that alpha against. True keeps the AR reading; false gives an
+## opaque background (the scene's sky) in both places, which is what you want when the
+## desktop window is the thing you are looking at.
+const DEFAULT_TRANSPARENT_BACKGROUND := true
 
 var agent_url: String = DEFAULT_AGENT_URL
 var bearer_token: String = ""
 var poll_seconds: float = DEFAULT_POLL_SECONDS
 var fleet_poll_seconds: float = DEFAULT_FLEET_POLL_SECONDS
+var transparent_background: bool = DEFAULT_TRANSPARENT_BACKGROUND
 
 ## Where the current values came from, for honest status reporting.
 var source: String = "defaults"
@@ -65,6 +74,10 @@ static func load_config() -> RefCounted:
 	var fleet_raw: Variant = data.get("fleet_poll_seconds", null)
 	cfg.fleet_poll_seconds = load_config_clamp_poll(fleet_raw,
 			DEFAULT_FLEET_POLL_SECONDS)
+	cfg.transparent_background = load_config_bool(
+			data.get("transparent_background",
+					OS.get_environment("SHUGOCORE_XR_TRANSPARENT")),
+			DEFAULT_TRANSPARENT_BACKGROUND)
 	return cfg
 
 
@@ -76,6 +89,7 @@ func save() -> bool:
 		"bearer_token": bearer_token,
 		"poll_seconds": poll_seconds,
 		"fleet_poll_seconds": fleet_poll_seconds,
+		"transparent_background": transparent_background,
 	}
 	var f := FileAccess.open(USER_PATH, FileAccess.WRITE)
 	if f == null:
@@ -127,6 +141,22 @@ static func load_config_clamp_poll(value: Variant, fallback: float) -> float:
 	if f <= 0.0:
 		return fallback
 	return clampf(f, MIN_POLL_SECONDS, MAX_POLL_SECONDS)
+
+
+static func load_config_bool(value: Variant, fallback: bool) -> bool:
+	## A bool from JSON, or from the env layer in the usual spellings. Anything else
+	## falls through to the fallback rather than guessing at intent -- the same rule
+	## the rest of this file follows for missing keys.
+	if value == null:
+		return fallback
+	if value is bool:
+		return value
+	var s := str(value).strip_edges().to_lower()
+	if s in ["1", "true", "yes", "on"]:
+		return true
+	if s in ["0", "false", "no", "off"]:
+		return false
+	return fallback
 
 
 ## One-line provenance summary for the Settings panel — reports the real

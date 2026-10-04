@@ -15,6 +15,16 @@ signal mode_changed(mode: String)
 ## was created ~300 log lines before XR_SESSION_STATE_READY arrived.
 const SETTLE_FRAMES := 240
 
+## ``XRInterface.EnvironmentBlendMode``, by the value order the engine defines
+## (project.godot states the same order for its openxr/environment_blend_mode
+## setting): 0 = Opaque, 1 = Additive, 2 = Alpha Blend. Numeric here because the
+## value is *read back* from the runtime and compared, and the measured run below
+## confirms the numbering against the engine's own "Found environmental blend
+## mode XR_ENVIRONMENT_BLEND_MODE_OPAQUE" line rather than trusting a recall.
+const BLEND_OPAQUE := 0
+const BLEND_ADDITIVE := 1
+const BLEND_ALPHA := 2
+
 var mode: String = "unavailable"
 var _xr_interface: XRInterface
 var _watching := false
@@ -48,16 +58,54 @@ func _ready() -> void:
 
 
 func _adopt_running_session() -> void:
-	print("[xr] adopting the running OpenXR session — presence is xr")
-	# Passthrough order matters: transparent_bg BEFORE use_xr so the
-	# Alpha-blend swapchain is created transparent from the first frame.
-	# Both this AND xr/openxr/environment_blend_mode=2 are required: the blend
-	# mode is what makes the compositor treat alpha as real transparency, the
-	# extension only adds the manifest privilege.
-	get_viewport().transparent_bg = true
+	var blend := _observed_blend_mode()
+	print("[xr] adopting the running OpenXR session — presence is xr (blend=%s)"
+			% _blend_name(blend))
+	# Transparency only where the runtime actually granted it. The compositor blends
+	# alpha in ALPHA_BLEND and does nothing with it otherwise, so asking for a
+	# transparent background under OPAQUE leaves the framebuffer alpha-0 with nothing
+	# to composite it: the desktop mirror renders black while the headset still shows
+	# the Link environment behind the scene. That difference reads like a scene bug
+	# and is really a mode the runtime never offered -- so it is read, not assumed.
+	# Order still matters (transparent_bg BEFORE use_xr) for the case where alpha *is*
+	# granted: the swapchain must be created transparent from the first frame.
+	var cfg: ShugoCoreConfig = ShugoCoreConfig.load_config()
+	# Transparency is a choice, not a default. It is what lets the headset show the room
+	# through the scene, and it is what makes the *desktop* mirror window black -- a
+	# mirror has nothing behind it to blend that alpha against. Measured with a headset
+	# on Quest Link: the runtime reports alpha_blend, the headset showed the room, and
+	# the desktop window was black. `transparent_background` decides which reading you
+	# get, and the decision is printed so the window is never unexplained.
+	var transparency := blend == BLEND_ALPHA and cfg.transparent_background
+	print("[xr] background: transparent=%s (blend=%s, transparent_background=%s)"
+			% [transparency, _blend_name(blend), cfg.transparent_background])
+	get_viewport().transparent_bg = transparency
 	get_viewport().use_xr = true
 	_set_mode("xr")
 	_start_passthrough()
+
+
+func _observed_blend_mode() -> int:
+	## What the runtime will do with the framebuffer's alpha, or -1 when it says
+	## nothing. Read from the interface, never assumed from the project setting: the
+	## setting is what we *ask* for, and over Quest Link the answer has been "opaque".
+	if _xr_interface == null:
+		return -1
+	if not ("environment_blend_mode" in _xr_interface):
+		return -1
+	return int(_xr_interface.environment_blend_mode)
+
+
+func _blend_name(blend: int) -> String:
+	match blend:
+		BLEND_OPAQUE:
+			return "opaque"
+		BLEND_ADDITIVE:
+			return "additive"
+		BLEND_ALPHA:
+			return "alpha_blend"
+		_:
+			return "not reported"
 
 
 func _watch_for_session() -> void:
@@ -97,6 +145,15 @@ func _start_passthrough() -> void:
 	var obj := pt as Object
 	if obj.has_method("is_passthrough_started") and obj.call("is_passthrough_started"):
 		print("[xr] passthrough: already started")
+		return
+	if not obj.has_method("start_passthrough"):
+		# The singleton exists but does not expose the call. Measured on the Meta
+		# runtime over Quest Link: `Invalid call. Nonexistent function
+		# 'start_passthrough (via call)' in base 'OpenXRFbPassthroughExtension'` --
+		# raised as a SCRIPT ERROR on every session, which said "something went
+		# wrong" without saying that passthrough was unavailable. An extension that
+		# cannot be started is a fact about this runtime, and is reported as one.
+		print("[xr] passthrough: singleton has no start_passthrough() — not started")
 		return
 	obj.call("start_passthrough")
 	var started: bool = obj.call("is_passthrough_started") if obj.has_method("is_passthrough_started") else false

@@ -108,12 +108,44 @@ assumption. Everything below was observed, not inferred:
   adb shell monkey -p com.samurai.shugocore.xr -c android.intent.category.LAUNCHER 1
   ```
 
-- **The desktop's own Oculus runtime is not usable from Godot headless.** `OVRService`,
-  `OVRServer_x64` and `OculusDash` all run on the PC, yet Godot's OpenXR init fails with
-  `XR_ERROR_FORM_FACTOR_UNAVAILABLE` (the runtime has no system for the form factor Godot
-  asks for) and the engine honestly falls back to `desktop_preview`. That is why
-  `runtime/tools/xr_session.py` records `desktop_preview`: it is the desktop path, and a
-  real headset session needs the headset to run the client.
+- **With no headset connected, the desktop's Oculus runtime is not usable from Godot.** The
+  services run (`OVRService`, `OVRServer_x64`, `OculusDash`) yet Godot's OpenXR init fails
+  with `XR_ERROR_FORM_FACTOR_UNAVAILABLE` (the runtime has no system for the form factor
+  Godot asks for), and the engine honestly falls back to `desktop_preview`. That is why
+  `runtime/tools/xr_session.py` used to record `desktop_preview` on this machine.
+
+### The same desktop, headset worn, over Quest Link (verified 2026-10-03)
+
+The bullet above is what the desktop does *without* a headset. With the Quest 3 awake and
+streamed over Quest Link the same Godot binary gets a real session, which corrects the
+earlier conclusion rather than extending it:
+
+- **A real OpenXR session comes up.** `OpenXR: Running on OpenXR runtime:  Oculus  1.208.0`,
+  and the session reaches `XR_SESSION_STATE_READY` → `XR_SESSION_STATE_FOCUSED`.
+  `XRServer.find_interface("OpenXR")` reports `initialized=true` and `XRBootstrap` adopts it:
+  `presence = xr`. Measured 3 runs out of 3, exit 0, with the scene rendered to the headset.
+- **The renderer matters, and gl_compatibility is the one that works.** The runtime reports
+  `minApiVersionSupported 4.0.0` against Godot's Compatibility renderer at `3.3.0`, and
+  accepts it "anyway"; the session then comes up. Forcing Forward+/Vulkan (Vulkan 1.4.341,
+  the RTX 4070 Ti) removes that warning but makes the runtime **refuse** the session:
+  `OpenXR: Failed to create session [ XR_ERROR_GRAPHICS_REQUIREMENTS_CALL_MISSING ]`.
+  So `project.godot` keeps `gl_compatibility`, with a comment saying why.
+- **Passthrough is not available over Quest Link.** The runtime offers only
+  `XR_ENVIRONMENT_BLEND_MODE_OPAQUE` (not the alpha blend the project requests for AR), and
+  the Meta runtime-IPC log shows `CallServerRPC FAILED: IsDeviceUsingLegacyPassthrough,
+  Error Code: 8`. The project still requests it for the on-device path; over Link it is
+  simply not granted, and the scaffold does not pretend otherwise.
+- **The mode settles late, so the bootstrap observes instead of concluding.** Autoloads run
+  before the session reaches READY, so a one-shot check at `_ready()` reported
+  `desktop_preview` while the operator was wearing the headset and looking at the scene.
+  `XRBootstrap` now keeps watching (bounded by `SETTLE_FRAMES`) and adopts the session when
+  it arrives, and it prints what it observed (`[xr] interface found; initialized=...`).
+- **What is still broken is the engine's shutdown, not the session.** With a live session,
+  the world-session path exits through a C++ crash (`signal 11`, `0xC0000005`) or a burst of
+  `leaked GLES3 texture` / `leaked OpenXR object` errors, where the same scene driven by
+  `--quit-after` exits 0. The transcript therefore reports
+  `mode=not observed before the session ended` when the exchange finishes faster than the
+  presence settles — which is a statement about what was seen, not a claim about a headset.
 
 ## Desktop preview vs XR
 
@@ -123,7 +155,9 @@ assumption. Everything below was observed, not inferred:
   (if present) are exposed via `XRBootstrap.get_controllers()`.
 
 The mode is a real observed state — the scaffold never claims a headset
-it does not have.
+it does not have, and (since 2026-10-03) it no longer denies one it does:
+the verdict is observed over a bounded window rather than taken once at
+`_ready()`, because autoloads run before an OpenXR session reaches READY.
 
 ## Relationship to the agent
 

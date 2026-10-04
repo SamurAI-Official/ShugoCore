@@ -1,0 +1,18 @@
+2026-10-03 21:37:34,260 INFO vector_db: Initialized ChromaDB with collection 'default'.
+2026-10-03 21:37:34,261 INFO root: Using device: cpu
+2026-10-03 21:37:34,283 INFO memory_system: SemanticMemory initialized at 'runtime\quest_probe\semantic_memory.db' (dim=256).
+2026-10-03 21:37:34,284 INFO memory_system: MemoryManager ready for agent 'decision_engine' (worker=on).
+2026-10-03 21:37:35,131 INFO shugocore.server: ShugoCore server listening on http://0.0.0.0:57931 (backend=stub, model=shugocore-local)
+2026-10-03 21:37:35,131 INFO shugocore.server: Auth: bearer token required
+2026-10-03 21:37:35,131 INFO shugocore.server: Ollama wire contract: /api/generate /api/chat /api/tags /health
+2026-10-03 21:37:35,131 INFO shugocore.server: Engine API:           /api/v1/status  /api/v1/security  POST /api/v1/task
+2026-10-03 21:37:35,254 INFO shugocore.server: 127.0.0.1 "GET /api/v1/status HTTP/1.1" 200 -
+2026-10-03 21:37:35,470 INFO shugocore.server: 192.168.1.151 "GET /api/v1/status HTTP/1.0" 200 -
+2026-10-03 21:37:35,538 - INFO - Decision made for task: conversation - hello from the Quest 3
+2026-10-03 21:37:35,538 INFO logging_manager: Decision made for task: conversation - hello from the Quest 3
+2026-10-03 21:37:35,538 - INFO - Decision: {'action_type': 'speak', 'params': {'text': "I'm here — what did you want to talk about?"}, 'confidence': 0.3, 'proposal_source': 'conversation_fallback'}
+2026-10-03 21:37:35,538 INFO logging_manager: Decision: {'action_type': 'speak', 'params': {'text': "I'm here — what did you want to talk about?"}, 'confidence': 0.3, 'proposal_source': 'conversation_fallback'}
+2026-10-03 21:37:35,539 - INFO - Execution result: {'status': 'not_implemented', 'reason': "no speech provider registered for 'speak'; actions are never simulated", 'proposal_source': 'conversation_fallback', 'action_type': 'speak'}
+2026-10-03 21:37:35,539 INFO logging_manager: Execution result: {'status': 'not_implemented', 'reason': "no speech provider registered for 'speak'; actions are never simulated", 'proposal_source': 'conversation_fallback', 'action_type': 'speak'}
+2026-10-03 21:37:35,539 INFO shugocore.server: 192.168.1.151 "POST /api/v1/task HTTP/1.0" 200 -
+2026-10-03 21:37:35,604 INFO shugocore.server: 192.168.1.151 "GET /api/v1/status HTTP/1.0" 401 -

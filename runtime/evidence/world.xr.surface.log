@@ -1,23 +1,19 @@
 Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
 OpenXR: Created instance for OpenXR 1.1.54
 OpenXR: Running on OpenXR runtime:  Oculus   1.208.0
-OpenXR: Failed to get system for our form factor [ XR_ERROR_FORM_FACTOR_UNAVAILABLE ]
 
-[SESSION] user config agent_url=http://127.0.0.1:51640
-[WORLD  ] xr
-[PRESENCE] mode=desktop_preview
-[panels] agent no pose -> arc
-[GOAL   ] operator (in the virtual space): note that the charger is warm to the touch and say whether that needs attention
-[REPLY  ] {"action_type": null, "params": {}, "confidence": 0.0, "text": "[stub:shugocore-local] note that the charger is warm to the touch and say whether that needs attention"}
-[ACTION ] execute_task conversation (gated) -> status=not_implemented stages=[]
-[SESSION] world session complete (acted=true replied=true)
-WARNING: OpenXR was requested but failed to start.
-HMD was not detected or a required feature was not supported.
 
-Check logged errors in debugger for more details.
+================================================================
+CrashHandlerException: Program crashed with signal 11
+Engine version: Godot Engine v4.7.2.stable.official (ed1daf0bf001b61586d9930840f2f1394092c079)
+Dumping the backtrace. Please include this when reporting the bug on: https://github.com/godotengine/godot/issues
+Load address: 7ff5e4420000
 
-When using Windows Mixed Reality, note that WMR only has DirectX support. Make sure SteamVR is your default OpenXR runtime.
-
-Godot will start in normal mode.
-
-   at: initialize_openxr_module (modules/openxr/register_types.cpp:262)
+[1] 7ff7284f4d61 (main+40d4d61) - no debug info in PE/COFF executable
+[2] 7ffde705f846 (ntdll.dll+8f846) - no debug info in PE/COFF executable
+[3] 7ffde7075e9e (ntdll.dll+a5e9e) - no debug info in PE/COFF executable
+[4] 7ffde6fee8c5 (ntdll.dll+1e8c5) - no debug info in PE/COFF executable
+[5] 7ffde7074e9d (ntdll.dll+a4e9d) - no debug info in PE/COFF executable
+[6] -1 (main+-7ff724420001) - no debug info in PE/COFF executable
+-- END OF C++ BACKTRACE --
+================================================================

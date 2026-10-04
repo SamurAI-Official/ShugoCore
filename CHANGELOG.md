@@ -424,6 +424,41 @@ does not. The CA publishes a `subjectKeyIdentifier` now, the leaf names it back 
 Being invisible to the local OpenSSL is exactly why it is asserted directly:
 `test_the_certificate_chain_names_its_issuer` reads the profile back off the generated PEM,
 which holds on any OpenSSL.
+### The headset, actually worn: Quest Link gives the desktop a real session
+
+`mesh.quest3` had been unproven because the headset went to sleep before it could be probed.
+With it awake, attached and worn -- streamed over Quest Link -- the probe ran end to end from
+the headset's own address, and the same desk produced a second, larger correction.
+
+- **`mesh.quest3` is proven.** The headset (`192.168.1.151`) reached this desktop
+  (`192.168.1.152`), `POST /api/v1/task` answered 200, the same request without the token
+  answered 401, and the agent's decision is quoted from the *server's* log rather than from
+  either side's word for it: `speak`, with real words. What it decided and what became of it
+  are both recorded, and they are not the same thing -- `Execution result: no speech provider
+  registered for 'speak'`. The delivery gap is now reproducible from the headset on demand.
+- **The desktop reaches a real OpenXR session, which the docs said it could not.** The README
+  asserted "the desktop's own Oculus runtime is not usable from Godot". Over Quest Link the
+  runtime is Oculus 1.208.0 and the session reaches `XR_SESSION_STATE_FOCUSED`, with
+  `XRBootstrap` adopting it -- `presence = xr`, 3 runs of 3, exit 0, rendered to the headset.
+  Checked while it could still be checked, and corrected.
+- **The presence verdict was a race, and it under-reported.** Autoloads run before the session
+  reaches READY, so `xr_bootstrap` concluded `desktop_preview` once and never revisited it:
+  no headset reported to an operator wearing one. It now watches over a bounded window
+  (`SETTLE_FRAMES`), prints what it observed, and `world_session.gd` reports the mode when it
+  settles instead of reading it once at `_ready()`.
+- **The renderer had to be measured, not assumed.** Forward+/Vulkan removes the runtime's
+  "OpenGL 3.3 below the required 4.0" warning and then makes the runtime refuse the session
+  outright (`XR_ERROR_GRAPHICS_REQUIREMENTS_CALL_MISSING`); `gl_compatibility` is the one that
+  streams. `project.godot` keeps it, with the reason written beside the setting so the obvious
+  "fix" is not retried.
+- **Two limits found by doing it.** Passthrough is not granted over Link -- only
+  `XR_ENVIRONMENT_BLEND_MODE_OPAQUE` is offered and the Meta runtime logs
+  `IsDeviceUsingLegacyPassthrough` failing -- and the engine's *shutdown* crashes when a live
+  session is active (`signal 11`, leaked GLES3 textures and OpenXR objects) where the same
+  scene driven by `--quit-after` exits 0. The transcript now reports
+  `mode=not observed before the session ended` rather than presenting the bootstrap's initial
+  placeholder as an observation.
+
 ## [1.30.24] - 2026-09-28 — audio perception, in layers
 
 `sound/` is the contract layer for hearing, which is the NRR pattern applied to audio: a

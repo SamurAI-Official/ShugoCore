@@ -9,30 +9,30 @@ $ C:\Users\marku\AppData\Local\Programs\Python\Python310\python.exe -m unittest 
 ResourceWarning: Enable tracemalloc to get the object allocation traceback
 .........
 ----------------------------------------------------------------------
-Ran 19 tests in 0.013s
+Ran 19 tests in 0.012s
 
 OK
 
 
 $ C:\Users\marku\AppData\Local\Programs\Python\Python310\python.exe runtime/tools/xr_session.py
 [exit 0]
-world session: 2026-10-01 23:53:20  surface=godot scaffold  agent=http://127.0.0.1:51640 (backend stub)
+world session: 2026-10-03 22:00:19  surface=godot scaffold  agent=http://127.0.0.1:63289 (backend stub)
 surface binary: G:\godot\Godot_v4.7.2-stable_win64_console.exe
 [WORLD  ] xr
-[PRESENCE] mode=desktop_preview
 [GOAL   ] operator (in the virtual space): note that the charger is warm to the touch and say whether that needs attention
 [REPLY  ] {"action_type": null, "params": {}, "confidence": 0.0, "text": "[stub:shugocore-local] note that the charger is warm to the touch and say whether that needs attention"}
 [ACTION ] execute_task conversation (gated) -> status=not_implemented stages=[]
+[PRESENCE] mode=unavailable
 [SESSION] world session complete (acted=true replied=true)
-surface exit: 0
+surface exit: 3221225477
 surface said (last lines):
-    WARNING: OpenXR was requested but failed to start.
-    HMD was not detected or a required feature was not supported.
-    Check logged errors in debugger for more details.
-    When using Windows Mixed Reality, note that WMR only has DirectX support. Make sure SteamVR is your default OpenXR runtime.
-    Godot will start in normal mode.
-    at: initialize_openxr_module (modules/openxr/register_types.cpp:262)
-verdict: world=xr presence=desktop_preview acted=True replied=True
+    [3] 7ffde7075e9e (ntdll.dll+a5e9e) - no debug info in PE/COFF executable
+    [4] 7ffde6fee8c5 (ntdll.dll+1e8c5) - no debug info in PE/COFF executable
+    [5] 7ffde7074e9d (ntdll.dll+a4e9d) - no debug info in PE/COFF executable
+    [6] -1 (main+-7ff724420001) - no debug info in PE/COFF executable
+    -- END OF C++ BACKTRACE --
+    ================================================================
+verdict: world=xr presence=unavailable acted=True replied=True
 
 
 live world_engagement [runtime/evidence/world.xr.txt]: ok - xr: 'operator (in the virtual space): note th' -> execute_task conversation (gated) -> sta -> '{"action_type": null, "params": {}, "con'

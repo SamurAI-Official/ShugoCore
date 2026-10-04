@@ -27,6 +27,16 @@ window/size/viewport_height=720
 
 [rendering]
 
+; gl_compatibility on desktop and mobile alike -- do not "fix" this to Forward+.
+;
+; Vulkan avoids the shutdown noise below, but the Oculus runtime then refuses to create a
+; session at all (XR_ERROR_GRAPHICS_REQUIREMENTS_CALL_MISSING), so this renderer is the one
+; that actually streams to a headset, warning and all:
+;   OpenXR: Requested OpenGL version does not meet the minimum version this runtime
+;   supports. (desired 3.3.0, minApiVersionSupported 4.0.0)  ... Trying anyway...
+; It does come up -- the session reaches XR_SESSION_STATE_FOCUSED and the bootstrap reports
+; presence xr. What remains is the engine's own shutdown (leaked GLES3 textures and OpenXR
+; objects after a live session), which is a Godot-side teardown fault, not a scaffold one.
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
 textures/vram_compression/import_etc2_astc=true

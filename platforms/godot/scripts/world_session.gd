@@ -21,6 +21,9 @@ extends Node
 
 const UTTERANCE := "note that the charger is warm to the touch and say whether that needs attention"
 const WAIT_S := 60.0
+## How long to wait for the bootstrap's presence to settle before reporting it as it
+## stands. The bootstrap watches for the same reason; this is the outer bound.
+const PRESENCE_WAIT_FRAMES := 300
 
 var _started := false
 var _acted := false
@@ -28,6 +31,7 @@ var _replied := false
 var _done := false
 var _deadline := 0.0
 var _file: FileAccess = null
+var _presence_reported := ""
 
 
 func _ready() -> void:
@@ -39,12 +43,17 @@ func _ready() -> void:
     if url != "":
         _write_user_config(url)
     _emit("[WORLD  ] xr")
-    _emit("[PRESENCE] mode=" + str(XRBootstrap.mode))
     ShugoCoreBridge.connection_changed.connect(_on_connection)
     ShugoCoreBridge.agent_reply.connect(_on_reply)
     ShugoCoreBridge.task_result.connect(_on_task)
     ShugoCoreBridge.request_failed.connect(_on_failed)
     ShugoCoreBridge.health()
+    # Last, and awaited: the presence is *observed* and it settles late -- a Quest over
+    # Quest Link reaches XR_SESSION_STATE_FOCUSED after the autoloads have run -- so
+    # reading XRBootstrap.mode once here recorded "desktop_preview" while the operator was
+    # wearing the headset and looking at this scene. Waiting for the observation does not
+    # delay the wire above, which is why this is at the end.
+    await _report_presence()
 
 
 func _open_session_log() -> void:
@@ -164,10 +173,43 @@ func _text_from(payload: Dictionary) -> String:
     return ""
 
 
+func _report_presence() -> void:
+    ## Report the mode when it settles, and again if it changes while the session runs.
+    if str(XRBootstrap.mode) != "unavailable":
+        _emit_presence()
+        return
+    XRBootstrap.mode_changed.connect(_on_presence_changed)
+    for _frame in PRESENCE_WAIT_FRAMES:
+        await get_tree().process_frame
+        if str(XRBootstrap.mode) != "unavailable":
+            _emit_presence()
+            return
+    _emit_presence()                # nothing settled: "unavailable" is what it is
+
+
+func _on_presence_changed(_mode: String) -> void:
+    _emit_presence()
+
+
+func _emit_presence() -> void:
+    var observed := str(XRBootstrap.mode)
+    if observed == _presence_reported:
+        return
+    _presence_reported = observed
+    _emit("[PRESENCE] mode=" + observed)
+
+
 func _finish() -> void:
     if _done:
         return
     _done = true
+    if _presence_reported == "":
+        # The mode never settled before the session ended. Emitting the bootstrap's
+        # *initial* value ("unavailable") here would present a placeholder as an
+        # observation, which is the one thing this scaffold refuses to do -- so say what
+        # actually happened instead. Found by doing this against a live headset: the
+        # exchange finishes in fewer frames than the presence takes to settle.
+        _emit("[PRESENCE] mode=not observed before the session ended")
     _emit("[SESSION] world session complete (acted=%s replied=%s)" % [_acted, _replied])
     if _file != null:
         _file.close()

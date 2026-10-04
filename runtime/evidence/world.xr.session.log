@@ -1,6 +1,6 @@
 [WORLD  ] xr
-[PRESENCE] mode=desktop_preview
 [GOAL   ] operator (in the virtual space): note that the charger is warm to the touch and say whether that needs attention
 [REPLY  ] {"action_type": null, "params": {}, "confidence": 0.0, "text": "[stub:shugocore-local] note that the charger is warm to the touch and say whether that needs attention"}
 [ACTION ] execute_task conversation (gated) -> status=not_implemented stages=[]
+[PRESENCE] mode=unavailable
 [SESSION] world session complete (acted=true replied=true)

@@ -192,7 +192,13 @@ What follows from that, verified against a three-phone fleet and a desktop node:
   runs them through its own pipeline (`ShugoCoreInject: received: "..."` with an online
   agent) and the desktop node on the mesh fabric saw no heard turn at all. So a desktop
   node is an *orchestrator*, not an ear -- it hears what a primary forwards as
-  observations, never a microphone directly.
+  observations, never a microphone directly. The follower does the *local* half (memory,
+  dialogue, intent, and any measurement only that device can take); it does not decide
+  and does not speak. It forwards the turn to the primary (`orchestrate/turn`) and the
+  primary routes the reply back to the same device as a delegated action. When no
+  primary can be reached, the follower answers locally rather than going mute -- the
+  hand-off is bounded, and a hand-off that was not taken leaves this node the only mouth
+  left. `scripts/verify_hive_turn.py` drives exactly that loop between two nodes.
 - **To try the speech path end to end, pair two phones over Bluetooth first** (Android
   Settings -> Bluetooth, then Connect in the pane), make one a peripheral and speak at
   it. Waiting for a phone to speak into a desktop terminal is waiting for a path that

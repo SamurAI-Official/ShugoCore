@@ -251,6 +251,15 @@ class FactMemory:
             if not m:
                 continue
             capture = " ".join(g for g in m.groups() if g).strip()
+            # `my <attribute> is <value>` has two groups, and the template below
+            # re-injects group(1) as the attribute name -- so the value is
+            # group(2) alone. Joining every group recorded "User's name is name
+            # Ada" and "User's sister is sister Ana": the attribute name
+            # duplicated into its own value, which then rendered as "You're name
+            # Ada" on recall. `favorite` already took group(2) explicitly; this
+            # is the one branch that did not.
+            if kind == "attribute" and len(m.groups()) >= 2:
+                capture = (m.group(2) or "").strip()
             # Reject over-captured lines (pattern articles forced a full phrase)
             if len(capture) < 2 or len(capture) > 80:
                 continue

@@ -6,6 +6,148 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+## [1.30.25] - 2026-10-06 — one decision, one mouth
+
+### The interactive pipeline, driven rather than read: three defects it was hiding
+
+Running the operator terminal against a live model endpoint (`--terminal --backend
+"LM Studio (OpenAI-compatible)" --url http://127.0.0.1:1234 --model
+zai-org/glm-4.6v-flash`) answered **nothing**. The suite was green, which is the
+point: every one of these is invisible to a unit test that never makes a real
+turn, and each one silently degrades the node rather than failing it.
+
+- **A relative `data_dir` booted a node with no engine.** `create_agent` stored the
+  path verbatim, then `_bootstrap` chdir'd into it -- so every state path was
+  resolved a *second* time against the new cwd, `runtime/node` became
+  `runtime/node/runtime/node`, `decision_engine.log` could not be created, and
+  `DecisionEngine` construction raised `FileNotFoundError`. The node logged
+  "agent ready" and could never decide anything. `scripts/agency_session.py`
+  carried a local `os.path.abspath` and a comment describing exactly this; the
+  path is now absolutized once, in `AndroidAgent.__init__`, where it lives.
+- **A conversational turn talked to the wrong endpoint.** Choosing a backend
+  re-points the engine's model registry, but `_make_conversational_decision`
+  asked `_backend_for({"id": name})` -- a synthesized dict with no `"backend"`
+  key -- so `_backend_for` returned `None` and the call fell through to the
+  subconscious's *global* backend. Measured: LM Studio on :1234 had a working
+  model, the terminal was pointed at it, and every reply still failed against
+  Ollama on :11434 with `BackendError`. The structured-decision path had always
+  passed the real registry entry; conversation -- the path every reply a user
+  sees -- was the one caller that did not. It now resolves the registry row
+  (`_model_entry`), and the accepted proposal is tagged with the model id as
+  `proposal_source`, so `/status` no longer reports `backed by none` after a
+  model answered.
+- **A node that had lost the mesh lease went mute to the operator at it.** The
+  primary-only guardrail is deliberate -- a follower must not duplicate an
+  action the primary is performing -- but it also swallowed the reply to a turn
+  the node had just been handed: 5 of 5 typed turns answered with no words at
+  all, with the model healthy behind them. The first fix was to exempt an
+  operator turn; that was wrong (it let a follower produce user-facing speech
+  with no lease), so the turn is now **forwarded** instead -- see the next
+  section.
+
+### One decision, one mouth: a follower forwards its turns
+
+The guardrail above says a node without the lease does not decide and does not
+speak. The defect was that the operator sitting at that node then got nothing. The
+answer is not to exempt the node but to route the turn: a follower does all of its
+*read-only, device-local* work -- memory, dialogue, growth, intent, and any
+measurement only it can take -- and then sends the turn to the primary
+(`orchestrate/turn`), which decides and routes the reply back as a delegated
+action. The operator is answered at the device they used; "who speaks in this
+hive" stays one node's decision.
+
+- **The turn carries what only that node knows.** The follower's proximity facts
+  (`terminal_active`, a face, recent speech), whether it can speak, and -- when a
+  deterministic answer applies -- the answer itself as a *proposal*: a phone's
+  battery is the phone's, and the primary decides whether to say it and where.
+  The reply is routed back to the node that took the turn, so a keyboard operator
+  is answered at their own screen rather than on whichever device a face was seen
+  near.
+- **`terminal_active` is now advertised** (`remote_terminal_active`, while the
+  input is recent). It was a self-only fact, so a primary could not place a reply
+  at a terminal it had not heard of; `response_routing.normalise_facts` already
+  accepted the remote spelling, so no router change was needed.
+- **An unreachable primary does not mean a mute terminal.** The origin waits,
+  bounded (`_FORWARD_WAIT_S`), for the primary to confirm the hand-off; a refusal,
+  a dead peer, or no answer clears the one-mouth invariant (the primary provably
+  did not answer) and the node answers locally. The permission is per-turn and
+  thread-scoped, so a concurrent tick's speech cannot inherit it, and it is
+  granted *only* when a live primary failed to take the turn -- never for ambient
+  speech.
+- **No loops.** A reply travels as a delegated action, which executes directly and
+  never re-enters the turn pipeline, so a forwarded turn cannot ping-pong.
+- **A failed route no longer drops the utterance.** Found while isolating this
+  verifier: the router had legitimately chosen a LAN peer (a face scores 0.35,
+  above a keyboard's 0.30), the delegation was refused because that peer was not
+  in this node's map, and `_execute_speak` returned the refusal -- so the reply
+  vanished although it had already been decided. A route whose status is not
+  `delegated` now falls through to this node's own speaker, and `ask_user`
+  behaves the same way. `scripts/verify_interactive.py` also isolates the node
+  from the mesh by default (`--allow-mesh` opts out): a live LAN makes reply
+  placement evidence about the LAN rather than about the node under test.
+
+`scripts/verify_hive_turn.py` is the evidence, on real TCP with two nodes: the
+follower takes the turn and says nothing, the primary decides, and the reply
+returns to the follower -- measured as `hub heard nothing locally -- one decision,
+one mouth`. It exists because this machine has live nodes on its LAN, so "is this
+node a follower?" is not something a single-node run can make deterministic.
+
+### The device probe, run rather than trusted
+
+The adb smoke probe was pointed at two real phones (a Tab S9 FE and an A16 5G on
+the same LAN) for the first time from Windows, which is where these came from.
+
+- **The probe could not run on Windows at all.** Its adb path was hardcoded to
+  the macOS SDK (`~/Library/Android/sdk/platform-tools/adb`), so it died with
+  `FileNotFoundError` before it could say one thing about a device. It now
+  resolves adb from `SHUGOCORE_ADB`, then `ANDROID_HOME` / `ANDROID_SDK_ROOT`,
+  then the per-OS default, then `PATH`, and takes `--adb` explicitly.
+- **A correctly-governing node was reported as a broken one.** The Tab ticked
+  every second and produced no decisions, which the probe waited five minutes to
+  notice. It was not broken: a capable peer held the lease, so the Tab was
+  deliberately not running its own model loop -- top-down orchestration by
+  capacity, the fleet doing its job. The verdict was invisible over adb because
+  `AndroidAgent.log()` writes only to the in-memory bus the UI polls. The mode
+  now also reaches stderr (`ORCHESTRATION: subordinate: peer ... holds the
+  lease`) on each *change*, and the probe reports a deferral as `exit 3` with the
+  reason instead of blaming the device for a decision it was right not to make.
+- **`decision_engine.log` had no rotation.** Measured on the A16: **113 MB** and
+  climbing, one full decision dict per decision every few seconds, while the
+  project promises capacity-bounded state everywhere. It now rotates by size
+  (5 x 4 MB), so recent history survives a crash and the file cannot exceed
+  ~20 MB. The audit chain is deliberately *not* rotated -- it is an append-only
+  tamper-evident ledger, and that is a different decision with different stakes.
+
+Measured on the A16 after these fixes: six phases passed across three rounds
+(`service_alive`, `time_tool_query`, `measurement_honesty`, `fact_stores`,
+`memory_question`, `personality_model_genesis`), decision cadence 1.3 s, thermal
+status 0. The Python fixes in this release are not in the installed 1.30.24 APK,
+so they are validated by the host suite and the live-endpoint runs rather than on
+the phone; the harness changes are what make that phone run possible.
+
+### Memory recall said the attribute twice
+
+`my name is Ada` was recalled as *"You're Ada. You're name Ada."* -- not a
+cosmetic quirk but durable corruption. `FactMemory._extract`'s `attribute` pattern
+(`my <x> is <y>`) has two groups and the stored template re-injects `group(1)`,
+but the value was built by joining *every* group -- so the attribute name landed
+in its own value (`User's name is name Ada`, `User's sister is sister Ana`), in
+`user_facts.json`, in prompt injection, and in every recall. The value now comes
+from `group(2)` alone, so `my car is red and I like it` still trims to
+`User's car is red` and a name asked for both ways collapses to one fact. The
+existing suite asserted `fact_to_second_person("User's sister is Ana")` -- a clean
+string the extractor never produced -- which is why this shipped green.
+
+
+`scripts/verify_interactive.py` is the evidence and the regression net: it builds
+one real node, warms the endpoint, drives typed turns through `handle_typed_input`,
+and prints what was typed, what came back and what backed it. It fails only on a
+silent turn -- a deterministic clock answer is reported as rule-backed, not
+counted against the model. Against the live endpoint: **4 of 4 turns answered, 0
+silent**, 2 by the model and 2 by deterministic tools; and a two-way turn
+("my name is Ada" -> "what is my name?") answers from the model and recalls from
+memory. `tests/test_interactive_pipeline.py` pins all three defects.
+
 ### The Quest 3 on the desk: what it is, and what it can actually do
 
 The XR work had been reasoned about from the scaffold's side only. Checking the device itself

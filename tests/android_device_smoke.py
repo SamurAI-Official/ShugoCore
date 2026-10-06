@@ -16,14 +16,44 @@ for assertion.
 """
 import argparse
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-ADB = str(Path.home() / "Library" / "Android" / "sdk" / "platform-tools" / "adb")
+def _find_adb() -> str:
+    """Locate ``adb`` wherever this repo is being developed.
+
+    The path used to be hardcoded to the macOS SDK
+    (``~/Library/Android/sdk/platform-tools/adb``), so on Windows or Linux the
+    harness died with ``FileNotFoundError`` before it could say anything about
+    the device -- a cross-platform tool that only ran on one platform. Order:
+    an explicit override, then the SDK the environment names, then the per-OS
+    default install, then whatever ``PATH`` resolves.
+    """
+    override = os.environ.get("SHUGOCORE_ADB")
+    if override and os.path.isfile(override):
+        return override
+    exe = "adb.exe" if os.name == "nt" else "adb"
+    roots = [os.environ.get("ANDROID_HOME"), os.environ.get("ANDROID_SDK_ROOT")]
+    roots += [str(Path.home() / "Library" / "Android" / "sdk"),
+              str(Path.home() / "Android" / "Sdk"),
+              str(Path.home() / "AppData" / "Local" / "Android" / "Sdk")]
+    for root in roots:
+        if not root:
+            continue
+        candidate = os.path.join(root, "platform-tools", exe)
+        if os.path.isfile(candidate):
+            return candidate
+    found = shutil.which("adb")
+    return found or exe
+
+
+ADB = _find_adb()
 SHUGOCORE_PACKAGE = "com.samurai.shugocore"
 
 # The harness lives in tests/ but imports the personality package (repo
@@ -1147,7 +1177,28 @@ def cold_ack_window() -> float:
     return max(240.0, ack_window() * 2.0)
 
 
-def await_warm_loop(serial: str, timeout_s: float = 300.0) -> float:
+def orchestration_mode(serial: str) -> Tuple[str, str]:
+    """(mode, reason) from the node's own verdict, as logcat carries it.
+
+    "primary" and "standalone" mean this node decides for itself. "subordinate"
+    and "degraded" mean it is deliberately NOT running its own model loop: a
+    capable peer holds the lease (or its own headroom is critical), so it
+    observes, heartbeats and serves memory, and executes what the primary
+    delegates. That is the fleet working as designed -- and it is why a harness
+    that only counts decision lines reports a healthy node as a broken one.
+    """
+    for line in reversed(log_lines_containing(serial, "ORCHESTRATION:")):
+        match = re.search(r"ORCHESTRATION:\s*(\w+):\s*(.*)", line)
+        if match:
+            return match.group(1), match.group(2).strip()
+    return "", ""
+
+
+DEFERRED_MODES = ("subordinate", "degraded")
+
+
+def await_warm_loop(serial: str, timeout_s: float = 300.0
+                    ) -> Tuple[float, str, str]:
     """Bounded warm-up: wait until the node is producing decisions again.
 
     A freshly installed or freshly started build spends its first minutes
@@ -1157,6 +1208,10 @@ def await_warm_loop(serial: str, timeout_s: float = 300.0) -> float:
     against a 125 s window, while the same operations took 12-38 s once warm.
     Waiting here keeps the suite honest instead of lucky, and lets
     `measure_decision_cadence` report a real cadence rather than its floor.
+
+    Returns ``(seconds, mode, why)``. It stops early on a *deferred* verdict
+    too: waiting the full timeout for a decision a node has correctly handed to
+    its primary wastes five minutes and then blames the device.
     """
     clear_logcat(serial)
     start = time.time()
@@ -1167,7 +1222,11 @@ def await_warm_loop(serial: str, timeout_s: float = 300.0) -> float:
     # cadence sampler always fell back to its 50 s floor, pinning every phase
     # window to a value unrelated to the node's real cadence.
     ts_pat = re.compile(r"(\d{2}:\d{2}:\d{2})[.,]\d{3}")
+    mode, why = "", ""
     while time.time() - start < timeout_s:
+        mode, why = orchestration_mode(serial)
+        if mode in DEFERRED_MODES:
+            break
         for ln in log_lines_containing(serial, "Decision made for task"):
             m = ts_pat.search(ln)
             if m:
@@ -1175,7 +1234,7 @@ def await_warm_loop(serial: str, timeout_s: float = 300.0) -> float:
         if len(seen) >= 1:
             break
         time.sleep(2.0)
-    return time.time() - start
+    return time.time() - start, mode, why
 
 
 def _run_phase(serial: str, phase: Dict[str, Any], logger: List[str]) -> bool:
@@ -1207,6 +1266,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--device", required=False, help="adb serial (e.g. adb-R52WC05JPMW-4kMS88...._adb-tls-connect._tcp)"
     )
     ap.add_argument(
+        "--adb", default=None,
+        help="adb binary to use (default: SHUGOCORE_ADB, then the SDK the "
+             "environment names, then the per-OS default, then PATH)"
+    )
+    ap.add_argument(
         "--repeat", type=int, default=1, help="repeat full phase set N times"
     )
     ap.add_argument(
@@ -1216,13 +1280,37 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--tag", action="append", dest="tags", help="include phases with this tag"
     )
     ap.add_argument("--list", action="store_true", help="list phases and exit")
+    ap.add_argument(
+        "--allow-deferred", action="store_true",
+        help="run the phases even when the node has handed orchestration to a "
+             "peer (it will not be running its own decision loop, so "
+             "decision-dependent phases will fail for that reason, not the device's)"
+    )
     ap.add_argument("--json", action="store_true", help="emit JSON result on stdout")
     args = ap.parse_args(argv)
 
+    if args.adb:
+        global ADB
+        ADB = args.adb
     if args.list:
         for p in PHASES:
             print(f"{p['name']:32s} {p['desc']}")
         return 0
+
+    if not args.device:
+        # Never guess which attached device to drive: the harness is
+        # dependency-injected on purpose, and picking the first one would make a
+        # two-device bench silently test whichever enumerated first.
+        rc, out, _ = run("devices")
+        attached = [line.split()[0] for line in (out or "").splitlines()[1:]
+                    if line.strip() and "\tdevice" in line]
+        if len(attached) == 1:
+            args.device = attached[0]
+            print(f"using the only attached device: {args.device}", flush=True)
+        else:
+            print(f"pass --device <serial>; attached: {attached or 'none'}",
+                  file=sys.stderr)
+            return 2
 
     tags = tuple(args.tags) if args.tags else None
     phases = _select_phases(args.phases, tags)
@@ -1241,8 +1329,27 @@ def main(argv: Optional[List[str]] = None) -> int:
     # (measured: 302 s on the Tab right after the growth phase's ~25 injections).
     warm_log: List[str] = []
     await_conversation_idle(serial, warm_log)
-    warm_s = await_warm_loop(serial)
-    print(f"warm-up: decisions flowing after {warm_s:.0f}s", flush=True)
+    warm_s, mode, why = await_warm_loop(serial)
+    if mode in DEFERRED_MODES:
+        # Not a failure: this node has handed orchestration to a live primary (or
+        # stepped down on its own headroom), which is the fleet doing its job. Say
+        # so and stop, rather than spending the phases' several minutes waiting
+        # for decisions a healthy node is deliberately not making.
+        print(f"node is {mode} ({why}); it does not run its own decision loop.",
+              flush=True)
+        if not args.allow_deferred:
+            print("  A subordinate node observes, heartbeats and serves memory,\n"
+                  "  and executes what the primary delegates. Decision-dependent\n"
+                  "  phases cannot pass here by design -- this is not a device\n"
+                  "  failure.\n"
+                  "  To test this node as the orchestrator, stop the peer holding\n"
+                  "  the lease (a live primary makes it a follower), or point its\n"
+                  "  mesh_peers.json at nothing. Pass --allow-deferred to run the\n"
+                  "  phases anyway (they will report their real failures).",
+                  file=sys.stderr)
+            return 3
+    else:
+        print(f"warm-up: decisions flowing after {warm_s:.0f}s", flush=True)
     thermal = device_thermal_status(serial)
     if thermal is not None:
         note = ""

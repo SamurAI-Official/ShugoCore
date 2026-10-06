@@ -755,7 +755,7 @@ class DecisionEngine:
         if not validate_model_name(model_name):
             model_name = self._default_model_id()
 
-        backend = self._backend_for({"id": model_name})
+        backend = self._backend_for(self._model_entry(model_name))
         output = self.subconscious.get_conversational_output(
             model_name, prompt, backend=backend)
 
@@ -806,6 +806,15 @@ class DecisionEngine:
             }
             return self._apply_personality(decision, task)
 
+        # Tag the accepted proposal with the model that produced it, exactly as
+        # the structured path does (`proposal_source: source_id`). Without it a
+        # turn a model answered carried no `proposal_source` at all, so the node
+        # reported `decision_source: none` / "backed by none" while the words in
+        # front of the user had just come from the model -- the same misreport
+        # the reasoning loop was fixed for, on the one path a person actually
+        # sees.
+        if not proposal.get("proposal_source"):
+            proposal["proposal_source"] = model_name
         return self._apply_personality(proposal, task)
 
 
@@ -899,6 +908,27 @@ class DecisionEngine:
         except Exception:
             pass
         return decision
+
+    def _model_entry(self, model_id: str) -> Dict[str, Any]:
+        """The registry entry for ``model_id`` — never a synthesized bare id.
+
+        ``_backend_for`` reads ``model["backend"]``. Handing it ``{"id": name}``
+        therefore means "no backend configured", which silently degrades to the
+        subconscious's *global* backend — so a conversational turn talked to
+        whatever Ollama the engine happened to be built against (:11434), no
+        matter which endpoint the operator picked in the UI or on the command
+        line. The structured-decision path has always passed the real registry
+        entry (``make_decision`` → ``self._backend_for(model)``); conversation
+        is the one caller that did not, and it is the path every reply a user
+        actually sees goes through.
+
+        Falls back to a bare id when the model is unknown, which reproduces the
+        old behaviour exactly (use the global backend) rather than raising.
+        """
+        for model in (self.models or []):
+            if isinstance(model, dict) and str(model.get("id", "")) == str(model_id):
+                return model
+        return {"id": model_id}
 
     def _default_model_id(self) -> str:
         """Return the first available model ID, or a safe fallback."""

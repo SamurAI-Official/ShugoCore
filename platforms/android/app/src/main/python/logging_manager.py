@@ -1,8 +1,19 @@
 import logging
 import os
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 
 from security import RedactionFilter
+
+# Bounded diagnostic log. The decision log carries no tamper-evidence requirement
+# (unlike the audit chain, which is an append-only ledger), and on-device it grew
+# without limit: measured 2026-10-06 it was **113 MB** on an A16 and climbing --
+# one full decision dict every few seconds -- against this project's principle
+# that every subsystem is capacity- or decay-bounded. Rotate by size (5 x 4 MB),
+# so recent history survives a crash and the file cannot exceed ~20 MB.
+_LOG_MAX_BYTES = 4 * 1024 * 1024
+_LOG_BACKUPS = 5
+
 
 class LoggingManager:
     def __init__(self, log_file: str = "decision_engine.log", level: int = logging.INFO):
@@ -14,7 +25,9 @@ class LoggingManager:
         if not self.logger.handlers:
         
             # Log to file (0600: logs may contain operational detail)
-            file_handler = logging.FileHandler(log_file)
+            file_handler = RotatingFileHandler(
+                log_file, maxBytes=_LOG_MAX_BYTES, backupCount=_LOG_BACKUPS,
+                encoding="utf-8")
             file_handler.setLevel(level)
             formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
             file_handler.setFormatter(formatter)

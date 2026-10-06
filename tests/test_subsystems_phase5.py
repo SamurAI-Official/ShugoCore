@@ -2,13 +2,14 @@
 deterministic memory questions."""
 import sys
 import tempfile
+import shutil
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from subsystems import MemoryManager
-from subsystems.memory import fact_to_second_person
+from subsystems.memory import FactMemory, fact_to_second_person
 
 
 class FactToSecondPersonTest(unittest.TestCase):
@@ -194,6 +195,60 @@ class AgentMemoryQuestionsTest(unittest.TestCase):
             {"transcript": "what do you remember about me"})
         self.assertTrue(any("Alex" in s for s in speaker.spoken),
                         speaker.spoken)
+
+
+class FactExtractionIsNotSelfDuplicatingTest(unittest.TestCase):
+    """`my X is Y` records Y as the value, not the attribute name as well.
+
+    The `attribute` pattern has two groups and the stored template re-injects
+    group(1), so joining *all* the groups put the attribute name into its own
+    value: "my name is Ada" stored "User's name is name Ada" (beside the correct
+    user_name fact) and "my sister is Ana" stored only "User's sister is sister
+    Ana". Recalled, those rendered as "You're name Ada" -- which is the reported
+    symptom, and the reason the earlier unit test missed it: it fed
+    `fact_to_second_person` a clean string the extractor never produced.
+    """
+
+    def test_an_attribute_fact_records_only_its_value(self):
+        self.assertEqual(FactMemory._extract("my sister is Ana"),
+                         [("User's sister is Ana", "attribute")])
+
+    def test_an_attribute_does_not_duplicate_its_name(self):
+        for utterance, forbidden in (("my name is Ada", "is name ada"),
+                                     ("my sister is Ana", "is sister ana"),
+                                     ("my office is in Berlin", "is office")):
+            for text, _kind in FactMemory._extract(utterance):
+                self.assertNotIn(forbidden, text.lower(),
+                                 f"{utterance!r} stored {text!r}")
+
+    def test_a_name_asked_for_as_an_attribute_collapses_to_one_fact(self):
+        """"my name is Ada" matches both patterns; both must agree."""
+        texts = [text for text, _kind in FactMemory._extract("my name is Ada")]
+        self.assertEqual(len(set(texts)), 1, texts)
+
+    def test_an_over_greedy_value_keeps_only_the_first_clause(self):
+        texts = [text for text, kind in
+                 FactMemory._extract("my car is red and I like it")
+                 if kind == "attribute"]
+        self.assertEqual(texts, ["User's car is red"])
+
+    def test_a_command_form_is_unaffected(self):
+        self.assertEqual(FactMemory._extract("call me Sam"),
+                         [("User's name is Sam", "user_name")])
+
+    def test_recall_from_a_remembered_name_is_one_sentence(self):
+        """The end-to-end shape of the reported bug."""
+        tmp = tempfile.mkdtemp()
+        mem = MemoryManager(tmp)
+        mem.on_user_input("my name is Ada")
+        # "what is my name?" reduces to the keyword "name" (see
+        # AndroidAgent._memory_question_answer), which matches the stored text.
+        rows = mem.facts.facts_about("name", limit=2)
+        rendered = [fact_to_second_person(r["text"]) for r in rows]
+        self.assertEqual(len(rendered), len(set(rendered)),
+                         f"the same fact was recalled twice: {rendered}")
+        self.assertTrue(any("Ada" in r for r in rendered), rendered)
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

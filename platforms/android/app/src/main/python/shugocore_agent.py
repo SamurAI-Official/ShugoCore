@@ -73,6 +73,15 @@ _ORCH_MIN_BATTERY_PCT = 15
 DELEGATE_TOPIC = "orchestrate/delegate"
 DELEGATE_RESULT_TOPIC = "orchestrate/result"
 DELEGATABLE_ACTIONS = ("speak", "ask_user", "mesh_rpc", "dev_task")
+# A *turn* addressed to the hive: a follower that was handed a user turn does not
+# decide it (it holds no lease), so it sends it on with the device-local facts only
+# it can measure. The primary decides and routes the reply back as a delegated
+# action on the originator -- one decision, one mouth. Separate from DELEGATE_TOPIC
+# because the direction of authority is reversed: delegate is primary -> node,
+# a forwarded turn is node -> primary, and the two must not be confused by a
+# handler that reads one topic.
+TURN_TOPIC = "orchestrate/turn"
+TURN_RESULT_TOPIC = "orchestrate/turn_result"
 # What a node advertises over the mesh so the primary can measure which device is
 # closest to the operator. Only facts a node actually perceived are sent: a device
 # that saw nothing reports nothing rather than a guess.
@@ -80,6 +89,14 @@ MESH_PERCEPTION_KEYS = ("face_count", "face_present", "gaze_toward_camera",
                         "voice_active", "speech_source", "speech_recent",
                         "utterance_age_s", "presence_present")
 _DELEGATE_LOCK = threading.Lock()
+# Waiters for turns this node forwarded to the primary (`orchestrate/turn`).
+# Created on demand so an agent built with `__new__` (tests) works too; the lock
+# is only for that creation, never held while sending or waiting.
+_TURN_WAIT_LOCK = threading.Lock()
+# How long the origin waits for the primary to confirm a forwarded turn before
+# answering it itself. Long enough for a mesh round trip and a proposal relay;
+# short enough that an unreachable primary costs a pause, not silence.
+_FORWARD_WAIT_S = 8.0
 PIPELINE_STAGES = ("OBSERVE", "VERIFY_ATTENTION", "GATE", "DECIDE",
                    "EXECUTE", "EVALUATE", "RECORD", "CONSOLIDATE")
 
@@ -130,6 +147,46 @@ _MEASUREMENT_REFUSAL = ("I can't measure that here — I have no weather "
                         "number.")
 
 
+def _turn_state(agent: Any):
+    """``(waiters, results, lock)`` for forwarded turns, created on demand.
+
+    ``waiters`` maps a request id to the ``Event`` its sender is waiting on;
+    ``results`` holds the primary's answer until the waiter collects it. Kept
+    off the hot path and bounded by collection (each result is popped once).
+    """
+    state = getattr(agent, "_turn_state", None)
+    if state is None:
+        with _TURN_WAIT_LOCK:
+            state = getattr(agent, "_turn_state", None)
+            if state is None:
+                state = ({}, {}, threading.Lock())
+                agent._turn_state = state
+    return state
+
+
+def _turn_fallback_ok(agent: Any) -> bool:
+    """May this *thread* speak locally because its hand-off to the primary failed?
+
+    Per-thread and per-turn on purpose. A node that holds no lease must not speak
+    on its own initiative -- but when it handed the turn to a live primary and
+    that primary did not take it (unreachable peer, refused frame, no answer
+    within the wait), the one-mouth invariant is satisfied by the primary's own
+    silence, and the only remaining mouth is this one. Answering then is the
+    difference between a degraded hive and a mute terminal; a concurrent tick's
+    speech must not inherit the permission, which is why it is thread-scoped.
+    """
+    local = getattr(agent, "_turn_fallback", None)
+    return bool(getattr(local, "value", False))
+
+
+def _set_turn_fallback(agent: Any, value: bool) -> None:
+    local = getattr(agent, "_turn_fallback", None)
+    if local is None:
+        local = threading.local()
+        agent._turn_fallback = local
+    local.value = bool(value)
+
+
 class AndroidAgent:
     def __init__(self, device_caps: Optional[str] = None,
                  api_url: Optional[str] = None,
@@ -156,7 +213,24 @@ class AndroidAgent:
         # cannot rely on the process cwd (root "/" is read-only) — without
         # this, MemoryManager/DecisionEngine fail to open their SQLite files
         # and the whole agent construction throws.
-        self.data_dir = data_dir
+        #
+        # Absolute, always, and resolved HERE — against the caller's cwd,
+        # before `_bootstrap` chdirs into it. Every path below is built by
+        # joining onto this one (`_join_data`) or handed to the engine as
+        # `log_dir`, and `_initialize_engine` runs *after* that chdir: a
+        # relative `data_dir` is therefore resolved a second time against the
+        # new cwd, so `runtime/node` becomes `runtime/node/runtime/node`,
+        # `decision_engine.log` cannot be created, `FileNotFoundError` kills
+        # the engine, and the node boots "alive" with no engine at all. The
+        # caller's relative path was documented-but-broken until now
+        # (`scripts/agency_session.py` carried a local workaround and its own
+        # comment describing this exact failure); this fixes it where it lives.
+        try:
+            self.data_dir = (str(Path(str(data_dir)).expanduser().resolve())
+                             if str(data_dir or "").strip() else None)
+        except Exception:
+            self.data_dir = (str(data_dir).strip() or None
+                             if data_dir is not None else None)
         # v1.30.10: one identity per device. The same string is the election node
         # id, the transport agent id and the name peers dial, so a node can be
         # addressed by the name it answers to (delegated work, response routing).
@@ -1619,8 +1693,11 @@ class AndroidAgent:
         bounded here; the listener (Kotlin TTS) performs the actual output.
         The AgentResponse lands on the interaction bus so the UI and telemetry
         tell the truth about what the agent said."""
-        # Track 1: primary-only guardrail — followers journal, never speak.
-        if not self._mesh_may_act("speak"):
+        # Track 1: primary-only guardrail — followers never speak. A node that
+        # handed a turn to the primary and was *not* answered is the exception
+        # (see `_turn_fallback_ok`): the reply comes back through this same
+        # executor as a delegated action, or this node is the last mouth left.
+        if not (self._mesh_may_act("speak") or _turn_fallback_ok(self)):
             return {"status": "refused", "reason": "mesh_follower",
                     "primary": (self.mesh_election.primary()
                                 if self.mesh_election is not None else None)}
@@ -1634,10 +1711,24 @@ class AndroidAgent:
         if not text:
             return {"status": "refused", "reason": "empty speech content"}
         # Route the utterance to the device closest to the operator (this one
-        # when it is the closest, another node otherwise).
-        route = self._route_response("speak", {"text": text})
+        # when it is the closest, another node otherwise). A forwarded turn names
+        # the node that took it, so the answer returns there.
+        origin = params.get("reply_origin")
+        route = self._route_response(
+            "speak", {"text": text},
+            prefer=str(params.get("reply_prefer") or ""),
+            origin=origin if isinstance(origin, dict) else None)
         if route is not None:
-            return route
+            if str(route.get("status")) in ("delegated", "success"):
+                return route
+            # The chosen device could not be reached -- a peer that is not in
+            # this node's map, or a send that failed. Dropping the utterance
+            # there is the silence this path exists to prevent: the reply has
+            # already been decided, and this node can say it.
+            self.log("MESH", f"response route failed "
+                             f"({route.get('status')}): "
+                             f"{route.get('reason') or route.get('message')}; "
+                             f"speaking here", level="WARN")
         listener = self._speak_listener
         if listener is None:
             return {"status": "no_output",
@@ -1678,8 +1769,10 @@ class AndroidAgent:
         marked on the bus as expecting an answer, and the next speech
         observation within the TTL is paired with it. A spoken reply is DATA
         the agent may reason over — it is never a consent record."""
-        # Track 1: primary-only guardrail — followers never ask the user.
-        if not self._mesh_may_act("ask_user"):
+        # Track 1: primary-only guardrail — followers never ask the user. A
+        # follower's turn is forwarded instead (see `_handle_local_turn`); a
+        # question the primary *directs* at this node is a delegated action.
+        if not (self._mesh_may_act("ask_user") or _turn_fallback_ok(self)):
             return {"status": "refused", "reason": "mesh_follower",
                     "primary": (self.mesh_election.primary()
                                 if self.mesh_election is not None else None)}
@@ -1691,10 +1784,21 @@ class AndroidAgent:
         if not text:
             return {"status": "refused", "reason": "empty question"}
         # Ask through the device closest to the operator: a question is only
-        # useful where the human can hear and answer it.
-        route = self._route_response("ask_user", {"question": text})
+        # useful where the human can hear and answer it. A forwarded turn names
+        # the node that took it, so the question returns there.
+        origin = params.get("reply_origin")
+        route = self._route_response(
+            "ask_user", {"question": text},
+            prefer=str(params.get("reply_prefer") or ""),
+            origin=origin if isinstance(origin, dict) else None)
         if route is not None:
-            return route
+            if str(route.get("status")) in ("delegated", "success"):
+                return route
+            # Unreachable device: asking this node's own user is better than
+            # asking nobody (same reasoning as `_execute_speak`).
+            self.log("MESH", f"question route failed ({route.get('status')}): "
+                             f"{route.get('reason') or route.get('message')}; "
+                             f"asking here", level="WARN")
         listener = self._speak_listener
         if listener is None:
             return {"status": "no_output",
@@ -1874,16 +1978,48 @@ class AndroidAgent:
               sensors) to their tool, so the model can never supply a reading
           5b. guarantee exactly ONE spoken outcome — a blocked, empty or
               unusable decision degrades to an honest line, never silence
+
+        Authority (Track 1): a node that does not hold the lease decides nothing
+        and speaks nothing on its own initiative. It still does all of its
+        *read-only, device-local* work here -- memory, dialogue, growth, intent,
+        and any measurement only this device can take -- and then hands the turn
+        to the primary, which decides and routes the reply back as a delegated
+        action. So the operator is answered even on a follower, while "who speaks
+        in this hive" stays one node's decision.
         """
         transcript = observation.get("transcript", "").strip()
         if not transcript:
             return
+        # A fresh turn starts with no fallback permission: it is granted only
+        # within the turn that earned it, by the hand-off failing.
+        _set_turn_fallback(self, False)
+        try:
+            self._conversational_turn(observation, transcript)
+        finally:
+            _set_turn_fallback(self, False)
+
+    def _conversational_turn(self, observation: Dict[str, Any], transcript: str,
+                             reply_prefer: str = "", answer_to: Optional[str] = None,
+                             forwarded: bool = False,
+                             reply_origin: dict = None) -> None:
+        """The body of one conversational turn (see `_handle_conversational_input`).
+
+        ``reply_prefer`` is the node the turn was taken at (empty for a turn this
+        node took for itself); ``answer_to`` overrides the open-question lookup
+        when the primary is answering a *forwarded* turn, because the question
+        was asked through the follower and so its pairing state lives there;
+        ``forwarded`` marks that path.
+        """
 
         # v1.30.5: is this utterance the answer to an open question? The bus
         # pairs it as metadata; here it is verified against the TTL and
         # journalled (question_answered / question_expired) before the reply is
-        # shaped as an answer to it.
-        answer_to = self._take_open_question(transcript)
+        # shaped as an answer to it. A *forwarded* turn arrives with the answer
+        # already resolved by the node that asked the question, so there is
+        # nothing to consume here -- the primary's own open-question state is
+        # about its own questions, not this one.
+        if answer_to is None and not forwarded:
+            answer_to = self._take_open_question(transcript)
 
         # Phase B: growth bookkeeping — every turn counts, explicit
         # feedback is captured as trait signals.
@@ -1935,57 +2071,53 @@ class AndroidAgent:
             except Exception:
                 pass
 
-        # Phase 4/5: deterministic memory questions, no model call —
-        # "what do you remember" (full recall) and "what's my X" / "who am I"
-        # (targeted lookup, rewritten to second person for speech).
+        # Phase 4/5 + 4b: the *deterministic* answer to this turn, if one exists.
+        # Computed before anything is spoken so that a node which does not hold
+        # the lease can still send on the measurement only it can take (a phone's
+        # battery, a host's clock) instead of inventing one or staying silent.
+        # Order is unchanged: memory questions, then commands, then tool topics.
+        local_text, local_kind = "", ""
         if (intent is not None
                 and intent.intent_type.value in ("question", "chitchat")
                 and self.user_memory is not None):
             answer = self._memory_question_answer(transcript)
             if answer:
-                self._speak_turn(answer)
-                self.log("AGENT", "memory recall (question path)")
-                return
-
-        # If it's a command, try to execute it directly (no model call)
-        if intent and intent.intent_type.value == "command":
-            if self.command_executor is not None:
-                result = self.command_executor.execute(intent)
-                if not result.success:
-                    self._growth_note_failure()
-                # Phase 3.4: when the handler asks a follow-up question, open
-                # a clarification so the next utterance answers it.
-                if (result.action_taken and self.dialogue is not None
-                        and result.action_taken.endswith("_clarify")):
-                    base = (result.action_taken[:-len("_clarify")]
-                            .replace("-", "_") or "task")
-                    category = (f"{base}_duration" if base == "timer"
-                                else f"{base}_target" if base == "device"
-                                else base)
-                    self.dialogue.begin_clarification(
-                        category, intent.transcript, intent.entities)
-                if result.response:
-                    # Speak the command result directly. _speak_turn brackets
-                    # the turn on the conversation state machine and still logs
-                    # "say:" for the headless adb probes.
-                    self._speak_turn(result.response)
-                    self.log("AGENT", f"command: {result.action_taken}")
-                    return
-
-        # v1.30.5: a question about the clock, date, battery, weather,
-        # temperature or the sensors has a deterministic answer. Route it to
-        # the tool path so the phrasing never decides whether a tool is
-        # reached — and so the language model can never supply a measurement.
-        if intent is not None and intent.intent_type.value in ("question",
-                                                              "chitchat"):
+                local_text, local_kind = answer, "memory recall (question path)"
+        if (not local_text and intent is not None
+                and intent.intent_type.value == "command"):
+            local_text, local_kind = self._command_answer(intent)
+        if not local_text and intent is not None and \
+                intent.intent_type.value in ("question", "chitchat"):
             topic = None
             try:
                 if self.intent_parser is not None:
                     topic = self.intent_parser.tool_topic(transcript)
             except Exception:
                 topic = None
-            if topic and self._answer_tool_question(topic, transcript):
-                return
+            if topic:
+                answer = self._tool_question_answer(topic, transcript)
+                if answer:
+                    local_text, local_kind = answer, f"command: {topic}"
+
+        # A turn this node does not hold the lease for is the primary's to decide.
+        # `local_text` travels with it as a *proposal*, not a decision: the
+        # primary decides whether to say it and where it is said.
+        if not forwarded and self._forward_turn(transcript, observation, intent,
+                                                local_text, answer_to):
+            return
+
+        # Answer locally: we hold the lease (or nobody does), so this node decides.
+        if local_text:
+            if not self._speak_turn(local_text):
+                # The hand-off failed *and* this node may not speak. That is a
+                # real dead end, not a crash: name it, so an operator reading the
+                # log sees why the turn went unanswered instead of inferring a
+                # fault from silence.
+                self.log("MESH",
+                         "turn unanswered: the primary did not take the hand-off "
+                         "and this node holds no lease to speak", level="WARN")
+            self.log("AGENT", local_kind)
+            return
 
         # Otherwise: personality-driven conversational response
         history_text = ""
@@ -2028,7 +2160,20 @@ class AndroidAgent:
 
         try:
             decision = self.engine.make_decision(task) or {}
-            # Execute the decision directly (speak/ask_user)
+            # What actually backed this turn. The tick loop resets
+            # `_decision_source` every cycle, so without this the operator's
+            # `/status` and the terminal's "[MODEL] backed by ..." line reported
+            # the *ambient* cycle's source immediately after a model answered
+            # the person in front of it.
+            source = str(decision.get("proposal_source") or "").strip()
+            if source:
+                self._decision_source = source[:64]
+            # Execute the decision directly (speak/ask_user). A forwarded turn
+            # names the node that took it, so the speech executors route the
+            # reply back there rather than to whoever is nearest the primary.
+            if reply_prefer:
+                decision = self._with_reply_prefer(decision, reply_prefer,
+                                                   reply_origin)
             action_type = decision.get("action_type")
             if action_type == "speak":
                 # v1.30.5: the model never supplies a measurement. A toolable
@@ -2067,6 +2212,23 @@ class AndroidAgent:
             # A crash must not leave the turn silent either.
             self._speak_fallback(transcript)
 
+    @staticmethod
+    def _with_reply_prefer(decision: Dict[str, Any], reply_prefer: str,
+                           reply_origin: dict = None) -> Dict[str, Any]:
+        """Carry the turn's origin to the speech executors via the decision.
+
+        `reply_prefer` / `reply_origin` ride in ``params`` because that is the
+        channel that already reaches `_execute_speak` / `_execute_ask_user` --
+        the execution layer hands them the decision and nothing else. Threading
+        it as *data* rather than as instance state keeps it scoped to this one
+        reply: a concurrent tick's speech cannot inherit it.
+        """
+        params = dict(decision.get("params") or {})
+        params["reply_prefer"] = str(reply_prefer)
+        if isinstance(reply_origin, dict):
+            params["reply_origin"] = dict(reply_origin)
+        return dict(decision, params=params)
+
     def _decision_text(self, decision: Dict[str, Any],
                        key: str = "text") -> str:
         """Text of a speak/ask_user decision (params first, then top level)."""
@@ -2104,8 +2266,36 @@ class AndroidAgent:
                      f"fallback speak failed: {type(exc).__name__}",
                      level="ERROR")
 
-    def _answer_tool_question(self, topic: str, transcript: str) -> bool:
-        """Answer a toolable question deterministically; True when spoken.
+    def _command_answer(self, intent: Any) -> Tuple[str, str]:
+        """Run a command for this turn and return (answer text, log label).
+
+        Executing the command *is* the device-local work -- a timer set on this
+        device, a light toggled here -- so it happens on the node the turn
+        arrived at; what comes back is only the words that answer it, so the
+        caller can decide whether to speak them locally or send them on.
+        """
+        if self.command_executor is None:
+            return "", ""
+        result = self.command_executor.execute(intent)
+        if not result.success:
+            self._growth_note_failure()
+        # Phase 3.4: when the handler asks a follow-up question, open
+        # a clarification so the next utterance answers it.
+        if (result.action_taken and self.dialogue is not None
+                and result.action_taken.endswith("_clarify")):
+            base = (result.action_taken[:-len("_clarify")]
+                    .replace("-", "_") or "task")
+            category = (f"{base}_duration" if base == "timer"
+                        else f"{base}_target" if base == "device"
+                        else base)
+            self.dialogue.begin_clarification(
+                category, intent.transcript, intent.entities)
+        if not result.response:
+            return "", ""
+        return str(result.response), f"command: {result.action_taken}"
+
+    def _tool_question_answer(self, topic: str, transcript: str) -> str:
+        """The deterministic answer to a toolable question, or "" if none.
 
         Used for question/chitchat intents that a tool can answer, so they
         never reach the language model. An unavailable tool still answers
@@ -2113,7 +2303,7 @@ class AndroidAgent:
         readings, and no silence.
         """
         if self.command_executor is None:
-            return False
+            return ""
         from subsystems.intent import IntentType, UserIntent
         intent = UserIntent(IntentType.COMMAND, transcript, confidence=0.9,
                             entities={"tool_topic": topic})
@@ -2122,12 +2312,220 @@ class AndroidAgent:
         except Exception as exc:
             self.log("ERROR", f"tool question failed: {type(exc).__name__}",
                      level="ERROR")
+            return ""
+        return str(result.response) if result.response else ""
+
+    def _answer_tool_question(self, topic: str, transcript: str) -> bool:
+        """Answer a toolable question locally; True when there was one to speak."""
+        answer = self._tool_question_answer(topic, transcript)
+        if not answer:
             return False
-        if not result.response:
-            return False
-        self._speak_turn(result.response)
-        self.log("AGENT", f"command: {result.action_taken}")
+        self._speak_turn(answer)
+        self.log("AGENT", f"command: {topic}")
         return True
+
+    # -- Track 1: turns a node without the lease sends on --------------------
+
+    def _own_proximity_facts(self) -> Dict[str, Any]:
+        """What this device can say about where the operator is, for a forward.
+
+        The primary needs to know it is *this* device the person is standing at,
+        and a heartbeat is a second or two stale -- the turn in hand is not.
+        """
+        try:
+            candidates = self._response_candidates()
+        except Exception:
+            return {}
+        for candidate in candidates:
+            if candidate.get("is_self"):
+                facts = candidate.get("facts")
+                return dict(facts) if isinstance(facts, dict) else {}
+        return {}
+
+    def _forward_turn(self, transcript: str, observation: Dict[str, Any],
+                      intent: Any, local_text: str,
+                      answer_to: Optional[str]) -> bool:
+        """Send this turn to the primary; True when it accepted the hand-off.
+
+        Track 1: a node without the lease decides nothing and says nothing on its
+        own initiative, so the turn goes to the node that does -- carrying the
+        device-local facts only this node can measure (a phone's battery, this
+        screen's keyboard) plus any deterministic answer it already computed, as
+        a *proposal* the primary may accept, replace or refuse. The reply comes
+        back here as a delegated action, so the operator is answered at the
+        device they used.
+
+        False means "answer it here": this node holds the lease, there is no
+        primary (standalone / partition), the primary is not a known peer, or the
+        send failed. That is the fallback that keeps a lone or partitioned node
+        working -- the alternative is the silence this path exists to remove.
+        """
+        primary = self._turn_primary()
+        if primary is None:
+            # Nobody holds the lease: this node decides (standalone / partition).
+            # No hand-off was attempted, so there is nothing to fall back from --
+            # `_mesh_may_act` already permits speaking here.
+            return False
+        runtime = getattr(self, "shugonet_runtime", None)
+        if runtime is None:
+            self.log("MESH", f"{primary} holds the lease but this node has no "
+                             f"mesh runtime; answering here", level="WARN")
+            _set_turn_fallback(self, True)
+            return False
+        payload = {
+            "id": f"turn-{int(time.time() * 1000)}-{int(getattr(self, 'tick_count', 0) or 0)}",
+            "transcript": str(transcript or "")[:400],
+            "source": str((observation or {}).get("source") or "local")[:32],
+            "reply_to": str(getattr(self, "node_id", "") or ""),
+            "proposed_text": str(local_text or "")[:400],
+            "answer_to": str(answer_to or "")[:200],
+            "facts": self._own_proximity_facts(),
+            # Whether this device can actually speak, so the primary never routes
+            # an answer to a mouth that is not there (it falls back instead).
+            "can_speak": getattr(self, "_speak_listener", None) is not None,
+            "priority": int(getattr(self.mesh_election, "priority", 500) or 500),
+        }
+        # Register the waiter BEFORE sending: the answer can arrive while we are
+        # still inside send(), and a reply that arrives before anyone is waiting
+        # is a reply the operator never hears.
+        request_id = payload["id"]
+        waiters, results, lock = _turn_state(self)
+        event = threading.Event()
+        with lock:
+            waiters[request_id] = event
+        try:
+            try:
+                sent = runtime.send(primary, TURN_TOPIC, payload)
+            except Exception as exc:
+                self.log("MESH", f"turn forward failed: {type(exc).__name__}; "
+                                 f"answering here", level="WARN")
+                _set_turn_fallback(self, True)
+                return False
+            if str((sent or {}).get("status")) != "success":
+                self.log("MESH", f"turn forward refused by {primary}: "
+                                 f"{(sent or {}).get('reason') or 'send failed'}; "
+                                 f"answering here", level="WARN")
+                _set_turn_fallback(self, True)
+                return False
+            self._turns_forwarded = int(getattr(self, "_turns_forwarded", 0)) + 1
+            self.log("MESH",
+                     f"turn forwarded to {primary}: {str(transcript)[:80]!r}")
+
+            # Wait for the primary to say what it did with the turn. A hand-off
+            # that was refused, or a primary that never answers, must not leave
+            # the operator in silence -- so the caller is told to answer it here
+            # instead (it still holds the text only this device could measure).
+            if not event.wait(_FORWARD_WAIT_S):
+                self.log("MESH", f"{primary} did not confirm the forwarded turn "
+                                 f"within {_FORWARD_WAIT_S:.0f}s; answering here",
+                         level="WARN")
+                _set_turn_fallback(self, True)
+                return False
+        finally:
+            with lock:
+                waiters.pop(request_id, None)
+                outcome = results.pop(request_id, None)
+        if str((outcome or {}).get("status") or "") != "answered":
+            self.log("MESH", f"{primary} did not answer the forwarded turn "
+                             f"({(outcome or {}).get('status') or 'unknown'}); "
+                             f"answering here", level="WARN")
+            _set_turn_fallback(self, True)
+            return False
+        return True
+
+    def _handle_forwarded_turn(self, peer: str, payload: Any) -> None:
+        """A follower forwarded a turn for this hive's decision-maker to answer.
+
+        Authority: this node must actually hold the lease. A frame arriving at a
+        node that is *not* the primary is refused (not answered, and not silently
+        dropped), so two followers cannot both decide the same turn.
+
+        The decision runs on a worker thread: it may call the model, which takes
+        seconds, and the mesh receive loop must not be held for that.
+        """
+        if not isinstance(payload, dict):
+            return
+        request_id = payload.get("id")
+        primary = self._turn_primary()
+        if primary is not None:
+            self.log("MESH", f"refused forwarded turn from {peer}: "
+                             f"not the primary (mine is {primary})", level="WARN")
+            self._mesh_reply(peer, {"id": request_id, "status": "refused",
+                                    "reason": f"not the primary ({primary})"},
+                             topic=TURN_RESULT_TOPIC)
+            return
+        threading.Thread(target=self._answer_forwarded_turn,
+                         args=(peer, dict(payload)),
+                         name="forwarded-turn", daemon=True).start()
+
+    def _answer_forwarded_turn(self, peer: str, payload: Dict[str, Any]) -> None:
+        """Decide a forwarded turn, then route the reply back where it was taken."""
+        request_id = payload.get("id")
+        transcript = str(payload.get("transcript") or "").strip()
+        reply_to = str(payload.get("reply_to") or peer).strip() or peer
+        proposed = str(payload.get("proposed_text") or "").strip()
+        answer_to = str(payload.get("answer_to") or "").strip() or None
+        # The originator's own advertisement, carried in the turn: it is how the
+        # router places the reply even before that node's heartbeat has been
+        # heard, which for a turn in hand is the difference between answering the
+        # operator and answering the room.
+        origin = {"device_id": reply_to,
+                  "facts": (payload.get("facts")
+                            if isinstance(payload.get("facts"), dict) else {}),
+                  "can_speak": bool(payload.get("can_speak", True)),
+                  "priority": int(payload.get("priority", 500) or 500)}
+        status, detail = "answered", ""
+        try:
+            if not transcript:
+                status, detail = "refused", "empty transcript"
+            elif proposed:
+                # F1: the originator measured it (a phone's battery, this
+                # screen's clock). The primary decides to say it, and -- via
+                # `reply_prefer` -- that it is said where the turn was taken.
+                reason = self._deliver_forwarded_reply(proposed, reply_to, origin)
+                if reason:
+                    # The hand-off could not be completed. Say so, so the node
+                    # that took the turn answers it itself rather than nobody
+                    # answering at all.
+                    status, detail = "error", f"not delivered: {reason}"
+                else:
+                    detail = "proposed text relayed to the origin"
+            else:
+                # A full decision, using the same turn pipeline the primary uses
+                # for its own turns; only the placement differs.
+                self._conversational_turn({"transcript": transcript,
+                                           "source": "forwarded"},
+                                          transcript, reply_prefer=reply_to,
+                                          answer_to=answer_to, forwarded=True,
+                                          reply_origin=origin)
+                detail = "decided and routed"
+        except Exception as exc:
+            status, detail = "error", f"{type(exc).__name__}: {exc}"[:120]
+            self.log("ERROR", f"forwarded turn failed: {detail}", level="ERROR")
+        finally:
+            self._mesh_reply(peer, {"id": request_id, "status": status,
+                                    "detail": detail, "reply_to": reply_to},
+                             topic=TURN_RESULT_TOPIC)
+
+    def _deliver_forwarded_reply(self, text: str, reply_to: str,
+                                 origin: dict = None) -> str:
+        """Say a forwarded proposal at the node that took the turn.
+
+        Returns "" when the origin will hear it, or the reason it will not --
+        which the caller reports back so the origin answers *locally* instead. A
+        reply the primary cannot place is not spoken here as a consolation: that
+        would be a second mouth, in the wrong room, and the operator who asked
+        would still hear nothing.
+        """
+        result = self._route_response("speak", {"text": text},
+                                      prefer=reply_to, origin=origin)
+        if result is None:
+            return "the origin was not a reachable mouth and no device was chosen"
+        if (str(result.get("status")) == "delegated"
+                and str(result.get("delegated_to") or "") == reply_to):
+            return ""
+        return (f"routed to {result.get('delegated_to') or 'nobody'} "
+                f"({result.get('status') or 'unknown'}), not the origin")
 
     def _speak_turn(self, text: str) -> bool:
         """Speak a deterministic answer and bracket the turn on the manager.
@@ -2323,6 +2721,17 @@ class AndroidAgent:
             count = facts.get("remote_face_count")
             if isinstance(count, (int, float)):
                 facts["remote_face_present"] = int(count) > 0
+        # A screen that has just taken typed input: the operator is demonstrably in
+        # front of *this* device, which no camera can see. Without it a peer scores
+        # only on perception, so a primary answering a forwarded turn could not
+        # place the reply back at the terminal that asked and the keyboard operator
+        # would be answered on somebody else's speaker. Sent only while the input
+        # is recent -- the same bounded signal the local routing uses.
+        try:
+            if self.terminal_input_recent():
+                facts["remote_terminal_active"] = True
+        except Exception:
+            pass
         return facts
 
     def _mesh_heartbeat_payload(self) -> Dict[str, Any]:
@@ -2537,6 +2946,15 @@ class AndroidAgent:
         in-flight delegation sender) is the current primary, this node is acting
         as the primary's hands, which is exactly how a hive answers through the
         device nearest the operator.
+
+        There is deliberately **no** exemption for a local turn. A follower that
+        is handed a turn does not decide it and does not speak it: it forwards
+        the turn to the primary (``orchestrate/turn``), which decides and routes
+        the reply back to this node as a *delegated* action -- so the answer
+        still arrives here, through the branch above, while "who speaks in this
+        hive" stays one node's decision. Measured before this: a follower that
+        answered a typed turn directly produced its own user-facing speech with
+        no lease, which is the duplicate-speech case the guard exists to stop.
         """
         election = self.mesh_election
         if election is None:
@@ -2773,13 +3191,59 @@ class AndroidAgent:
             })
         return candidates
 
-    def select_response_node(self) -> Tuple[Optional[Dict[str, Any]], str]:
-        """Which device should say it: the one closest to the operator."""
+    def select_response_node(self, prefer: str = "", origin: dict = None
+                             ) -> Tuple[Optional[Dict[str, Any]], str]:
+        """Which device should say it: the one closest to the operator.
+
+        ``prefer`` names the node that was *asked* the turn, and is honoured when
+        that node can speak. It is not a policy override: the answer to a turn
+        belongs where the turn was taken, so a forwarded turn's reply returns to
+        the node the operator used even when a better-placed face is visible
+        nearby. A preferred node that cannot speak falls through to the normal
+        proximity choice rather than muting the answer.
+
+        ``origin`` is that node's own advertisement (facts + speech ability),
+        carried in the forwarded turn. It is used only when the origin is not yet
+        in the proximity store -- the heartbeat that would put it there is a
+        second or two behind the turn, and without this the reply would be placed
+        by a router that has not heard of the device the operator is standing at.
+        """
         from response_routing import select as _select
         policy = (self.policy if isinstance(getattr(self, "policy", None), dict)
                   else {})
         forced = policy.get("response_target") or "auto"
-        chosen, why = _select(self._response_candidates(), forced=forced)
+        candidates = self._response_candidates()
+        preferred = str(prefer or "").strip()
+        if preferred and isinstance(origin, dict) and \
+                str(origin.get("device_id") or "") == preferred:
+            if not any(str(c.get("device_id") or "") == preferred
+                       for c in candidates):
+                candidates = list(candidates) + [{
+                    "device_id": preferred,
+                    "facts": dict(origin.get("facts") or {}),
+                    "can_speak": bool(origin.get("can_speak", True)),
+                    "is_self": False,
+                    "priority": int(origin.get("priority", 500) or 500),
+                }]
+        if preferred:
+            for candidate in candidates:
+                if str(candidate.get("device_id") or "") != preferred:
+                    continue
+                if not candidate.get("can_speak"):
+                    break
+                why = (f"{preferred} took the turn and can speak "
+                       f"(preferred over proximity)")
+                chosen = dict(candidate)
+                chosen["score"] = None
+                chosen["why"] = ["turn-origin"]
+                self._last_route = {
+                    "device": preferred, "score": None,
+                    "signals": ["turn-origin"], "reason": why,
+                    "forced": ("preferred" if not (forced and str(forced) != "auto")
+                               else forced),
+                }
+                return chosen, why
+        chosen, why = _select(candidates, forced=forced)
         self._last_route = {
             "device": (chosen or {}).get("device_id"),
             "score": (chosen or {}).get("score"),
@@ -2789,7 +3253,8 @@ class AndroidAgent:
         }
         return chosen, why
 
-    def _route_response(self, action_type: str, params: Dict[str, Any]
+    def _route_response(self, action_type: str, params: Dict[str, Any],
+                        prefer: str = "", origin: dict = None
                         ) -> Optional[Dict[str, Any]]:
         """Send this response to the closest device, or None to answer locally.
 
@@ -2797,8 +3262,11 @@ class AndroidAgent:
         is another node the response is *delegated* over the mesh: that node
         validates the request (only the primary may direct it), speaks through
         its own speaker, and reports the outcome back here.
+
+        ``prefer`` (with ``origin``) answers a forwarded turn where it was taken
+        (see `select_response_node`).
         """
-        chosen, why = self.select_response_node()
+        chosen, why = self.select_response_node(prefer=prefer, origin=origin)
         if chosen is None or chosen.get("is_self"):
             return None
         peer = str(chosen["device_id"])
@@ -2850,6 +3318,10 @@ class AndroidAgent:
             self._handle_delegated_action(str(peer), payload)
         elif topic == DELEGATE_RESULT_TOPIC:
             self._record_delegated_result(str(peer), payload)
+        elif topic == TURN_TOPIC:
+            self._handle_forwarded_turn(str(peer), payload)
+        elif topic == TURN_RESULT_TOPIC:
+            self._record_turn_result(str(peer), payload)
 
     def _handle_delegated_action(self, peer: str, payload: Any) -> None:
         """Run an action the primary delegated, then report the outcome.
@@ -2938,6 +3410,34 @@ class AndroidAgent:
             record.get("delivered"), record.get("reason") or "")
         self._retry_delegation_if_stale(peer, record)
 
+    def _record_turn_result(self, peer: str, payload: Any) -> None:
+        """Note what the primary did with a turn this node forwarded.
+
+        Informational: the answer itself arrives separately as a delegated speak.
+        This is how the originator can tell "the primary answered" from "the
+        primary never took it" -- a refused hand-off is otherwise indistinguishable
+        from a slow one, and the operator would just see nothing.
+        """
+        if not isinstance(payload, dict):
+            return
+        status = str(payload.get("status") or "unknown")
+        detail = str(payload.get("detail") or payload.get("reason") or "")
+        self.log("MESH", f"forwarded turn {status} by {peer}"
+                         + (f": {detail}" if detail else ""))
+        # Wake the sender if it is still waiting on this hand-off. It is the one
+        # that decides whether to answer locally instead, so a result nobody
+        # collects must not accumulate: the waiter pops its own entry.
+        request_id = str(payload.get("id") or "")
+        waiters, results, lock = _turn_state(self)
+        if request_id:
+            with lock:
+                if request_id in waiters:
+                    results[request_id] = dict(payload)
+                    waiters[request_id].set()
+        import logging as _logging
+        _logging.getLogger(__name__).info(
+            "forwarded turn %s by %s: %s", status, peer, detail or "no detail")
+
     def _retry_delegation_if_stale(self, peer: str, record: Dict[str, Any]) -> None:
         """Re-send a delegation the receiver refused because its lease lagged.
 
@@ -2975,16 +3475,37 @@ class AndroidAgent:
 
         threading.Thread(target=_retry, daemon=True).start()
 
-    def _mesh_reply(self, peer: str, payload: Dict[str, Any]) -> None:
-        """Send a delegation outcome back to the primary (best effort)."""
+    def _mesh_reply(self, peer: str, payload: Dict[str, Any],
+                    topic: str = DELEGATE_RESULT_TOPIC) -> None:
+        """Send an outcome back to the peer that asked (best effort)."""
         runtime = getattr(self, "shugonet_runtime", None)
         if runtime is None:
             return
         try:
-            runtime.send(peer, DELEGATE_RESULT_TOPIC, dict(payload))
+            runtime.send(peer, topic, dict(payload))
         except Exception as exc:
-            self.log("MESH", f"delegate reply to {peer} failed: "
+            self.log("MESH", f"reply to {peer} failed: "
                              f"{type(exc).__name__}", level="WARN")
+
+    def _turn_primary(self) -> Optional[str]:
+        """The node that owns this hive's decisions, or None when that is this node.
+
+        None means "decide here": there is no election module, nobody holds the
+        lease (standalone / partition -- fail closed to standalone, the same rule
+        ``_mesh_may_act`` applies), or we hold it ourselves. A *follower* returns
+        the primary's node id, which is also the name the mesh peer map is keyed
+        by, so it can be dialled.
+        """
+        election = self.mesh_election
+        if election is None:
+            return None
+        try:
+            primary = election.tick().get("primary")
+        except Exception:
+            return None
+        if not primary or str(primary) == str(getattr(election, "node_id", "")):
+            return None
+        return str(primary)
 
     def _mesh_role_label(self) -> str:
         """Compact role for the status surface: 'none' (module missing),
@@ -3033,8 +3554,10 @@ class AndroidAgent:
         pipeline. Used for command responses and other deterministic output."""
         from security import sanitize_text
         from human_interaction import AgentResponse
-        # Track 1: primary-only guardrail — followers never speak.
-        if not self._mesh_may_act("speak_direct"):
+        # Track 1: primary-only guardrail — a follower does not announce to the
+        # room. A node whose hand-off to the primary went unanswered may answer
+        # instead (see `_turn_fallback_ok`).
+        if not (self._mesh_may_act("speak_direct") or _turn_fallback_ok(self)):
             return False
         if self._speak_listener is None:
             return False
@@ -3442,6 +3965,15 @@ class AndroidAgent:
             if mode != getattr(self, "_last_orchestration_mode", None):
                 self._last_orchestration_mode = mode
                 self.log("AGENT", f"orchestration mode: {mode} ({why})")
+                # Also to stderr, where adb can read it. The LOG tab is
+                # in-memory, so a harness watching logcat could not tell "this
+                # node is deliberately deferring to the primary" from "this node
+                # is broken": it saw no decisions and timed out after five
+                # minutes. One line per *change*, not per tick -- a fleet where
+                # the node governs itself looks exactly as healthy as it is.
+                import sys as _sys
+                print(f"ORCHESTRATION: {mode}: {why}",
+                      file=_sys.stderr, flush=True)
             subordinate = mode in ("subordinate", "degraded")
             if subordinate:
                 outcome = "NO_ACTION"

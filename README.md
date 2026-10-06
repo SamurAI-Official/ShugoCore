@@ -3,7 +3,7 @@
 > A continuous orchestration layer for synthetic functional agency.
 
 [![PyPI](https://img.shields.io/pypi/v/shugocore)](https://pypi.org/project/shugocore/)
-![Release](https://img.shields.io/badge/release-v1.30.24-blue)
+![Release](https://img.shields.io/badge/release-v1.30.25-blue)
 ![Tests](https://img.shields.io/badge/tests-1105%20passing-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%E2%80%933.13-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android%20%28Termux%2FChaquopy%29-lightgrey)
@@ -425,6 +425,48 @@ python clients/desktop/shugocore_desktop.py --terminal --say "status report" --e
 Routing: `terminal_active` (0.30) is what lets a keyboard operator be chosen at all -- bare
 presence (0.15) cannot cross the response floor (0.20) by design, and a face (0.35) still
 outranks a keyboard. Speech heard through `--ear` makes this node a speech candidate instead.
+The fact is also advertised over the mesh (`remote_terminal_active`) while the input is
+recent, so a *primary* placing a reply can find the terminal that a camera cannot see.
+
+**A node that does not hold the lease forwards its turns.** The primary-only guardrail says
+one node decides and one node speaks, so an operator typing at a follower is not answered by
+that follower: it does its read-only local work (memory, intent, and any measurement only it
+can take) and sends the turn to the primary, which decides and routes the reply back to the
+same device as a delegated action. A deterministic answer travels with the turn as a
+*proposal* the primary may accept or replace -- a phone's battery is the phone's, but the
+decision to say it is the hub's. If the primary cannot be reached or does not take the
+hand-off, the origin answers locally rather than leaving the operator in silence; that
+permission is per-turn and thread-scoped, never granted for ambient speech. `--say` and typed
+turns both behave this way, so the terminal is a front end for the hive, not a second agent.
+
+`scripts/verify_interactive.py` is the *evidence* for the session above: it builds
+one real node the way the terminal does, warms the endpoint, submits typed turns
+through the same `handle_typed_input` seam, and prints what was typed, what came
+back, and what backed it (`proposal_source` -- the model id when a model answered,
+a rule name when one stood in). It exits non-zero only when a turn produced no
+reply at all, because a silent agent is the defect worth failing on; a
+deterministic answer to `what time is it` is reported as rule-backed rather than
+counted against the model:
+
+```bash
+python scripts/verify_interactive.py --backend stub          # offline, no network
+python scripts/verify_interactive.py \
+    --url http://127.0.0.1:1234 --model zai-org/glm-4.6v-flash
+```
+
+Measured against a live LM Studio endpoint: 4 of 4 turns answered, 0 silent --
+2 answered by the model and 2 by deterministic tools (the clock read and the
+memory write), which is the split that should be visible when both layers work.
+
+`scripts/verify_hive_turn.py` proves the *hive* rule instead, on real TCP with two
+nodes: the follower takes the turn and says nothing, the primary decides, and the
+reply returns to the follower (`hub heard nothing locally -- one decision, one
+mouth`). It exists because a machine with live nodes on its LAN cannot make "is
+this node a follower?" deterministic in a single-node run.
+
+```bash
+python scripts/verify_hive_turn.py --turn "what time is it?"
+```
 
 Hearing from a phone is a different path, and worth knowing before waiting for one: a
 peripheral's ears reach its *paired Bluetooth primary* (SPP), a follower consumes its own

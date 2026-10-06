@@ -252,6 +252,12 @@ class AgentController:
             self.last_error = f"create_agent failed: {exc}"
             return self.last_error
         self.applied = self._apply_backend(agent, spec, url, model)
+        # The dir the node is *actually* using. The Data dir field is editable
+        # while the node runs, so a control that reads the field (Verify audit
+        # did) can be pointed at a directory the node never wrote -- and would
+        # report a pristine or missing chain as INVALID. Record it next to the
+        # backend, so every reader has one answer.
+        self.applied["data_dir"] = data_dir
         self._attach_speaker(agent)
         self.agent = agent
         self.mesh = dict(mesh)
@@ -506,6 +512,10 @@ class DesktopUI(getattr(tk, "Tk", object)):
         self._ui_queue = queue.Queue()
         self._ui_errors = []
         self._last_source = ""
+        # Close-path state: `_closing` stops the poll loop re-arming, and
+        # `_after_id` is the pending timer it would otherwise leave behind.
+        self._closing = False
+        self._after_id = None
         # The listener the node speaks through. Created before the node starts so
         # a reply can arrive from the very first turn (and so the node advertises
         # can_speak=true to the hive).
@@ -582,6 +592,8 @@ class DesktopUI(getattr(tk, "Tk", object)):
             elif kind == "speak":
                 # The agent said something: show it where the operator asked.
                 self._note_turn(f"node> {payload}", spoken=True)
+            elif kind == "audit":
+                self._audit_done(payload if isinstance(payload, dict) else {})
             elif kind == "turn":
                 payload = payload if isinstance(payload, dict) else {}
                 if payload.get("error"):
@@ -590,6 +602,11 @@ class DesktopUI(getattr(tk, "Tk", object)):
                     self._note_turn(f"  ({payload['note']})", error=True)
 
     def _poll(self) -> None:
+        if getattr(self, "_closing", False):
+            # The window is going away: do not re-arm, and do not touch widgets
+            # whose Tcl commands are being torn down. Without this the pending
+            # `after` fired after destroy() and printed a TclError on close.
+            return
         snapshot = self.controller.snapshot()
         self._drain_worker_messages()
         self._ui_errors = []
@@ -608,13 +625,59 @@ class DesktopUI(getattr(tk, "Tk", object)):
             self._hdr["state"].config(
                 text="UI error - " + "; ".join(self._ui_errors)[:150],
                 foreground="#b3261e")
-        self.after(POLL_MS, self._poll)
+        self._after_id = self.after(POLL_MS, self._poll)
 
     def _on_close(self) -> None:
+        """Close the window without freezing it, and without leaving a node up.
+
+        `stop()` joins the tick thread (up to 8 s) and then runs the agent's
+        cleanup -- consolidation, the task-manager worker, the mesh runtime. On
+        the Tk main thread that is a frozen window and a "not responding" title
+        for the several seconds it takes, so the teardown happens off-thread and
+        the window is destroyed when it returns. The UI stays honest while it
+        waits rather than looking hung.
+        """
+        if getattr(self, "_closing", False):
+            return
+        self._closing = True
+        pending = getattr(self, "_after_id", None)
+        if pending is not None:
+            try:
+                self.after_cancel(pending)
+            except Exception:
+                pass
+            self._after_id = None
         try:
-            self.controller.stop()
-        finally:
+            self._hdr["state"].config(text="stopping the node ...",
+                                      foreground="#8a6d00")
+            self.update_idletasks()
+        except Exception:
+            pass
+
+        def work():
+            try:
+                self.controller.stop()
+            except Exception:
+                pass
+
+        threading.Thread(target=work, daemon=True, name="ui-close").start()
+        # Destroy from the *main* thread once the teardown is done. Tk is not
+        # thread-safe, so the worker could not call destroy/after itself.
+        self._await_stop(deadline=time.monotonic() + 30.0)
+
+    def _await_stop(self, deadline: float) -> None:
+        """Main-thread watchdog: close as soon as the node has actually stopped."""
+        try:
+            still_running = bool(self.controller.running())
+        except Exception:
+            still_running = False
+        if still_running and time.monotonic() < deadline:
+            self._after_id = self.after(100, lambda: self._await_stop(deadline))
+            return
+        try:
             self.destroy()
+        except Exception:
+            pass
 
     # -- SERVER pane: backend + model choice ------------------------------
     def _build_server(self, parent) -> None:
@@ -1069,8 +1132,11 @@ class DesktopUI(getattr(tk, "Tk", object)):
             text=str(pipeline.get("speech", pipeline.get("tts", "not attached"))))
         self.val_rows["memory"].config(
             text=f"tier2 {status.get('tier2_facts', 0)} fact(s)")
+        audit = (status.get("policy") or {}).get("audit")
+        # `str(None)` printed the literal word "None" on the first screen. The
+        # row must read like its siblings when there is nothing to report.
         self.val_rows["audit"].config(
-            text=str((status.get("policy") or {}).get("audit")))
+            text="not reported" if audit is None else str(audit))
 
     # -- ACTIVITY pane ----------------------------------------------------
     def _build_activity(self, parent) -> None:
@@ -1244,17 +1310,50 @@ class DesktopUI(getattr(tk, "Tk", object)):
                                             justify="left")
         self.sec_rows["grants"].pack(anchor="w")
 
+    def _audit_dir(self) -> str:
+        """The dir whose chain to verify: the node's own, not the entry field.
+
+        The Data dir field can be edited while a node runs, so reading it here
+        reported CHAIN INVALID for a path the node had never written -- a false
+        alarm in a security control. The dir recorded at start wins; the field is
+        the fallback for the case where no node has started yet.
+        """
+        applied = getattr(self.controller, "applied", None) or {}
+        return str(applied.get("data_dir") or self.var_datadir.get().strip())
+
     def _verify_audit(self) -> None:
-        path = os.path.join(self.var_datadir.get().strip(), "audit_chain.jsonl")
-        try:
-            from audit import verify_audit_file
-            ok = bool(verify_audit_file(path))
-            self.sec_rows["audit_check"].config(
-                text=("chain OK" if ok else "CHAIN INVALID") + f"  ({path})",
-                foreground="#137333" if ok else "#b3261e")
-        except Exception as exc:
-            self.sec_rows["audit_check"].config(
-                text=f"verify failed: {exc}", foreground="#b3261e")
+        """Verify the audit chain, off the UI thread (it hashes the whole file).
+
+        The chain reached 57 MB on an A16 and 102 MB on a Tab, so hashing it on
+        the Tk main thread froze the window for seconds. Same worker + queue
+        pattern as Detect models.
+        """
+        path = os.path.join(self._audit_dir(), "audit_chain.jsonl")
+        label = self.sec_rows.get("audit_check")
+        if label is None:
+            return
+        label.config(text=f"verifying {path} ...", foreground="#444")
+
+        def work():
+            try:
+                from audit import verify_audit_file
+                ok = bool(verify_audit_file(path))
+                payload = {"ok": ok, "path": path,
+                           "text": ("chain OK" if ok else "CHAIN INVALID")
+                                   + f"  ({path})"}
+            except Exception as exc:
+                payload = {"ok": False, "path": path,
+                           "text": f"verify failed: {type(exc).__name__}: {exc}"}
+            self._ui_queue.put(("audit", payload))
+
+        threading.Thread(target=work, daemon=True, name="ui-audit").start()
+
+    def _audit_done(self, payload: dict) -> None:
+        label = self.sec_rows.get("audit_check")
+        if label is None:
+            return
+        label.config(text=str(payload.get("text") or "verify produced nothing"),
+                     foreground="#137333" if payload.get("ok") else "#b3261e")
 
     # -- operator consent (SECURITY pane) --------------------------------
 
@@ -1396,25 +1495,40 @@ class DesktopUI(getattr(tk, "Tk", object)):
     def _append_logs(self, snap: dict) -> None:
         new = snap.get("logs") or []
         level = self.var_level.get()
-        if new:
-            self._log_total += len(new)
-            for entry in new:
-                if level != "ALL" and str(entry.get("level")) != level:
-                    continue
-                self.txt_log.insert("end", self._format_log(entry))
-            self.txt_log.see("end")
-        buffered = len(snap.get("log_history") or [])
-        self.lbl_log_count.config(text=f"{self._log_total} seen / "
-                                       f"{buffered} buffered")
-
-    def _rerender_logs(self) -> None:
-        self.txt_log.delete("1.0", "end")
-        level = self.var_level.get()
-        for entry in self.controller._logs[-400:]:
+        shown = 0
+        for entry in new:
             if level != "ALL" and str(entry.get("level")) != level:
                 continue
             self.txt_log.insert("end", self._format_log(entry))
+            shown += 1
+        if shown:
+            self.txt_log.see("end")
+        # Count what is actually in the pane. Counting every arrival regardless
+        # of the filter made "N seen" disagree with what the operator could see.
+        self._log_total += shown
+        buffered = len(snap.get("log_history") or [])
+        self.lbl_log_count.config(text=f"{self._log_total} shown / "
+                                       f"{buffered} buffered")
+
+    def _rerender_logs(self) -> None:
+        """Re-render from the controller's snapshot history, not its internals.
+
+        The UI reads the snapshot; reaching into ``controller._logs`` broke that
+        boundary (and read a different stream than the one the pane accumulates).
+        """
+        self.txt_log.delete("1.0", "end")
+        level = self.var_level.get()
+        history = list(getattr(self.controller, "snapshot", lambda: {})()
+                       .get("log_history") or [])
+        self._log_total = 0
+        for entry in history[-400:]:
+            if level != "ALL" and str(entry.get("level")) != level:
+                continue
+            self.txt_log.insert("end", self._format_log(entry))
+            self._log_total += 1
         self.txt_log.see("end")
+        self.lbl_log_count.config(text=f"{self._log_total} shown / "
+                                       f"{len(history)} buffered")
 
 
 def build_parser() -> argparse.ArgumentParser:

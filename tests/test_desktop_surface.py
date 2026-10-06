@@ -15,6 +15,8 @@ These drive the *logic* without a Tk root (`DesktopUI.__new__`), matching
 import importlib.util
 import os
 import queue
+import threading
+import time
 import types
 import unittest
 
@@ -214,6 +216,182 @@ class StartingIsNotBrokenTestCase(unittest.TestCase):
                          "the flag survived the start, so every later failure "
                          "would be reported as 'still starting'")
         self.assertEqual(result, "boom")
+
+
+class _Cell:
+    """A widget stand-in: records the last config()/insert() without Tk."""
+
+    def __init__(self):
+        self.text = ""
+        self.foreground = ""
+
+    def config(self, **kwargs):
+        if "text" in kwargs:
+            self.text = kwargs["text"]
+        if "foreground" in kwargs:
+            self.foreground = kwargs["foreground"]
+
+    def insert(self, _index, value):
+        self.text += str(value)
+
+    def delete(self, *_args):
+        self.text = ""
+
+    def see(self, *_args):
+        pass
+
+
+class TheAuditCheckUsesTheNodesOwnDirectoryTestCase(unittest.TestCase):
+    """Verifying the field instead of the node's dir cried wolf."""
+
+    def _ui(self, applied, field):
+        ui = _ui.DesktopUI.__new__(_ui.DesktopUI)
+        ui.controller = types.SimpleNamespace(applied=applied)
+        ui.var_datadir = types.SimpleNamespace(get=lambda: field)
+        return ui
+
+    def test_the_started_dir_wins_over_the_editable_field(self):
+        ui = self._ui({"data_dir": r"C:\node"}, r"C:\somewhere-else")
+        self.assertEqual(ui._audit_dir(), r"C:\node")
+
+    def test_the_field_is_the_fallback_before_a_node_starts(self):
+        ui = self._ui({}, r"C:\not-started-yet")
+        self.assertEqual(ui._audit_dir(), r"C:\not-started-yet")
+
+    def test_the_controller_records_the_dir_it_used(self):
+        """The UI has no other way to know it: `applied` must carry it."""
+        source = open(_PATH, encoding="utf-8").read()
+        body = source.split("def _start(")[1].split("\n    def ")[0]
+        self.assertIn('self.applied["data_dir"] = data_dir', body)
+
+    def test_verifying_does_not_hash_on_the_ui_thread(self):
+        """57-102 MB measured on real phones: it cannot run on the mainloop."""
+        source = open(_PATH, encoding="utf-8").read()
+        body = source.split("def _verify_audit")[1].split("\n    def ")[0]
+        self.assertIn("Thread(", body)
+        self.assertIn("_ui_queue", body)
+
+    def test_the_result_lands_on_the_main_thread(self):
+        ui = _ui.DesktopUI.__new__(_ui.DesktopUI)
+        ui.sec_rows = {"audit_check": _Cell()}
+        ui._audit_done({"ok": True, "text": "chain OK  (a/b/c)"})
+        self.assertEqual(ui.sec_rows["audit_check"].text, "chain OK  (a/b/c)")
+        self.assertEqual(ui.sec_rows["audit_check"].foreground, "#137333")
+        ui._audit_done({"ok": False, "text": "CHAIN INVALID"})
+        self.assertEqual(ui.sec_rows["audit_check"].foreground, "#b3261e")
+
+
+class TheClosePathDoesNotHangTestCase(unittest.TestCase):
+    """Stopping the node joins a thread and tears the engine down: not on Tk."""
+
+    def _ui(self, running=True):
+        ui = _ui.DesktopUI.__new__(_ui.DesktopUI)
+        ui._closing = False
+        ui._after_id = "pending-timer"
+        ui._hdr = {"state": _Cell()}
+        cancelled = []
+        ui.after_cancel = lambda token: cancelled.append(token)
+        ui.after = lambda *args: "rescheduled"
+        ui.update_idletasks = lambda: None
+        ui.destroyed = []
+        ui.destroy = lambda: ui.destroyed.append(True)
+        ui._cancelled = cancelled
+        ui.controller = types.SimpleNamespace(
+            stop=lambda: None, running=lambda: running)
+        return ui
+
+    def test_the_pending_poll_is_cancelled(self):
+        ui = self._ui()
+        ui._on_close()
+        # The poll's timer is cancelled; what `_after_id` holds afterwards is the
+        # watchdog's own timer, which is the point of the next test.
+        self.assertEqual(ui._cancelled, ["pending-timer"])
+        self.assertTrue(ui._closing)
+        self.assertNotEqual(ui._after_id, "pending-timer")
+
+    def test_the_operator_is_told_what_is_happening(self):
+        ui = self._ui()
+        ui._on_close()
+        self.assertIn("stopping", ui._hdr["state"].text.lower())
+
+    def test_teardown_is_not_run_on_the_calling_thread(self):
+        """If it were, the window would freeze for the whole join."""
+        ui = self._ui()
+        ran = []
+        ui.controller = types.SimpleNamespace(
+            stop=lambda: ran.append(threading.current_thread().name),
+            running=lambda: False)
+        ui._on_close()
+        deadline = time.time() + 5.0
+        while not ran and time.time() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(ran, "teardown never ran")
+        self.assertNotEqual(ran[0], "MainThread")
+
+    def test_closing_twice_is_a_no_op(self):
+        ui = self._ui()
+        ui._on_close()
+        ui._on_close()                     # must not tear down twice
+        self.assertEqual(ui.destroyed, [])
+
+    def test_a_window_that_has_stopped_is_destroyed(self):
+        """The watchdog closes it from the main thread once the node is gone."""
+        ui = self._ui(running=False)
+        ui._on_close()                     # `_await_stop` sees it already stopped
+        self.assertEqual(ui.destroyed, [True])
+
+    def test_a_closing_window_stops_polling(self):
+        ui = _ui.DesktopUI.__new__(_ui.DesktopUI)
+        ui._closing = True
+        armed = []
+        ui.after = lambda *_args: armed.append(True)
+        ui._poll()                          # must return before touching anything
+        self.assertEqual(armed, [],
+                         "the poll re-armed itself while the window was closing")
+
+
+class TheLogPaneTellsTheTruthTestCase(unittest.TestCase):
+    """Counting what arrived is not counting what the operator can see."""
+
+    def _ui(self, level):
+        ui = _ui.DesktopUI.__new__(_ui.DesktopUI)
+        ui.txt_log = _Cell()
+        ui.lbl_log_count = _Cell()
+        ui._log_total = 0
+        ui.var_level = types.SimpleNamespace(get=lambda: level)
+        return ui
+
+    def _entry(self, level, message):
+        return {"level": level, "category": "AGENT", "message": message,
+                "ts": time.time()}
+
+    def test_a_filter_does_not_inflate_the_count(self):
+        ui = self._ui("ERROR")
+        ui._append_logs({"logs": [self._entry("INFO", "one"),
+                                  self._entry("ERROR", "two")],
+                         "log_history": [1, 2]})
+        self.assertEqual(ui._log_total, 1)
+        self.assertIn("shown", ui.lbl_log_count.text)
+        self.assertIn("two", ui.txt_log.text)
+        self.assertNotIn("one", ui.txt_log.text)
+
+    def test_all_shows_everything(self):
+        ui = self._ui("ALL")
+        ui._append_logs({"logs": [self._entry("INFO", "one"),
+                                  self._entry("ERROR", "two")],
+                         "log_history": [1, 2]})
+        self.assertEqual(ui._log_total, 2)
+
+    def test_rerender_reads_the_snapshot_not_the_controller_internals(self):
+        ui = self._ui("ALL")
+        ui.controller = types.SimpleNamespace(
+            snapshot=lambda: {"log_history": [self._entry("INFO", "from-snapshot")]})
+        ui._rerender_logs()
+        self.assertIn("from-snapshot", ui.txt_log.text)
+
+
+if __name__ == "__main__":
+    unittest.main()
 
 
 if __name__ == "__main__":

@@ -6,6 +6,49 @@ frozen: no breaking changes across any 1.x release.
 
 ## [Unreleased]
 
+### The desktop window could be watched but never used
+
+The control plane opened and drew six panes, and no operator could do anything
+with it: nothing registered a speech listener in GUI mode, so a typed turn was
+handled, decided, and then delivered to nobody. Three defects, all found by
+driving the window offscreen and pressing everything.
+
+- **No speech listener, so the node had no mouth.** `register_speak_listener` was
+  called only inside `run_terminal`, so in GUI mode `_speak_direct` returned
+  False and every reply was dropped -- and `can_speak` stayed false, which also
+  meant the hive would never place an answer on this node. The window now
+  registers a `UiSpeaker` when it builds a node (via
+  `AgentController.speak_listener`), and replies render in the window.
+- **The AGENT tab had no way to talk to the node at all**, though
+  `AndroidAgent.speak_test` and the README both name "the AGENT tab's Test
+  speech control". Added both: a **Talk to the node** box that drives
+  `handle_typed_input(text, source="desktop-ui")` -- the agent's own
+  conversational seam, on a worker thread so a model round trip cannot freeze
+  the window -- and the **Test speech** button that was documented but missing.
+  The transcript prints `node> ...`, and a turn that is handled but silent says
+  so instead of leaving the operator to guess between thinking, muted and no
+  provider.
+- **The SECURITY pane read an attribute the UI does not have.** `_consent_registry`
+  used ``self.agent``, but the controller owns the node, so every 1 Hz poll
+  raised and the whole pane reported "UI error" -- Grant and Revoke could not
+  run. It reads `self.controller.agent` now, and the empty case says *why*
+  (still starting vs not running) rather than "no consent registry".
+
+**Selecting "Stub (offline)" broke every cycle.** `_backend_for` injected the
+delegated URL into whatever backend config the registry held, including the stub,
+which takes no constructor arguments -- so `create_backend` raised
+`StubBackend() takes no arguments`, the engine logged `BackendError`, and the one
+backend a person reaches for when there is no model to reach was the one that
+could not work. A URL is now only injected into a transport that dials one. The
+header also stops printing an endpoint beside "stub", which told the operator
+about an address the node was deliberately not using.
+
+Verified offscreen against a live LM Studio endpoint: `you> hello, who are you?`
+answered by `zai-org/glm-4.6v-flash` with the reply landing in the transcript and
+`Decision source` naming the model; `Test speech` executing through the gated
+path; every button on every pane pressed with no UI error. `tests/test_desktop_surface.py`
+pins all of it without a Tk root, so the suite still runs on a headless CI host.
+
 ## [1.30.25] - 2026-10-06 — one decision, one mouth
 
 ### The interactive pipeline, driven rather than read: three defects it was hiding

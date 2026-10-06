@@ -190,6 +190,7 @@ class AgentController:
         # process.
         self.sync_interval = max(0.0, float(sync_interval))
         self.agent = None
+        self.starting = False
         self._thread = None
         self._stop = threading.Event()
         self.started_at = 0.0
@@ -198,6 +199,11 @@ class AgentController:
         self._logs = []
         self.applied = {}
         self.mesh = {}
+        # The speech listener the *surface* wants attached to the node it builds.
+        # A GUI registers one so replies have somewhere to arrive (and so this
+        # node counts as a device that can speak when the hive places an answer);
+        # without it a typed turn was handled and then delivered to nobody.
+        self.speak_listener = None
         self.sync_state = {"rounds": 0, "imported": 0, "failed": 0,
                            "last": ""}
 
@@ -207,6 +213,20 @@ class AgentController:
         """Build and start a node. Returns "" on success, else the error."""
         from shugocore_agent import create_agent
         mesh = dict(mesh or {})
+        # `create_agent` builds the engine, the four memory tiers and the mesh,
+        # which takes seconds. Until it returns there is no agent, and a surface
+        # that only knows "running" or "not" reports that window as "no node" --
+        # which reads to an operator like a failure rather than a wait.
+        self.starting = True
+        try:
+            return self._start(spec, url, model, api_key, data_dir, device_caps,
+                               mesh)
+        finally:
+            self.starting = False
+
+    def _start(self, spec: dict, url: str, model: str, api_key: str,
+               data_dir: str, device_caps: str, mesh: dict) -> str:
+        from shugocore_agent import create_agent
         data_dir = str(Path(data_dir).expanduser().resolve())
         Path(data_dir).mkdir(parents=True, exist_ok=True)
         if api_key:
@@ -232,6 +252,7 @@ class AgentController:
             self.last_error = f"create_agent failed: {exc}"
             return self.last_error
         self.applied = self._apply_backend(agent, spec, url, model)
+        self._attach_speaker(agent)
         self.agent = agent
         self.mesh = dict(mesh)
         self.sync_state = {"rounds": 0, "imported": 0, "failed": 0, "last": ""}
@@ -260,6 +281,22 @@ class AgentController:
         if url:
             agent.api_url = url.rstrip("/")      # keep status truthful
         return {"backend": config, "model": models[0].get("id", model)}
+
+    def _attach_speaker(self, agent) -> None:
+        """Give the freshly built node the surface's speech listener.
+
+        Best-effort and honest: a node that refuses the listener (or a surface
+        that has none) must not stop the node from starting -- it just means
+        replies have nowhere to land, which the UI reports as `can_speak: no`
+        rather than pretending otherwise.
+        """
+        listener = self.speak_listener
+        if listener is None or agent is None:
+            return
+        try:
+            agent.register_speak_listener(listener)
+        except Exception as exc:
+            self.last_error = f"speak listener not attached: {exc}"
 
     # -- run loop ---------------------------------------------------------
     def _loop(self) -> None:
@@ -413,6 +450,36 @@ class AgentController:
 # Defined against Tk when it exists, and against object when this Python has no
 # Tk: the module must still import so the --terminal surface can run on a host
 # with no windowing system (the GUI branch refuses with an honest message).
+class UiSpeaker:
+    """Deliver the agent's replies to the operator's screen.
+
+    The window is a *surface*, not a second agent: this is the node's speech
+    listener, so everything the agent says out loud arrives here. Registering one
+    is also what makes this node a device the hive can place an answer on
+    (`can_speak`); with no listener a typed turn was handled, decided, and then
+    delivered to nobody -- which is why the control plane could be watched but
+    never talked to.
+
+    Called from whichever thread the node runs on (the tick thread for an ambient
+    decision, a worker thread for a typed turn), so it never touches a widget: it
+    posts to the UI queue and returns.
+    """
+
+    def __init__(self, queue_: "queue.Queue") -> None:
+        self._queue = queue_
+        self.delivered = 0
+        self.last = ""
+
+    def speak(self, text: str) -> bool:
+        message = str(text or "").strip()
+        if not message:
+            return False
+        self.delivered += 1
+        self.last = message
+        self._queue.put(("speak", message))
+        return True
+
+
 class DesktopUI(getattr(tk, "Tk", object)):
     """The Android control plane on the desktop: a pinned status header over
     SERVER | AGENT | ACTIVITY | SENSORS | SECURITY | LOG, polled at 1 Hz."""
@@ -439,6 +506,11 @@ class DesktopUI(getattr(tk, "Tk", object)):
         self._ui_queue = queue.Queue()
         self._ui_errors = []
         self._last_source = ""
+        # The listener the node speaks through. Created before the node starts so
+        # a reply can arrive from the very first turn (and so the node advertises
+        # can_speak=true to the hive).
+        self.speaker = UiSpeaker(self._ui_queue)
+        controller.speak_listener = self.speaker
         self._build_header()
         self._build_tabs()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -507,6 +579,15 @@ class DesktopUI(getattr(tk, "Tk", object)):
                 self._detect_done(payload if isinstance(payload, dict)
                                   else {"ok": False, "models": [],
                                         "detail": str(payload)})
+            elif kind == "speak":
+                # The agent said something: show it where the operator asked.
+                self._note_turn(f"node> {payload}", spoken=True)
+            elif kind == "turn":
+                payload = payload if isinstance(payload, dict) else {}
+                if payload.get("error"):
+                    self._note_turn(f"  !! {payload['error']}", error=True)
+                elif payload.get("note"):
+                    self._note_turn(f"  ({payload['note']})", error=True)
 
     def _poll(self) -> None:
         snapshot = self.controller.snapshot()
@@ -763,8 +844,14 @@ class DesktopUI(getattr(tk, "Tk", object)):
         applied = snap["applied"]
         backend = (applied.get("backend") or {}).get("type", "-")
         self._hdr["node"].config(text=str(status.get("device_caps") or "-"))
-        self._hdr["backend"].config(
-            text=f"{backend} {status.get('backend_url') or ''}".strip())
+        if backend == "stub":
+            # The stub dials nothing; `backend_url` is the agent's untouched
+            # default address, so printing it beside "stub" told the operator
+            # about an endpoint the node was deliberately not using.
+            backend_text = "stub (offline, no network)"
+        else:
+            backend_text = f"{backend} {status.get('backend_url') or ''}".strip()
+        self._hdr["backend"].config(text=backend_text)
         model = applied.get("model") or "-"
         self._hdr["model"].config(text=model)
         self._hdr["engine"].config(text=str(status.get("engine") or "-"))
@@ -829,6 +916,111 @@ class DesktopUI(getattr(tk, "Tk", object)):
                 ("model", "Model answering"), ("tts", "Speech provider"),
                 ("memory", "Memory backend"), ("audit", "Audit chain"))):
             self._kv(health, label, self.val_rows, key, index)
+
+        # -- talk to the node ------------------------------------------------
+        # The window is a front end, not an observer: this drives one typed turn
+        # through the agent's *own* conversational path (`handle_typed_input`),
+        # the same seam the `--terminal` mode and a phone's recogniser use. The
+        # reply arrives through the speech listener registered above, so what
+        # appears here is what the node actually said.
+        talk = self._section(parent, "Talk to the node")
+        bar = ttk.Frame(talk)
+        bar.pack(fill="x")
+        self.var_turn = tk.StringVar(value="")
+        entry = ttk.Entry(bar, textvariable=self.var_turn, width=64)
+        entry.pack(side="left", fill="x", expand=True)
+        entry.bind("<Return>", self._send_turn)
+        ttk.Button(bar, text="Send", command=self._send_turn).pack(
+            side="left", padx=(6, 0))
+        # The control the docs have always named ("the AGENT tab's Test speech
+        # control") and the GUI never had: one gated speak action, so an operator
+        # can prove the speech path without inventing a conversation.
+        ttk.Button(bar, text="Test speech",
+                   command=self._test_speech).pack(side="left", padx=(6, 0))
+        self.txt_turn = tk.Text(talk, height=9, wrap="word",
+                                font=("Consolas", 9))
+        self.txt_turn.pack(fill="both", expand=True, pady=(6, 0))
+        self.txt_turn.insert("end",
+                             "Type a turn and press Enter. Replies appear here "
+                             "as 'node> ...'.\n")
+        self.txt_turn.config(state="disabled")
+
+    def _note_turn(self, line: str, error: bool = False,
+                   spoken: bool = False) -> None:
+        """Append one line to the transcript (main thread only)."""
+        widget = getattr(self, "txt_turn", None)
+        if widget is None:
+            return
+        widget.config(state="normal")
+        widget.insert("end", line + "\n")
+        if error:
+            widget.tag_add("err", f"end-2l", "end-1l")
+            widget.tag_config("err", foreground="#b3261e")
+        if spoken:
+            widget.see("end")
+        widget.config(state="disabled")
+
+    def _no_node_reason(self) -> str:
+        """Why there is no node to act on, in the operator's terms."""
+        if getattr(self.controller, "starting", False):
+            return ("the node is still starting (engine, memory and mesh) - "
+                    "try again in a moment")
+        return "no node running - start one on the SERVER tab"
+
+    def _send_turn(self, _event=None) -> None:
+        """Hand one typed turn to the agent, off the UI thread."""
+        text = self.var_turn.get().strip()
+        if not text:
+            return
+        agent = getattr(self.controller, "agent", None)
+        if agent is None or not self.controller.running():
+            self._note_turn(f"({self._no_node_reason()})", error=True)
+            return
+        self.var_turn.set("")
+        self._note_turn(f"you> {text}")
+
+        def work():
+            delivered_before = self.speaker.delivered
+            try:
+                handled = bool(agent.handle_typed_input(text,
+                                                        source="desktop-ui"))
+                error = ""
+            except Exception as exc:
+                handled, error = False, f"{type(exc).__name__}: {exc}"
+            if error:
+                self._ui_queue.put(("turn", {"error": error}))
+            elif not handled:
+                self._ui_queue.put(("turn",
+                                    {"note": "handled nothing (empty turn)"}))
+            elif self.speaker.delivered == delivered_before:
+                # Handled but silent. Saying so is the point: an operator who
+                # sees nothing must not have to guess whether the node is
+                # thinking, muted, or has no speech provider at all.
+                self._ui_queue.put(("turn", {"note":
+                    "handled, but the node produced no spoken reply - see the "
+                    "LOG tab and Validation > Speech provider"}))
+
+        threading.Thread(target=work, daemon=True,
+                         name="ui-turn").start()
+
+    def _test_speech(self) -> None:
+        """Drive one gated speak action through the node's own path."""
+        agent = getattr(self.controller, "agent", None)
+        if agent is None or not self.controller.running():
+            self._note_turn(f"({self._no_node_reason()})", error=True)
+            return
+        text = self.var_turn.get().strip() or "I am here. Shugo can speak."
+
+        def work():
+            try:
+                result = agent.speak_test(text)
+                note = f"speak_test -> {result}"
+            except Exception as exc:
+                note = f"speak_test failed: {type(exc).__name__}: {exc}"
+            self._ui_queue.put(("turn", {"note": note}))
+
+        threading.Thread(target=work, daemon=True,
+                         name="ui-speak-test").start()
 
     def _update_agent(self, snap: dict) -> None:
         status = snap["status"]
@@ -1067,10 +1259,19 @@ class DesktopUI(getattr(tk, "Tk", object)):
     # -- operator consent (SECURITY pane) --------------------------------
 
     def _consent_registry(self):
-        """The registry the decision gate consults (engine registry first)."""
-        engine = getattr(self.agent, "engine", None)
+        """The registry the decision gate consults (engine registry first).
+
+        Read from ``self.controller.agent``: the UI is a *view* over the node the
+        controller owns and never holds the agent itself. Reaching for
+        ``self.agent`` raised ``AttributeError`` on every 1 Hz poll, so the whole
+        SECURITY pane reported "UI error" and Grant/Revoke could not work.
+        """
+        agent = getattr(self.controller, "agent", None)
+        if agent is None:
+            return None
+        engine = getattr(agent, "engine", None)
         return (getattr(engine, "consents", None)
-                or getattr(self.agent, "consents", None))
+                or getattr(agent, "consents", None))
 
     def _consent_note(self, text: str, error: bool = False) -> None:
         label = self.sec_rows.get("consent_msg")
@@ -1094,7 +1295,7 @@ class DesktopUI(getattr(tk, "Tk", object)):
                 return
         registry = self._consent_registry()
         if registry is None:
-            self._consent_note("this node has no consent registry",
+            self._consent_note(f"no consent registry ({self._no_node_reason()})",
                                error=True)
             return
         try:
@@ -1113,7 +1314,7 @@ class DesktopUI(getattr(tk, "Tk", object)):
         action = self.var_consent_action.get().strip()
         registry = self._consent_registry()
         if registry is None:
-            self._consent_note("this node has no consent registry",
+            self._consent_note(f"no consent registry ({self._no_node_reason()})",
                                error=True)
             return
         try:

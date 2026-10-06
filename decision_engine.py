@@ -495,7 +495,16 @@ class DecisionEngine:
         if not isinstance(config, dict):
             return None  # use the subconscious's global backend
         model_id = str(model.get("id", ""))
-        if delegation_url and model_id not in self._backend_cache:
+        backend_type = str(config.get("type", "")).lower()
+        # A URL is meaningful only for a transport that dials one. The stub is
+        # deliberately offline, so injecting a delegated URL into it made
+        # create_backend pass `base_url` to a class that takes no arguments --
+        # `StubBackend() takes no arguments` -- and every cycle of a node whose
+        # operator had picked "Stub (offline)" in the desktop control plane
+        # failed with BackendError. Selecting the offline backend has to work:
+        # it is the one a person reaches for when there is no model to reach.
+        delegates_by_url = backend_type not in ("stub",)
+        if delegation_url and delegates_by_url and model_id not in self._backend_cache:
             # v1.21: create the backend with the delegated URL instead of
             # the configured one.  This is a one-shot — the cache entry uses
             # the original config for future calls without delegation.
@@ -506,7 +515,7 @@ class DecisionEngine:
                 # otherwise; drop the other key so create_backend never
                 # passes an unexpected kwarg.
                 cfg_override = dict(config)
-                if str(config.get("type", "")).lower() == "android":
+                if backend_type == "android":
                     cfg_override["api_url"] = delegation_url
                     cfg_override.pop("base_url", None)
                 else:

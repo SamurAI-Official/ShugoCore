@@ -375,6 +375,36 @@ Endpoints on the server:
 Backends: `ollama` (default), `llamacpp`, `openai`, `stub` (offline tests).
 Full setup for each OS: [`docs/desktop_server.md`](docs/desktop_server.md).
 
+## Desktop control plane (the window)
+
+```bash
+python clients/desktop/shugocore_desktop.py                 # then Start node on SERVER
+python clients/desktop/shugocore_desktop.py --autostart \
+    --backend "LM Studio (OpenAI-compatible)" --url http://127.0.0.1:1234 \
+    --model zai-org/glm-4.6v-flash
+```
+
+Six panes over one node: **SERVER** (backend/model choice, health, Start/Apply/Stop),
+**AGENT** (current cycle, pipeline stages, and the conversation), **ACTIVITY**,
+**SENSORS**, **SECURITY** (consent grants + audit verification) and **LOG**.
+
+**AGENT › Talk to the node** is where an operator drives it: type a turn and press
+Enter, and it goes through the agent's *own* conversational path --
+`handle_typed_input(text, source="desktop-ui")`, the same seam the terminal and a
+phone's recogniser use, so the window is a front end and never a second brain. The
+reply prints as `node> ...` in the transcript on the same pane. **Test speech**
+drives one gated `speak_test`, and the AGENT pane's `Decision source` reports what
+actually backed the last decision (`zai-org/glm-4.6v-flash` when a model answered,
+`rule_fallback` when a rule stood in) -- so "is the agentic system working" is
+answerable from the window rather than inferred from it.
+
+The window registers itself as the node's speech listener, which is also what makes
+the node a device the hive can place an answer on (`can_speak`). A turn that is
+handled but produces no spoken reply says so explicitly, rather than leaving the
+operator to guess between "thinking", "muted" and "no speech provider". Both the
+turn and the speech test run on worker threads, so a model round trip never freezes
+the window.
+
 ## Operator engagement terminal (typed, spoken, heard)
 
 The desktop control plane (`clients/desktop/shugocore_desktop.py`) is also a console. Run it

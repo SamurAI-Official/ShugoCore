@@ -48,6 +48,7 @@ answered by `zai-org/glm-4.6v-flash` with the reply landing in the transcript an
 `Decision source` naming the model; `Test speech` executing through the gated
 path; every button on every pane pressed with no UI error. `tests/test_desktop_surface.py`
 pins all of it without a Tk root, so the suite still runs on a headless CI host.
+
 ### Closing the window, and the two checks that lied
 
 With the tabs usable, the next things an operator does are quit -- and, on a
@@ -88,8 +89,6 @@ screen, a stopped node, mid-start, a stale Data dir, a turn plus Test speech,
 level filters, and the close path: all pass, no `TclError`, close in 0.1 s.
 `tests/test_desktop_surface.py` grows to 33 headless tests, so the suite still
 runs on a host with no display.
-
-
 
 ## [1.30.25] - 2026-10-06 — one decision, one mouth
 

@@ -4,7 +4,7 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
-## [Unreleased]
+## [1.30.26] - 2026-10-06 — the desktop window, driven and honest
 
 ### The desktop window could be watched but never used
 
@@ -48,6 +48,48 @@ answered by `zai-org/glm-4.6v-flash` with the reply landing in the transcript an
 `Decision source` naming the model; `Test speech` executing through the gated
 path; every button on every pane pressed with no UI error. `tests/test_desktop_surface.py`
 pins all of it without a Tk root, so the suite still runs on a headless CI host.
+### Closing the window, and the two checks that lied
+
+With the tabs usable, the next things an operator does are quit -- and, on a
+security pane, press the button that says it verifies something. Both
+misbehaved, and the log pane quietly disagreed with itself.
+
+- **Closing the window froze it, and hung on the way out.** `_on_close` ran
+  `controller.stop()` on the Tk main thread: an up-to-8 s thread join followed by
+  the agent's cleanup -- consolidation, the task-manager worker, the mesh
+  runtime. The window drew nothing for the whole teardown and wore a
+  "not responding" title while it worked. The teardown now runs off-thread, the
+  header says *stopping the node ...* so the wait is explained rather than
+  mysterious, and a main-thread watchdog destroys the window once the node is
+  genuinely gone. Measured: close returns in 0.1 s. The poll timer is tracked and
+  cancelled on the way out, and a closing window stops polling -- the pending
+  `after` used to fire after `destroy()` and print a `TclError` on every exit.
+- **Verify audit checked the field, not the node.** `applied` recorded only the
+  backend and the model, so the button read the *editable* Data dir box. Edit
+  that box after Start -- an ordinary thing to do -- and a security control
+  reported **CHAIN INVALID** for a path the node had never written. The
+  controller records the directory it actually opened now, and the check reads
+  that first, with the field as the fallback before any node exists. Measured:
+  with the field pointed elsewhere the chain still reads `chain OK`.
+- **Verify audit hashed 57-102 MB on the main thread.** Measured 57 MB on an A16
+  and 102 MB on a Tab -- seconds of frozen window per press. It runs on a worker
+  thread now and reports *verifying ...* while it works, like Detect models.
+- **The LOG pane's count disagreed with its own contents.** Entries filtered out
+  by the level box were counted anyway, so "N seen" described arrivals rather
+  than what the operator could read; it is "N shown" now. Re-render reads the
+  controller's snapshot instead of reaching into `controller._logs`, which had
+  stopped being the same stream the pane accumulates.
+- **Validation › Audit chain printed `None`.** `str(...)` of an absent policy
+  field put the literal word on the first screen. It reads *not reported* now,
+  like its sibling rows.
+
+Verified with an 18-check matrix driven through the real widget tree -- first
+screen, a stopped node, mid-start, a stale Data dir, a turn plus Test speech,
+level filters, and the close path: all pass, no `TclError`, close in 0.1 s.
+`tests/test_desktop_surface.py` grows to 33 headless tests, so the suite still
+runs on a host with no display.
+
+
 
 ## [1.30.25] - 2026-10-06 — one decision, one mouth
 

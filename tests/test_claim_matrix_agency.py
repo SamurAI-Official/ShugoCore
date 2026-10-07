@@ -255,10 +255,34 @@ class WorldEngagementTestCase(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("nothing was done", detail)
 
-    def test_an_absent_transcript_is_not_engagement(self):
+    def test_an_absent_transcript_is_unproven_not_contradicted(self):
+        """No session recorded is `None` -- could not evaluate -- not `False`.
+
+        `False` reads as "this claim is contradicted", which is what the matrix
+        reported for a machine that merely had no headset attached.
+        """
         ok, detail = claim_matrix.world_engagement("")
-        self.assertFalse(ok)
+        self.assertIsNone(ok)
         self.assertIn("no world session", detail)
+
+    def test_a_producer_that_says_the_world_never_started_is_unproven(self):
+        """The transcript the XR producer writes when its surface cannot start."""
+        text = ("world session: 2026-10-06 23:27:56  surface=godot scaffold\n"
+                "error=the scaffold printed no world session\n"
+                "verdict: world=none presence=unknown acted=False replied=False\n")
+        ok, detail = claim_matrix.world_engagement(text)
+        self.assertIsNone(ok)
+        self.assertIn("world=none", detail)
+        self.assertIn("the scaffold printed no world session", detail)
+
+    def test_a_world_that_started_and_failed_is_still_contradicted(self):
+        """`None` must not become a blanket excuse for a session that ran."""
+        started = ("[WORLD  ] xr\n[GOAL   ] operator: look\n"
+                   "[ACTION ] execute_task (gated)\n")
+        ok, detail = claim_matrix.world_engagement(started)
+        self.assertIs(ok, False, "a session that acted but never answered is a "
+                                 "contradiction, not an unevaluated claim")
+        self.assertIn("never answered", detail)
 
 
 class NoThirdPartyEgressTestCase(unittest.TestCase):

@@ -1,16 +1,4 @@
-quest probe: 2026-10-03 21:37:36  desktop=192.168.1.152
-[HEAD  ] device=Quest 3 serial=2G97C5ZH5P01GZ android=14 abi=arm64-v8a ip=192.168.1.151
-[HOST  ] agent=http://192.168.1.152:57931 token=set (bound 0.0.0.0 so the headset can reach it)
-[STATUS] GET /api/v1/status -> 200 Server: ShugoCoreServer/1.8 Python/3.10.6 Date: Sun, 04 Oct 2026 04:37:35 GMT Content-Type: application/json Content-Length: 405 {"version": "1.30.24", "model":
-[TASK  ] POST /api/v1/task -> 200 Server: ShugoCoreServer/1.8 Python/3.10.6 Date: Sun, 04 Oct 2026 04:37:35 GMT Content-Type: application/json Content-Length: 137 {"status": "not_implemented", "
-[ANSWER] the agent decided: {"action_type": "speak", "params": {"text": "I'm here \u2014 what did you want to talk about?"}}   <- from the server's own log
-[ANSWER] what the agent said: I'm here — what did you want to talk about?
-[AUTH  ] GET /api/v1/status with no token -> 401 Server: ShugoCoreServer/1.8 Python/3.10.6 Date: Sun, 04 Oct 2026 04:37:35 GMT Co
-server said (last lines):
-    2026-10-03 21:37:35,538 - INFO - Decision: {'action_type': 'speak', 'params': {'text': "I'm here — what did you want to talk about?"}, 'confidence': 0.3, 'propo
-    2026-10-03 21:37:35,538 INFO logging_manager: Decision: {'action_type': 'speak', 'params': {'text': "I'm here — what did you want to talk about?"}, 'confidence'
-    2026-10-03 21:37:35,539 - INFO - Execution result: {'status': 'not_implemented', 'reason': "no speech provider registered for 'speak'; actions are never simulat
-    2026-10-03 21:37:35,539 INFO logging_manager: Execution result: {'status': 'not_implemented', 'reason': "no speech provider registered for 'speak'; actions are 
-    2026-10-03 21:37:35,539 INFO shugocore.server: 192.168.1.151 "POST /api/v1/task HTTP/1.0" 200 -
-    2026-10-03 21:37:35,604 INFO shugocore.server: 192.168.1.151 "GET /api/v1/status HTTP/1.0" 401 -
-verdict: reached=True task=200 answer=True auth=401
+quest probe: 2026-10-07 07:59:16  desktop=unknown
+error=no Quest headset is attached over adb, so nothing was probed (unproven, not failed)
+[HEAD  ] no Quest headset is attached over adb
+verdict: reached=False task=0 answer=False auth=0

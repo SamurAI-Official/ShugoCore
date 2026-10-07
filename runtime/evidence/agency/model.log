@@ -1,6 +1,6 @@
 [SESSION] scenario=model node=shugo-desktop role=primary-capable data-dir=G:\Program Prototype\shugocore\runtime\agency_node
 [SESSION] warming the model endpoint at http://127.0.0.1:1234 (budget 180s)
-[SESSION] warm-up: warm after 1 attempt(s) (HTTP 200, model prism-ml/bonsai-27b)
+[SESSION] warm-up: warm after 1 attempt(s) (HTTP 200, model zai-org/glm-4.6v-flash)
 [TERMINAL] C:\Users\marku\AppData\Local\Programs\Python\Python310\python.exe G:\Program Prototype\shugocore\clients\desktop\shugocore_desktop.py --terminal --backend LM Studio (OpenAI-compatible) --url http://127.0.0.1:1234 --no-input --data-dir runtime\agency_node\model --mesh-port 9021 --say the charger is warm to the touch; note whether that warrants attention --exit-after 180.0
 [TERMINAL] [SHUGOCORE_BOOT] chdir ok: G:\Program Prototype\shugocore\runtime\agency_node\model (was G:\Program Prototype\shugocore)
 [TERMINAL] ShugoCore engagement terminal
@@ -15,7 +15,7 @@
 [TERMINAL]   commands  /status  /nodes  /say TEXT  /prove [ID]  /quit   (Ctrl+C also exits)
 [TERMINAL] 
 [TERMINAL] 
-[TERMINAL] Agent> I didn't catch that â€” could you say it again?
+[TERMINAL] Agent> Mild warmth from a charger is usually normal, but if itâ€™s hot to the touch or you notice issues like slow charging, it might be worth checking. Does your device charge at all? Or are there any other signs of trouble?
 [TERMINAL] 
 [TERMINAL]   [AGENT  ] cwd -> G:\Program Prototype\shugocore\runtime\agency_node\model
 [TERMINAL]   [AGENT  ] sound: policy says listen_mode=speech (sound perception is not enabled in configuration for this node)
@@ -26,508 +26,95 @@
 [TERMINAL]   [AGENT  ] agent ready (device=desktop, api=http://127.0.0.1:1234, engine=DecisionEngine)
 [TERMINAL]   [AGENT  ] orchestration mode: primary (holding the lease)
 [TERMINAL]   [AGENT  ] intent: UserIntent(question, conf=0.40)
-[TERMINAL]   [AGENT  ] conversation: spoke -> "I didn't catch that â€” could you say it again?"
+[TERMINAL]   [AGENT  ] conversation: spoke -> 'Mild warmth from a charger is usually normal, but if itâ€™s hot to the touch or yo'
 [TERMINAL]   [AGENT  ] typed (terminal): the charger is warm to the touch; note whether that warrants attention
 [TERMINAL]   [ROUTE  ] shugo-desktop (score 0.5: speech:{'source': 'none', 'confidence': 1.0, 'face_fresh': false, 'speech_fresh': false, 'voice_fresh': false, 'gaze_toward_camera': none}, terminal-input) - shugo-desktop is closest to the operator (score 0.50: speech:{'source': 'none', 'confidence': 1.0, 'face_fresh': false, 'speech_fresh': false, 'voice_fresh': false, 'gaze_toward_camera': none}, terminal-input)
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [MEMORY ] stored 1 new conversation turn(s) in Tier-2
-[TERMINAL]   [AGENT  ] cycle=1 outcome=NO_ACTION stages=OBSERVE+GATE+DECIDE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by null_proposal
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=2 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
 [TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=3 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=4 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
 [TERMINAL] 
-[TERMINAL] Agent> Hello! I'm Shugo, your local assistant. How can I help you today?
+[TERMINAL] Agent> What can I help you with today?
 [TERMINAL] 
-[TERMINAL]   [MEMORY ] stored 1 new conversation turn(s) in Tier-2
-[TERMINAL]   [AGENT  ] cycle=5 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL] 
-[TERMINAL] Agent> Hello! I'm Shugo, your calm and friendly local assistant; how can I help you today?
-[TERMINAL] 
-[TERMINAL]   [MEMORY ] stored 1 new conversation turn(s) in Tier-2
-[TERMINAL]   [AGENT  ] cycle=6 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=7 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL] 
-[TERMINAL] Agent> Hello there! I'm Shugo, your local assistant, ready to help you with anything you need.
-[TERMINAL] 
-[TERMINAL]   [MEMORY ] stored 1 new conversation turn(s) in Tier-2
-[TERMINAL]   [AGENT  ] cycle=8 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL] 
-[TERMINAL] Agent> Hello there! I'm Shugo, your friendly local assistant; how can I help you today?
-[TERMINAL] 
-[TERMINAL]   [MEMORY ] stored 1 new conversation turn(s) in Tier-2
-[TERMINAL]   [AGENT  ] cycle=9 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [MEMORY ] consolidation pass complete
-[TERMINAL]   [AGENT  ] cycle=10 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD+CONSOLIDATE
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL] 
-[TERMINAL] Agent> Hello there! I'm Shugo, your friendly local assistant; how can I help you today?
-[TERMINAL] 
-[TERMINAL]   [MEMORY ] stored 1 new conversation turn(s) in Tier-2
-[TERMINAL]   [AGENT  ] cycle=11 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL] 
-[TERMINAL] Agent> Hello! I'm Shugo, your local assistant here to help with anything you need.
-[TERMINAL] 
-[TERMINAL]   [MEMORY ] stored 1 new conversation turn(s) in Tier-2
-[TERMINAL]   [AGENT  ] cycle=12 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=13 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=14 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=15 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=16 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=17 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL] 
-[TERMINAL] Agent> Hello there, I'm Shugo, your friendly local assistant; how can I help you today?
-[TERMINAL] 
-[TERMINAL]   [MEMORY ] stored 1 new conversation turn(s) in Tier-2
-[TERMINAL]   [AGENT  ] cycle=18 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [ROUTE  ] shugo-desktop (score 0.2: speech:{'source': 'none', 'confidence': 1.0, 'face_fresh': false, 'speech_fresh': false, 'voice_fresh': false, 'gaze_toward_camera': none}) - shugo-desktop is closest to the operator (score 0.20: speech:{'source': 'none', 'confidence': 1.0, 'face_fresh': false, 'speech_fresh': false, 'voice_fresh': false, 'gaze_toward_camera': none})
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=19 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL] 
-[TERMINAL] Agent> Hello there! I am Shugo, your friendly local assistant here to help you with whatever tasks or questions you might have.
-[TERMINAL] 
-[TERMINAL]   [MEMORY ] stored 1 new conversation turn(s) in Tier-2
-[TERMINAL]   [MEMORY ] consolidation pass complete
-[TERMINAL]   [AGENT  ] cycle=20 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD+CONSOLIDATE
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=21 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL] 
-[TERMINAL] Agent> Hello! I'm Shugo, your friendly local assistant, and I'm ready to help you with any questions or tasks you might have.
-[TERMINAL] 
-[TERMINAL]   [MEMORY ] stored 1 new conversation turn(s) in Tier-2
-[TERMINAL]   [AGENT  ] cycle=22 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=23 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL] 
-[TERMINAL] Agent> Hello there! I'm Shugo, your friendly local assistant. How can I help you today?
-[TERMINAL] 
-[TERMINAL]   [MEMORY ] stored 1 new conversation turn(s) in Tier-2
-[TERMINAL]   [AGENT  ] cycle=24 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL] 
-[TERMINAL] Agent> Hello! I am Shugo, your friendly local assistant.
-[TERMINAL] 
-[TERMINAL]   [MEMORY ] stored 1 new conversation turn(s) in Tier-2
-[TERMINAL]   [AGENT  ] cycle=25 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL] 
-[TERMINAL] Agent> Hello! I am Shugo, your local assistant here to help with anything you need.
-[TERMINAL] 
-[TERMINAL]   [AGENT  ] cycle=26 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL] 
-[TERMINAL] Agent> Hello! I'm Shugo, your friendly local assistant here to help you with any questions or tasks you might have.
-[TERMINAL] 
-[TERMINAL]   [AGENT  ] cycle=27 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=28 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=29 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [MEMORY ] consolidation pass complete
-[TERMINAL]   [AGENT  ] cycle=30 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD+CONSOLIDATE
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=31 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=32 outcome=NO_ACTION stages=OBSERVE+GATE+DECIDE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by null_proposal
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=33 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=34 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL] 
-[TERMINAL] Agent> Hello there! I'm Shugo, your calm and friendly local assistant ready to help you navigate around us.
-[TERMINAL] 
-[TERMINAL]   [AGENT  ] cycle=35 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=36 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=37 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL] 
-[TERMINAL] Agent> Hello Shugo here! I'm ready to help you navigate around or find what you need locally.
-[TERMINAL] 
-[TERMINAL]   [AGENT  ] cycle=38 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=39 outcome=NO_ACTION stages=OBSERVE+GATE+DECIDE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by null_proposal
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL] 
-[TERMINAL] Agent> Hello! I am Shugo, your friendly local assistant. How can I help you today?
-[TERMINAL] 
-[TERMINAL]   [MEMORY ] consolidation pass complete
-[TERMINAL]   [AGENT  ] cycle=40 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD+CONSOLIDATE
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=41 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL] 
-[TERMINAL] Agent> Hello! I'm Shugo, your friendly local assistant, ready to help with anything you need.
-[TERMINAL] 
-[TERMINAL]   [AGENT  ] cycle=42 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL] 
-[TERMINAL] Agent> Hello there! I'm Shugo, your friendly local assistant. How can I help you today?
-[TERMINAL] 
-[TERMINAL]   [AGENT  ] cycle=43 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=44 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=45 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL] 
-[TERMINAL] Agent> Hello! I'm Shugo, your friendly local assistant, and I'm ready to help with anything you need.
-[TERMINAL] 
-[TERMINAL]   [AGENT  ] cycle=46 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
+[TERMINAL]   [MEMORY ] stored 2 new conversation turn(s) in Tier-2
+[TERMINAL]   [AGENT  ] cycle=1 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
 [TERMINAL]   [MODEL  ] decisions backed by none
 [TERMINAL] 
 [TERMINAL] Agent> Hello! How can I help you today?
 [TERMINAL] 
-[TERMINAL]   [AGENT  ] cycle=47 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
+[TERMINAL]   [MEMORY ] stored 1 new conversation turn(s) in Tier-2
+[TERMINAL]   [AGENT  ] cycle=2 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
+[TERMINAL]   [ROUTE  ] shugo-desktop (score 0.2: speech:{'source': 'none', 'confidence': 1.0, 'face_fresh': false, 'speech_fresh': false, 'voice_fresh': false, 'gaze_toward_camera': none}) - shugo-desktop is closest to the operator (score 0.20: speech:{'source': 'none', 'confidence': 1.0, 'face_fresh': false, 'speech_fresh': false, 'voice_fresh': false, 'gaze_toward_camera': none})
 [TERMINAL]   [MODEL  ] decisions backed by shugocore-local
 [TERMINAL]   [MODEL  ] decisions backed by none
 [TERMINAL] 
-[TERMINAL] terminal closed: 21 repl(s) delivered
+[TERMINAL] Agent> What would you like me to do?
+[TERMINAL] 
+[TERMINAL]   [MEMORY ] stored 1 new conversation turn(s) in Tier-2
+[TERMINAL]   [AGENT  ] cycle=3 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
+[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
+[TERMINAL]   [MODEL  ] decisions backed by none
+[TERMINAL] 
+[TERMINAL] Agent> Hello! I'm Shugo, your friendly local assistant. How can I help you today?
+[TERMINAL] 
+[TERMINAL]   [MEMORY ] stored 1 new conversation turn(s) in Tier-2
+[TERMINAL]   [AGENT  ] cycle=4 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
+[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
+[TERMINAL]   [MODEL  ] decisions backed by none
+[TERMINAL]   [AGENT  ] cycle=5 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
+[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
+[TERMINAL]   [MODEL  ] decisions backed by none
+[TERMINAL]   [AGENT  ] cycle=6 outcome=TASK_FAILURE stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
+[TERMINAL] 
+[TERMINAL] Agent> I'll ask the user to create the folder.
+[TERMINAL] 
+[TERMINAL] 
+[TERMINAL] terminal closed: 6 repl(s) delivered
 [TERMINAL] SHUGONET: runtime started on port 9021 (peers=0)
-[TERMINAL] ERROR:subconscious:Conversational model shugocore-local call failed: BackendError
-[TERMINAL] 2026-10-01 21:40:01,115 - INFO - Decision made for task: maintain_agent_loop - N/A
+[TERMINAL] ORCHESTRATION: primary: holding the lease
+[TERMINAL] 2026-10-07 07:55:48,007 - INFO - Decision made for task: maintain_agent_loop - N/A
 [TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:40:01,128 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'Shugo is ready to assist as a calm and friendly local assistant.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-0', 'model_outputs': {'shugocore-local': '{\n    "action_type": "record_observation",\n    "params": {\n        "text": "Shugo is ready to assist as a calm and friendly local assistant."\n    },\n    "confidence": 1.0,\n    "text": "I am Shugo, your calm and friendly local assistant, and I am ready to help you with any questions or tasks you may have."\n}\n'}, 'aggregated_output': 1.0, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'Shugo is ready to assist as a calm and friendly local assistant.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-0', 'model_outputs': {'shugocore-local': '{\n    "action_type": "record_observation",\n    "params": {\n        "text": "Shugo is ready to assist as a calm and friendly local assistant."\n    },\n    "confidence": 1.0,\n    "text": "I am Shugo, your calm and friendly local assistant, and I am ready to help you with any questions or tasks you may have."\n}\n'}, 'aggregated_output': 1.0, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:40:01,128 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'Shugo is ready to assist as a calm and friendly local assistant.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'Shugo is ready to assist as a calm and friendly local assistant.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] 2026-10-01 21:40:04,988 - INFO - Decision made for task: maintain_agent_loop - N/A
+[TERMINAL] 2026-10-07 07:55:48,028 - INFO - Decision: {'action_type': 'ask_user', 'params': {'text': 'What can I help you with today?'}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-0', 'model_outputs': {'shugocore-local': '{\n    "action_type": "ask_user",\n    "params": { "text": "What can I help you with today?" },\n    "confidence": 0.9,\n    "text": "Asking for clarification on the task."\n}'}, 'aggregated_output': 1.0, 'memory_context': []}
+[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'ask_user', 'params': {'text': 'What can I help you with today?'}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-0', 'model_outputs': {'shugocore-local': '{\n    "action_type": "ask_user",\n    "params": { "text": "What can I help you with today?" },\n    "confidence": 0.9,\n    "text": "Asking for clarification on the task."\n}'}, 'aggregated_output': 1.0, 'memory_context': []}
+[TERMINAL] 2026-10-07 07:55:48,028 - INFO - Execution result: {'status': 'success', 'asked': 'What can I help you with today?', 'delivered': True, 'awaiting_answer': True, 'answer_ttl_s': 120.0, 'proposal_source': 'shugocore-local', 'action_type': 'ask_user'}
+[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'asked': 'What can I help you with today?', 'delivered': True, 'awaiting_answer': True, 'answer_ttl_s': 120.0, 'proposal_source': 'shugocore-local', 'action_type': 'ask_user'}
+[TERMINAL] 2026-10-07 07:56:21,803 - INFO - Decision made for task: maintain_agent_loop - N/A
 [TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:40:04,988 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'No specific task provided in the input; awaiting user guidance to proceed with an action.'}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-2', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "No specific task provided in the input; awaiting user guidance to proceed with an action."\n  },\n  "confidence": 0.9,\n  "text": "I\'ve noted your request and am ready to assist you further once you provide more details."\n}'}, 'aggregated_output': 1.1, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'No specific task provided in the input; awaiting user guidance to proceed with an action.'}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-2', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "No specific task provided in the input; awaiting user guidance to proceed with an action."\n  },\n  "confidence": 0.9,\n  "text": "I\'ve noted your request and am ready to assist you further once you provide more details."\n}'}, 'aggregated_output': 1.1, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:40:04,988 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'No specific task provided in the input; awaiting user guidance to proceed with an action.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'No specific task provided in the input; awaiting user guidance to proceed with an action.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] 2026-10-01 21:40:08,873 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:40:08,874 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'I am Shugo, a calm and friendly local assistant. I speak in first person.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-4', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "I am Shugo, a calm and friendly local assistant. I speak in first person."\n  },\n  "confidence": 1.0,\n  "text": "Noticing my role description to ensure readiness for future interactions."\n}\n'}, 'aggregated_output': 1.2100000000000002, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'I am Shugo, a calm and friendly local assistant. I speak in first person.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-4', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "I am Shugo, a calm and friendly local assistant. I speak in first person."\n  },\n  "confidence": 1.0,\n  "text": "Noticing my role description to ensure readiness for future interactions."\n}\n'}, 'aggregated_output': 1.2100000000000002, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:40:08,874 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'I am Shugo, a calm and friendly local assistant. I speak in first person.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'I am Shugo, a calm and friendly local assistant. I speak in first person.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] 2026-10-01 21:40:12,650 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:40:12,650 - INFO - Decision: {'action_type': 'speak', 'params': {'text': "Hello! I'm Shugo, your local assistant. How can I help you today?", 'utterance': 'Greeting user and offering assistance'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-6', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello! I\'m Shugo, your local assistant. How can I help you today?"\n  },\n  "confidence": 0.95,\n  "text": "Greeting user and offering assistance"\n}\n'}, 'aggregated_output': 1.3310000000000004, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'speak', 'params': {'text': "Hello! I'm Shugo, your local assistant. How can I help you today?", 'utterance': 'Greeting user and offering assistance'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-6', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello! I\'m Shugo, your local assistant. How can I help you today?"\n  },\n  "confidence": 0.95,\n  "text": "Greeting user and offering assistance"\n}\n'}, 'aggregated_output': 1.3310000000000004, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:40:12,650 - INFO - Execution result: {'status': 'success', 'spoken': "Hello! I'm Shugo, your local assistant. How can I help you today?", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'spoken': "Hello! I'm Shugo, your local assistant. How can I help you today?", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] 2026-10-01 21:40:16,431 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:40:16,431 - INFO - Decision: {'action_type': 'speak', 'params': {'text': "Hello! I'm Shugo, your calm and friendly local assistant; how can I help you today?", 'utterance': 'Initiating conversation as a helpful local assistant'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-8', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {"text": "Hello! I\'m Shugo, your calm and friendly local assistant; how can I help you today?"},\n  "confidence": 0.95,\n  "text": "Initiating conversation as a helpful local assistant"\n}\n'}, 'aggregated_output': 1.4641000000000006, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'speak', 'params': {'text': "Hello! I'm Shugo, your calm and friendly local assistant; how can I help you today?", 'utterance': 'Initiating conversation as a helpful local assistant'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-8', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {"text": "Hello! I\'m Shugo, your calm and friendly local assistant; how can I help you today?"},\n  "confidence": 0.95,\n  "text": "Initiating conversation as a helpful local assistant"\n}\n'}, 'aggregated_output': 1.4641000000000006, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:40:16,432 - INFO - Execution result: {'status': 'success', 'spoken': "Hello! I'm Shugo, your calm and friendly local assistant; how can I help you today?", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'spoken': "Hello! I'm Shugo, your calm and friendly local assistant; how can I help you today?", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] 2026-10-01 21:40:20,181 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:40:20,181 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'Waiting for user input or task specification.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-10', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {"text": "Waiting for user input or task specification."},\n  "confidence": 1.0,\n  "text": "I am ready to assist you once you provide details about your needs."\n}\n'}, 'aggregated_output': 1.6105100000000008, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'Waiting for user input or task specification.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-10', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {"text": "Waiting for user input or task specification."},\n  "confidence": 1.0,\n  "text": "I am ready to assist you once you provide details about your needs."\n}\n'}, 'aggregated_output': 1.6105100000000008, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:40:20,181 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'Waiting for user input or task specification.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'Waiting for user input or task specification.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] 2026-10-01 21:40:24,005 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:40:24,005 - INFO - Decision: {'action_type': 'speak', 'params': {'text': "Hello there! I'm Shugo, your local assistant, ready to help you with anything you need.", 'utterance': 'Greeting user as requested.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-12', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {"text": "Hello there! I\'m Shugo, your local assistant, ready to help you with anything you need."},\n  "confidence": 0.95,\n  "text": "Greeting user as requested."\n}\n'}, 'aggregated_output': 1.771561000000001, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'speak', 'params': {'text': "Hello there! I'm Shugo, your local assistant, ready to help you with anything you need.", 'utterance': 'Greeting user as requested.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-12', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {"text": "Hello there! I\'m Shugo, your local assistant, ready to help you with anything you need."},\n  "confidence": 0.95,\n  "text": "Greeting user as requested."\n}\n'}, 'aggregated_output': 1.771561000000001, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:40:24,006 - INFO - Execution result: {'status': 'success', 'spoken': "Hello there! I'm Shugo, your local assistant, ready to help you with anything you need.", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'spoken': "Hello there! I'm Shugo, your local assistant, ready to help you with anything you need.", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] 2026-10-01 21:40:27,994 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:40:27,994 - INFO - Decision: {'action_type': 'speak', 'params': {'text': "Hello there! I'm Shugo, your friendly local assistant; how can I help you today?", 'utterance': 'Initiating initial greeting to establish contact with the user.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-14', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello there! I\'m Shugo, your friendly local assistant; how can I help you today?"\n  },\n  "confidence": 0.95,\n  "text": "Initiating initial greeting to establish contact with the user."\n}\n'}, 'aggregated_output': 1.9487171000000014, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'speak', 'params': {'text': "Hello there! I'm Shugo, your friendly local assistant; how can I help you today?", 'utterance': 'Initiating initial greeting to establish contact with the user.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-14', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello there! I\'m Shugo, your friendly local assistant; how can I help you today?"\n  },\n  "confidence": 0.95,\n  "text": "Initiating initial greeting to establish contact with the user."\n}\n'}, 'aggregated_output': 1.9487171000000014, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:40:27,994 - INFO - Execution result: {'status': 'success', 'spoken': "Hello there! I'm Shugo, your friendly local assistant; how can I help you today?", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'spoken': "Hello there! I'm Shugo, your friendly local assistant; how can I help you today?", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] 2026-10-01 21:40:31,931 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:40:31,932 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'Waiting for user input or task instructions.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-16', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Waiting for user input or task instructions."\n  },\n  "confidence": 1.0,\n  "text": "I am ready to assist you as Shugo, your calm and friendly local assistant."\n}\n'}, 'aggregated_output': 2.1435888100000016, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'Waiting for user input or task instructions.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-16', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Waiting for user input or task instructions."\n  },\n  "confidence": 1.0,\n  "text": "I am ready to assist you as Shugo, your calm and friendly local assistant."\n}\n'}, 'aggregated_output': 2.1435888100000016, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:40:31,933 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'Waiting for user input or task instructions.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'Waiting for user input or task instructions.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] 2026-10-01 21:40:36,070 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:40:36,071 - INFO - Decision: {'action_type': 'speak', 'params': {'text': "Hello there! I'm Shugo, your friendly local assistant; how can I help you today?", 'utterance': 'Greeting the user with a warm, complete sentence as instructed.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-18', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello there! I\'m Shugo, your friendly local assistant; how can I help you today?"\n  },\n  "confidence": 0.95,\n  "text": "Greeting the user with a warm, complete sentence as instructed."\n}\n'}, 'aggregated_output': 2.357947691000002, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'speak', 'params': {'text': "Hello there! I'm Shugo, your friendly local assistant; how can I help you today?", 'utterance': 'Greeting the user with a warm, complete sentence as instructed.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-18', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello there! I\'m Shugo, your friendly local assistant; how can I help you today?"\n  },\n  "confidence": 0.95,\n  "text": "Greeting the user with a warm, complete sentence as instructed."\n}\n'}, 'aggregated_output': 2.357947691000002, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:40:36,071 - INFO - Execution result: {'status': 'success', 'spoken': "Hello there! I'm Shugo, your friendly local assistant; how can I help you today?", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'spoken': "Hello there! I'm Shugo, your friendly local assistant; how can I help you today?", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] 2026-10-01 21:40:40,079 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:40:40,079 - INFO - Decision: {'action_type': 'speak', 'params': {'text': "Hello! I'm Shugo, your local assistant here to help with anything you need.", 'utterance': "Initiating friendly introduction as per the prompt's instruction."}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-20', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello! I\'m Shugo, your local assistant here to help with anything you need."\n  },\n  "confidence": 0.95,\n  "text": "Initiating friendly introduction as per the prompt\'s instruction."\n}\n'}, 'aggregated_output': 2.5937424601000023, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'speak', 'params': {'text': "Hello! I'm Shugo, your local assistant here to help with anything you need.", 'utterance': "Initiating friendly introduction as per the prompt's instruction."}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-20', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello! I\'m Shugo, your local assistant here to help with anything you need."\n  },\n  "confidence": 0.95,\n  "text": "Initiating friendly introduction as per the prompt\'s instruction."\n}\n'}, 'aggregated_output': 2.5937424601000023, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:40:40,079 - INFO - Execution result: {'status': 'success', 'spoken': "Hello! I'm Shugo, your local assistant here to help with anything you need.", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'spoken': "Hello! I'm Shugo, your local assistant here to help with anything you need.", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] 2026-10-01 21:40:45,005 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:40:45,005 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'No specific task provided to act upon.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-22', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "No specific task provided to act upon."\n  },\n  "confidence": 1.0,\n  "text": "Recording that no task is available."\n}\n'}, 'aggregated_output': 2.853116706110003, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'No specific task provided to act upon.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-22', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "No specific task provided to act upon."\n  },\n  "confidence": 1.0,\n  "text": "Recording that no task is available."\n}\n'}, 'aggregated_output': 2.853116706110003, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:40:45,005 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'No specific task provided to act upon.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'No specific task provided to act upon.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] 2026-10-01 21:40:48,483 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:40:48,483 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'Waiting for task input from user.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-24', 'model_outputs': {'shugocore-local': '{"action_type": "record_observation", "params": {"text": "Waiting for task input from user."}, "confidence": 1.0, "text": "I am ready to assist you with your current needs."}\n'}, 'aggregated_output': 3.1384283767210035, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'Waiting for task input from user.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-24', 'model_outputs': {'shugocore-local': '{"action_type": "record_observation", "params": {"text": "Waiting for task input from user."}, "confidence": 1.0, "text": "I am ready to assist you with your current needs."}\n'}, 'aggregated_output': 3.1384283767210035, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:40:48,484 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'Waiting for task input from user.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'Waiting for task input from user.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] 2026-10-01 21:40:52,220 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:40:52,220 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'Waiting for task details to proceed.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-26', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Waiting for task details to proceed."\n  },\n  "confidence": 1.0,\n  "text": "I am ready and calm; please provide the task details so I can assist you effectively."\n}\n'}, 'aggregated_output': 3.4522712143931042, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'Waiting for task details to proceed.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-26', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Waiting for task details to proceed."\n  },\n  "confidence": 1.0,\n  "text": "I am ready and calm; please provide the task details so I can assist you effectively."\n}\n'}, 'aggregated_output': 3.4522712143931042, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:40:52,220 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'Waiting for task details to proceed.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'Waiting for task details to proceed.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] 2026-10-01 21:40:56,112 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:40:56,112 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': "I'm Shugo, your calm and friendly local assistant. I'm ready to help you with whatever task you need."}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-28', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "I\'m Shugo, your calm and friendly local assistant. I\'m ready to help you with whatever task you need."\n  },\n  "confidence": 1.0,\n  "text": "I am ready to assist you."\n}\n'}, 'aggregated_output': 3.797498335832415, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': "I'm Shugo, your calm and friendly local assistant. I'm ready to help you with whatever task you need."}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-28', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "I\'m Shugo, your calm and friendly local assistant. I\'m ready to help you with whatever task you need."\n  },\n  "confidence": 1.0,\n  "text": "I am ready to assist you."\n}\n'}, 'aggregated_output': 3.797498335832415, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:40:56,113 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': "I'm Shugo, your calm and friendly local assistant. I'm ready to help you with whatever task you need.", 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': "I'm Shugo, your calm and friendly local assistant. I'm ready to help you with whatever task you need.", 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] 2026-10-01 21:40:59,934 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:40:59,934 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'Waiting for user input to proceed.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-30', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Waiting for user input to proceed."\n  },\n  "confidence": 0.95,\n  "text": "I\'m ready and waiting for your instruction."\n}\n'}, 'aggregated_output': 4.177248169415656, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'Waiting for user input to proceed.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-30', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Waiting for user input to proceed."\n  },\n  "confidence": 0.95,\n  "text": "I\'m ready and waiting for your instruction."\n}\n'}, 'aggregated_output': 4.177248169415656, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:40:59,934 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'Waiting for user input to proceed.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'Waiting for user input to proceed.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] 2026-10-01 21:41:03,814 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:41:03,815 - INFO - Decision: {'action_type': 'speak', 'params': {'text': "Hello there, I'm Shugo, your friendly local assistant; how can I help you today?", 'utterance': 'Greeting the user as Shugo to initiate assistance.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-32', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello there, I\'m Shugo, your friendly local assistant; how can I help you today?"\n  },\n  "confidence": 1.0,\n  "text": "Greeting the user as Shugo to initiate assistance."\n}\n'}, 'aggregated_output': 4.594972986357222, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'speak', 'params': {'text': "Hello there, I'm Shugo, your friendly local assistant; how can I help you today?", 'utterance': 'Greeting the user as Shugo to initiate assistance.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-32', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello there, I\'m Shugo, your friendly local assistant; how can I help you today?"\n  },\n  "confidence": 1.0,\n  "text": "Greeting the user as Shugo to initiate assistance."\n}\n'}, 'aggregated_output': 4.594972986357222, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:41:03,815 - INFO - Execution result: {'status': 'success', 'spoken': "Hello there, I'm Shugo, your friendly local assistant; how can I help you today?", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'spoken': "Hello there, I'm Shugo, your friendly local assistant; how can I help you today?", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] 2026-10-01 21:41:07,642 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:41:07,642 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'I am Shugo, a calm and friendly local assistant. I speak in first person.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-34', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "I am Shugo, a calm and friendly local assistant. I speak in first person."\n  },\n  "confidence": 1.0,\n  "text": "I have recorded my initial state as the autonomous agent module named Shugo."\n}\n'}, 'aggregated_output': 5.054470284992944, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'I am Shugo, a calm and friendly local assistant. I speak in first person.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-34', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "I am Shugo, a calm and friendly local assistant. I speak in first person."\n  },\n  "confidence": 1.0,\n  "text": "I have recorded my initial state as the autonomous agent module named Shugo."\n}\n'}, 'aggregated_output': 5.054470284992944, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:41:07,642 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'I am Shugo, a calm and friendly local assistant. I speak in first person.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'I am Shugo, a calm and friendly local assistant. I speak in first person.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] 2026-10-01 21:41:11,476 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:41:11,476 - INFO - Decision: {'action_type': 'speak', 'params': {'text': 'Hello there! I am Shugo, your friendly local assistant here to help you with whatever tasks or questions you might have.', 'utterance': 'Greeting the user as Shugo and introducing myself.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-36', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello there! I am Shugo, your friendly local assistant here to help you with whatever tasks or questions you might have."\n  },\n  "confidence": 1.0,\n  "text": "Greeting the user as Shugo and introducing myself."\n}\n'}, 'aggregated_output': 5.559917313492239, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'speak', 'params': {'text': 'Hello there! I am Shugo, your friendly local assistant here to help you with whatever tasks or questions you might have.', 'utterance': 'Greeting the user as Shugo and introducing myself.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-36', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello there! I am Shugo, your friendly local assistant here to help you with whatever tasks or questions you might have."\n  },\n  "confidence": 1.0,\n  "text": "Greeting the user as Shugo and introducing myself."\n}\n'}, 'aggregated_output': 5.559917313492239, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:41:11,476 - INFO - Execution result: {'status': 'success', 'spoken': 'Hello there! I am Shugo, your friendly local assistant here to help you with whatever tasks or questions you might have.', 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'spoken': 'Hello there! I am Shugo, your friendly local assistant here to help you with whatever tasks or questions you might have.', 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] 2026-10-01 21:41:14,960 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:41:14,961 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'Waiting for task input'}, 'confidence': 0.8, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-38', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Waiting for task input"\n  },\n  "confidence": 0.8,\n  "text": "I am ready to receive your task."\n}\n'}, 'aggregated_output': 6.115909044841463, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'Waiting for task input'}, 'confidence': 0.8, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-38', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Waiting for task input"\n  },\n  "confidence": 0.8,\n  "text": "I am ready to receive your task."\n}\n'}, 'aggregated_output': 6.115909044841463, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:41:14,961 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'Waiting for task input', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'Waiting for task input', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] 2026-10-01 21:41:19,125 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:41:19,125 - INFO - Decision: {'action_type': 'speak', 'params': {'text': "Hello! I'm Shugo, your friendly local assistant, and I'm ready to help you with any questions or tasks you might have.", 'utterance': 'Initiated a warm greeting as the first step in establishing contact with the user.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-40', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello! I\'m Shugo, your friendly local assistant, and I\'m ready to help you with any questions or tasks you might have."\n  },\n  "confidence": 0.95,\n  "text": "Initiated a warm greeting as the first step in establishing contact with the user."\n}\n'}, 'aggregated_output': 6.72749994932561, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'speak', 'params': {'text': "Hello! I'm Shugo, your friendly local assistant, and I'm ready to help you with any questions or tasks you might have.", 'utterance': 'Initiated a warm greeting as the first step in establishing contact with the user.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-40', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello! I\'m Shugo, your friendly local assistant, and I\'m ready to help you with any questions or tasks you might have."\n  },\n  "confidence": 0.95,\n  "text": "Initiated a warm greeting as the first step in establishing contact with the user."\n}\n'}, 'aggregated_output': 6.72749994932561, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:41:19,125 - INFO - Execution result: {'status': 'success', 'spoken': "Hello! I'm Shugo, your friendly local assistant, and I'm ready to help you with any questions or tasks you might have.", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'spoken': "Hello! I'm Shugo, your friendly local assistant, and I'm ready to help you with any questions or tasks you might have.", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] 2026-10-01 21:41:23,615 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:41:23,615 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'Received a task update but no specific action requested; waiting for further instructions.'}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-42', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Received a task update but no specific action requested; waiting for further instructions."\n  },\n  "confidence": 0.9,\n  "text": "I am ready and awaiting your command to proceed with the task."\n}\n'}, 'aggregated_output': 7.400249944258172, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'Received a task update but no specific action requested; waiting for further instructions.'}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-42', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Received a task update but no specific action requested; waiting for further instructions."\n  },\n  "confidence": 0.9,\n  "text": "I am ready and awaiting your command to proceed with the task."\n}\n'}, 'aggregated_output': 7.400249944258172, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:41:23,615 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'Received a task update but no specific action requested; waiting for further instructions.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'Received a task update but no specific action requested; waiting for further instructions.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] 2026-10-01 21:41:27,542 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:41:27,542 - INFO - Decision: {'action_type': 'speak', 'params': {'text': "Hello there! I'm Shugo, your friendly local assistant. How can I help you today?", 'utterance': 'Greeting the user to establish a helpful and approachable tone.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-44', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello there! I\'m Shugo, your friendly local assistant. How can I help you today?"\n  },\n  "confidence": 0.95,\n  "text": "Greeting the user to establish a helpful and approachable tone."\n}\n'}, 'aggregated_output': 8.140274938683989, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'speak', 'params': {'text': "Hello there! I'm Shugo, your friendly local assistant. How can I help you today?", 'utterance': 'Greeting the user to establish a helpful and approachable tone.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-44', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello there! I\'m Shugo, your friendly local assistant. How can I help you today?"\n  },\n  "confidence": 0.95,\n  "text": "Greeting the user to establish a helpful and approachable tone."\n}\n'}, 'aggregated_output': 8.140274938683989, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:41:27,542 - INFO - Execution result: {'status': 'success', 'spoken': "Hello there! I'm Shugo, your friendly local assistant. How can I help you today?", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'spoken': "Hello there! I'm Shugo, your friendly local assistant. How can I help you today?", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] 2026-10-01 21:41:31,460 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:41:31,460 - INFO - Decision: {'action_type': 'speak', 'params': {'text': 'Hello! I am Shugo, your friendly local assistant.', 'utterance': 'I am introducing myself as Shugo, following the task requirements to speak a warm, complete sentence.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-46', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello! I am Shugo, your friendly local assistant."\n  },\n  "confidence": 1.0,\n  "text": "I am introducing myself as Shugo, following the task requirements to speak a warm, complete sentence."\n}\n'}, 'aggregated_output': 8.954302432552389, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'speak', 'params': {'text': 'Hello! I am Shugo, your friendly local assistant.', 'utterance': 'I am introducing myself as Shugo, following the task requirements to speak a warm, complete sentence.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-46', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello! I am Shugo, your friendly local assistant."\n  },\n  "confidence": 1.0,\n  "text": "I am introducing myself as Shugo, following the task requirements to speak a warm, complete sentence."\n}\n'}, 'aggregated_output': 8.954302432552389, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:41:31,460 - INFO - Execution result: {'status': 'success', 'spoken': 'Hello! I am Shugo, your friendly local assistant.', 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'spoken': 'Hello! I am Shugo, your friendly local assistant.', 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] 2026-10-01 21:41:35,256 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:41:35,256 - INFO - Decision: {'action_type': 'speak', 'params': {'text': 'Hello! I am Shugo, your local assistant here to help with anything you need.', 'utterance': 'Initiated self-introduction as requested by the task context.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-48', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello! I am Shugo, your local assistant here to help with anything you need."\n  },\n  "confidence": 0.95,\n  "text": "Initiated self-introduction as requested by the task context."\n}'}, 'aggregated_output': 9.849732675807628, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'speak', 'params': {'text': 'Hello! I am Shugo, your local assistant here to help with anything you need.', 'utterance': 'Initiated self-introduction as requested by the task context.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-48', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello! I am Shugo, your local assistant here to help with anything you need."\n  },\n  "confidence": 0.95,\n  "text": "Initiated self-introduction as requested by the task context."\n}'}, 'aggregated_output': 9.849732675807628, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:41:35,257 - INFO - Execution result: {'status': 'success', 'spoken': 'Hello! I am Shugo, your local assistant here to help with anything you need.', 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'spoken': 'Hello! I am Shugo, your local assistant here to help with anything you need.', 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] 2026-10-01 21:41:39,273 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:41:39,274 - INFO - Decision: {'action_type': 'speak', 'params': {'text': "Hello! I'm Shugo, your friendly local assistant here to help you with any questions or tasks you might have.", 'utterance': 'I introduced myself as Shugo and offered assistance in a warm, complete sentence as instructed.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-50', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello! I\'m Shugo, your friendly local assistant here to help you with any questions or tasks you might have."\n  },\n  "confidence": 1.0,\n  "text": "I introduced myself as Shugo and offered assistance in a warm, complete sentence as instructed."\n}\n'}, 'aggregated_output': 10.834705943388391, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'speak', 'params': {'text': "Hello! I'm Shugo, your friendly local assistant here to help you with any questions or tasks you might have.", 'utterance': 'I introduced myself as Shugo and offered assistance in a warm, complete sentence as instructed.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-50', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello! I\'m Shugo, your friendly local assistant here to help you with any questions or tasks you might have."\n  },\n  "confidence": 1.0,\n  "text": "I introduced myself as Shugo and offered assistance in a warm, complete sentence as instructed."\n}\n'}, 'aggregated_output': 10.834705943388391, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:41:39,274 - INFO - Execution result: {'status': 'success', 'spoken': "Hello! I'm Shugo, your friendly local assistant here to help you with any questions or tasks you might have.", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'spoken': "Hello! I'm Shugo, your friendly local assistant here to help you with any questions or tasks you might have.", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] 2026-10-01 21:41:42,851 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:41:42,851 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'Waiting for task input to proceed.'}, 'confidence': 0.8, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-52', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Waiting for task input to proceed."\n  },\n  "confidence": 0.8,\n  "text": "I am ready and awaiting your instructions."\n}\n'}, 'aggregated_output': 11.91817653772723, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'Waiting for task input to proceed.'}, 'confidence': 0.8, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-52', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Waiting for task input to proceed."\n  },\n  "confidence": 0.8,\n  "text": "I am ready and awaiting your instructions."\n}\n'}, 'aggregated_output': 11.91817653772723, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:41:42,851 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'Waiting for task input to proceed.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'Waiting for task input to proceed.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] 2026-10-01 21:41:46,490 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:41:46,490 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'No specific task provided in the input.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-54', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "No specific task provided in the input."\n  },\n  "confidence": 0.95,\n  "text": "No specific task provided in the input."\n}\n'}, 'aggregated_output': 13.109994191499954, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'No specific task provided in the input.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-54', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "No specific task provided in the input."\n  },\n  "confidence": 0.95,\n  "text": "No specific task provided in the input."\n}\n'}, 'aggregated_output': 13.109994191499954, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:41:46,490 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'No specific task provided in the input.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'No specific task provided in the input.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] 2026-10-01 21:41:50,182 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:41:50,182 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'Task provided is an empty task object.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-56', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Task provided is an empty task object."\n  },\n  "confidence": 0.95,\n  "text": "Noting the absence of a specific task to proceed with."\n}\n'}, 'aggregated_output': 14.420993610649951, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'Task provided is an empty task object.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-56', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Task provided is an empty task object."\n  },\n  "confidence": 0.95,\n  "text": "Noting the absence of a specific task to proceed with."\n}\n'}, 'aggregated_output': 14.420993610649951, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:41:50,182 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'Task provided is an empty task object.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'Task provided is an empty task object.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] 2026-10-01 21:41:53,948 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:41:53,948 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'Waiting for user input to proceed.'}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-58', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Waiting for user input to proceed."\n  },\n  "confidence": 0.9,\n  "text": "I am ready and waiting for your instructions."\n}\n'}, 'aggregated_output': 15.863092971714948, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'Waiting for user input to proceed.'}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-58', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Waiting for user input to proceed."\n  },\n  "confidence": 0.9,\n  "text": "I am ready and waiting for your instructions."\n}\n'}, 'aggregated_output': 15.863092971714948, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:41:53,948 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'Waiting for user input to proceed.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'Waiting for user input to proceed.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] 2026-10-01 21:42:01,152 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:42:01,152 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'Task is empty, nothing to process.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-60', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Task is empty, nothing to process."\n  },\n  "confidence": 1.0,\n  "text": "I am Shugo and I have recorded a note that the task is empty."\n}'}, 'aggregated_output': 17.449402268886445, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'Task is empty, nothing to process.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-60', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Task is empty, nothing to process."\n  },\n  "confidence": 1.0,\n  "text": "I am Shugo and I have recorded a note that the task is empty."\n}'}, 'aggregated_output': 17.449402268886445, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:42:01,152 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'Task is empty, nothing to process.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'Task is empty, nothing to process.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] 2026-10-01 21:42:04,848 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:42:04,848 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'Waiting for task input to proceed.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-62', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Waiting for task input to proceed."\n  },\n  "confidence": 1.0,\n  "text": "I\'m ready to help once you provide the task details!"\n}\n'}, 'aggregated_output': 19.19434249577509, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'Waiting for task input to proceed.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-62', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Waiting for task input to proceed."\n  },\n  "confidence": 1.0,\n  "text": "I\'m ready to help once you provide the task details!"\n}\n'}, 'aggregated_output': 19.19434249577509, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:42:04,848 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'Waiting for task input to proceed.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'Waiting for task input to proceed.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] 2026-10-01 21:42:08,678 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:42:08,678 - INFO - Decision: {'action_type': 'speak', 'params': {'text': "Hello there! I'm Shugo, your calm and friendly local assistant ready to help you navigate around us.", 'utterance': 'Greeting the user with my introduction'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-64', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello there! I\'m Shugo, your calm and friendly local assistant ready to help you navigate around us."\n  },\n  "confidence": 0.95,\n  "text": "Greeting the user with my introduction"\n}\n'}, 'aggregated_output': 21.1137767453526, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'speak', 'params': {'text': "Hello there! I'm Shugo, your calm and friendly local assistant ready to help you navigate around us.", 'utterance': 'Greeting the user with my introduction'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-64', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello there! I\'m Shugo, your calm and friendly local assistant ready to help you navigate around us."\n  },\n  "confidence": 0.95,\n  "text": "Greeting the user with my introduction"\n}\n'}, 'aggregated_output': 21.1137767453526, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:42:08,678 - INFO - Execution result: {'status': 'success', 'spoken': "Hello there! I'm Shugo, your calm and friendly local assistant ready to help you navigate around us.", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'spoken': "Hello there! I'm Shugo, your calm and friendly local assistant ready to help you navigate around us.", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] 2026-10-01 21:42:12,587 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:42:12,587 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'No specific task provided in the input to record an observation or perform another action.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-66', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "No specific task provided in the input to record an observation or perform another action."\n  },\n  "confidence": 1.0,\n  "text": "I am Shugo, and I have recorded that no specific task was provided in the input."\n}\n'}, 'aggregated_output': 23.22515441988786, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'No specific task provided in the input to record an observation or perform another action.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-66', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "No specific task provided in the input to record an observation or perform another action."\n  },\n  "confidence": 1.0,\n  "text": "I am Shugo, and I have recorded that no specific task was provided in the input."\n}\n'}, 'aggregated_output': 23.22515441988786, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:42:12,587 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'No specific task provided in the input to record an observation or perform another action.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'No specific task provided in the input to record an observation or perform another action.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] 2026-10-01 21:42:16,141 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:42:16,141 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'Waiting for further instructions from user'}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-68', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Waiting for further instructions from user"\n  },\n  "confidence": 0.9,\n  "text": "Ready to assist you."\n}\n'}, 'aggregated_output': 25.54766986187665, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'Waiting for further instructions from user'}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-68', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Waiting for further instructions from user"\n  },\n  "confidence": 0.9,\n  "text": "Ready to assist you."\n}\n'}, 'aggregated_output': 25.54766986187665, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:42:16,141 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'Waiting for further instructions from user', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'Waiting for further instructions from user', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] 2026-10-01 21:42:19,759 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:42:19,759 - INFO - Decision: {'action_type': 'speak', 'params': {'text': "Hello Shugo here! I'm ready to help you navigate around or find what you need locally.", 'utterance': 'Greeting the user as requested in the task.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-70', 'model_outputs': {'shugocore-local': '{"action_type": "speak", "params": {"text": "Hello Shugo here! I\'m ready to help you navigate around or find what you need locally."}, "confidence": 1.0, "text": "Greeting the user as requested in the task."}\n'}, 'aggregated_output': 28.102436848064315, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'speak', 'params': {'text': "Hello Shugo here! I'm ready to help you navigate around or find what you need locally.", 'utterance': 'Greeting the user as requested in the task.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-70', 'model_outputs': {'shugocore-local': '{"action_type": "speak", "params": {"text": "Hello Shugo here! I\'m ready to help you navigate around or find what you need locally."}, "confidence": 1.0, "text": "Greeting the user as requested in the task."}\n'}, 'aggregated_output': 28.102436848064315, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:42:19,759 - INFO - Execution result: {'status': 'success', 'spoken': "Hello Shugo here! I'm ready to help you navigate around or find what you need locally.", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'spoken': "Hello Shugo here! I'm ready to help you navigate around or find what you need locally.", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] 2026-10-01 21:42:26,693 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:42:26,693 - INFO - Decision: {'action_type': 'speak', 'params': {'text': 'Hello! I am Shugo, your friendly local assistant. How can I help you today?', 'utterance': 'Greeting the user as requested.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-72', 'model_outputs': {'shugocore-local': '{"action_type": "speak", "params": {"text": "Hello! I am Shugo, your friendly local assistant. How can I help you today?"}, "confidence": 0.95, "text": "Greeting the user as requested."}\n'}, 'aggregated_output': 30.91268053287075, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'speak', 'params': {'text': 'Hello! I am Shugo, your friendly local assistant. How can I help you today?', 'utterance': 'Greeting the user as requested.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-72', 'model_outputs': {'shugocore-local': '{"action_type": "speak", "params": {"text": "Hello! I am Shugo, your friendly local assistant. How can I help you today?"}, "confidence": 0.95, "text": "Greeting the user as requested."}\n'}, 'aggregated_output': 30.91268053287075, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:42:26,693 - INFO - Execution result: {'status': 'success', 'spoken': 'Hello! I am Shugo, your friendly local assistant. How can I help you today?', 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'spoken': 'Hello! I am Shugo, your friendly local assistant. How can I help you today?', 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] 2026-10-01 21:42:30,454 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:42:30,454 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'Waiting for user input to determine next action.'}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-74', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Waiting for user input to determine next action."\n  },\n  "confidence": 0.9,\n  "text": "I am ready and waiting for your instructions or observations."\n}\n'}, 'aggregated_output': 34.003948586157826, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'Waiting for user input to determine next action.'}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-74', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Waiting for user input to determine next action."\n  },\n  "confidence": 0.9,\n  "text": "I am ready and waiting for your instructions or observations."\n}\n'}, 'aggregated_output': 34.003948586157826, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:42:30,454 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'Waiting for user input to determine next action.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'Waiting for user input to determine next action.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] 2026-10-01 21:42:34,250 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:42:34,250 - INFO - Decision: {'action_type': 'speak', 'params': {'text': "Hello! I'm Shugo, your friendly local assistant, ready to help with anything you need.", 'utterance': 'Greeting the user warmly as instructed.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-76', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello! I\'m Shugo, your friendly local assistant, ready to help with anything you need."\n  },\n  "confidence": 0.95,\n  "text": "Greeting the user warmly as instructed."\n}\n'}, 'aggregated_output': 37.40434344477361, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'speak', 'params': {'text': "Hello! I'm Shugo, your friendly local assistant, ready to help with anything you need.", 'utterance': 'Greeting the user warmly as instructed.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-76', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello! I\'m Shugo, your friendly local assistant, ready to help with anything you need."\n  },\n  "confidence": 0.95,\n  "text": "Greeting the user warmly as instructed."\n}\n'}, 'aggregated_output': 37.40434344477361, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:42:34,250 - INFO - Execution result: {'status': 'success', 'spoken': "Hello! I'm Shugo, your friendly local assistant, ready to help with anything you need.", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'spoken': "Hello! I'm Shugo, your friendly local assistant, ready to help with anything you need.", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] 2026-10-01 21:42:38,170 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:42:38,170 - INFO - Decision: {'action_type': 'speak', 'params': {'text': "Hello there! I'm Shugo, your friendly local assistant. How can I help you today?", 'utterance': 'I am initializing as a calm and friendly local assistant to greet the user.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-78', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello there! I\'m Shugo, your friendly local assistant. How can I help you today?"\n  },\n  "confidence": 0.95,\n  "text": "I am initializing as a calm and friendly local assistant to greet the user."\n}\n'}, 'aggregated_output': 41.14477778925097, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'speak', 'params': {'text': "Hello there! I'm Shugo, your friendly local assistant. How can I help you today?", 'utterance': 'I am initializing as a calm and friendly local assistant to greet the user.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-78', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello there! I\'m Shugo, your friendly local assistant. How can I help you today?"\n  },\n  "confidence": 0.95,\n  "text": "I am initializing as a calm and friendly local assistant to greet the user."\n}\n'}, 'aggregated_output': 41.14477778925097, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:42:38,170 - INFO - Execution result: {'status': 'success', 'spoken': "Hello there! I'm Shugo, your friendly local assistant. How can I help you today?", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'spoken': "Hello there! I'm Shugo, your friendly local assistant. How can I help you today?", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] 2026-10-01 21:42:41,713 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:42:41,713 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'Waiting for user input to proceed.'}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-80', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Waiting for user input to proceed."\n  },\n  "confidence": 0.9,\n  "text": "I am ready and waiting for your instructions."\n}'}, 'aggregated_output': 45.25925556817607, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'Waiting for user input to proceed.'}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-80', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "Waiting for user input to proceed."\n  },\n  "confidence": 0.9,\n  "text": "I am ready and waiting for your instructions."\n}'}, 'aggregated_output': 45.25925556817607, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:42:41,713 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'Waiting for user input to proceed.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'Waiting for user input to proceed.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] 2026-10-01 21:42:45,375 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:42:45,376 - INFO - Decision: {'action_type': 'record_observation', 'params': {'text': 'No specific user input provided; waiting for further instructions.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-82', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "No specific user input provided; waiting for further instructions."\n  },\n  "confidence": 1.0,\n  "text": "Ready to assist with any tasks or questions."\n}\n'}, 'aggregated_output': 49.785181124993684, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'record_observation', 'params': {'text': 'No specific user input provided; waiting for further instructions.'}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-82', 'model_outputs': {'shugocore-local': '{\n  "action_type": "record_observation",\n  "params": {\n    "text": "No specific user input provided; waiting for further instructions."\n  },\n  "confidence": 1.0,\n  "text": "Ready to assist with any tasks or questions."\n}\n'}, 'aggregated_output': 49.785181124993684, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:42:45,376 - INFO - Execution result: {'status': 'success', 'recorded': True, 'text': 'No specific user input provided; waiting for further instructions.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'recorded': True, 'text': 'No specific user input provided; waiting for further instructions.', 'proposal_source': 'shugocore-local', 'action_type': 'record_observation'}
-[TERMINAL] 2026-10-01 21:42:49,425 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:42:49,425 - INFO - Decision: {'action_type': 'speak', 'params': {'text': "Hello! I'm Shugo, your friendly local assistant, and I'm ready to help with anything you need.", 'utterance': "I've initialized my greeting message to welcome the user in a warm manner."}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-84', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello! I\'m Shugo, your friendly local assistant, and I\'m ready to help with anything you need."\n  },\n  "confidence": 0.95,\n  "text": "I\'ve initialized my greeting message to welcome the user in a warm manner."\n}\n'}, 'aggregated_output': 54.76369923749306, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'speak', 'params': {'text': "Hello! I'm Shugo, your friendly local assistant, and I'm ready to help with anything you need.", 'utterance': "I've initialized my greeting message to welcome the user in a warm manner."}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-84', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello! I\'m Shugo, your friendly local assistant, and I\'m ready to help with anything you need."\n  },\n  "confidence": 0.95,\n  "text": "I\'ve initialized my greeting message to welcome the user in a warm manner."\n}\n'}, 'aggregated_output': 54.76369923749306, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:42:49,425 - INFO - Execution result: {'status': 'success', 'spoken': "Hello! I'm Shugo, your friendly local assistant, and I'm ready to help with anything you need.", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'spoken': "Hello! I'm Shugo, your friendly local assistant, and I'm ready to help with anything you need.", 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] 2026-10-01 21:42:53,085 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-01 21:42:53,085 - INFO - Decision: {'action_type': 'speak', 'params': {'text': 'Hello! How can I help you today?', 'utterance': "I'm ready to assist you with your query."}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-86', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello! How can I help you today?"\n  },\n  "confidence": 0.9,\n  "text": "I\'m ready to assist you with your query."\n}\n'}, 'aggregated_output': 60.24006916124237, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'speak', 'params': {'text': 'Hello! How can I help you today?', 'utterance': "I'm ready to assist you with your query."}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-86', 'model_outputs': {'shugocore-local': '{\n  "action_type": "speak",\n  "params": {\n    "text": "Hello! How can I help you today?"\n  },\n  "confidence": 0.9,\n  "text": "I\'m ready to assist you with your query."\n}\n'}, 'aggregated_output': 60.24006916124237, 'memory_context': []}
-[TERMINAL] 2026-10-01 21:42:53,086 - INFO - Execution result: {'status': 'success', 'spoken': 'Hello! How can I help you today?', 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
+[TERMINAL] 2026-10-07 07:56:21,803 - INFO - Decision: {'action_type': 'speak', 'params': {'text': 'Hello! How can I help you today?', 'utterance': 'Introducing myself as Shugo and offering assistance.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-2', 'model_outputs': {'shugocore-local': '{\n    "action_type": "speak",\n    "params": {\n        "text": "Hello! How can I help you today?"\n    },\n    "confidence": 0.95,\n    "text": "Introducing myself as Shugo and offering assistance."\n}'}, 'aggregated_output': 1.1, 'memory_context': []}
+[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'speak', 'params': {'text': 'Hello! How can I help you today?', 'utterance': 'Introducing myself as Shugo and offering assistance.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-2', 'model_outputs': {'shugocore-local': '{\n    "action_type": "speak",\n    "params": {\n        "text": "Hello! How can I help you today?"\n    },\n    "confidence": 0.95,\n    "text": "Introducing myself as Shugo and offering assistance."\n}'}, 'aggregated_output': 1.1, 'memory_context': []}
+[TERMINAL] 2026-10-07 07:56:21,803 - INFO - Execution result: {'status': 'success', 'spoken': 'Hello! How can I help you today?', 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
 [TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'spoken': 'Hello! How can I help you today?', 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
+[TERMINAL] 2026-10-07 07:56:56,155 - INFO - Decision made for task: maintain_agent_loop - N/A
+[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
+[TERMINAL] 2026-10-07 07:56:56,155 - INFO - Decision: {'action_type': 'ask_user', 'params': {'text': 'What would you like me to do?'}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-4', 'model_outputs': {'shugocore-local': '{\n  "action_type": "ask_user",\n  "params": {\n    "text": "What would you like me to do?"\n  },\n  "confidence": 0.9,\n  "text": "Asking user for clarification on the task."\n}'}, 'aggregated_output': 1.2100000000000002, 'memory_context': []}
+[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'ask_user', 'params': {'text': 'What would you like me to do?'}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-4', 'model_outputs': {'shugocore-local': '{\n  "action_type": "ask_user",\n  "params": {\n    "text": "What would you like me to do?"\n  },\n  "confidence": 0.9,\n  "text": "Asking user for clarification on the task."\n}'}, 'aggregated_output': 1.2100000000000002, 'memory_context': []}
+[TERMINAL] 2026-10-07 07:56:56,155 - INFO - Execution result: {'status': 'success', 'asked': 'What would you like me to do?', 'delivered': True, 'awaiting_answer': True, 'answer_ttl_s': 120.0, 'proposal_source': 'shugocore-local', 'action_type': 'ask_user'}
+[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'asked': 'What would you like me to do?', 'delivered': True, 'awaiting_answer': True, 'answer_ttl_s': 120.0, 'proposal_source': 'shugocore-local', 'action_type': 'ask_user'}
+[TERMINAL] 2026-10-07 07:57:15,556 - INFO - Decision made for task: maintain_agent_loop - N/A
+[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
+[TERMINAL] 2026-10-07 07:57:15,557 - INFO - Decision: {'action_type': 'ask_user', 'params': {'text': "Hello! I'm Shugo, your friendly local assistant. How can I help you today?"}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-6', 'model_outputs': {'shugocore-local': '{\n    "action_type": "ask_user",\n    "params": {\n        "text": "Hello! I\'m Shugo, your friendly local assistant. How can I help you today?"\n    },\n    "confidence": 1.0,\n    "text": "Asking user for initial task or query."\n}'}, 'aggregated_output': 1.3310000000000004, 'memory_context': []}
+[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'ask_user', 'params': {'text': "Hello! I'm Shugo, your friendly local assistant. How can I help you today?"}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-6', 'model_outputs': {'shugocore-local': '{\n    "action_type": "ask_user",\n    "params": {\n        "text": "Hello! I\'m Shugo, your friendly local assistant. How can I help you today?"\n    },\n    "confidence": 1.0,\n    "text": "Asking user for initial task or query."\n}'}, 'aggregated_output': 1.3310000000000004, 'memory_context': []}
+[TERMINAL] 2026-10-07 07:57:15,557 - INFO - Execution result: {'status': 'success', 'asked': "Hello! I'm Shugo, your friendly local assistant. How can I help you today?", 'delivered': True, 'awaiting_answer': True, 'answer_ttl_s': 120.0, 'proposal_source': 'shugocore-local', 'action_type': 'ask_user'}
+[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'asked': "Hello! I'm Shugo, your friendly local assistant. How can I help you today?", 'delivered': True, 'awaiting_answer': True, 'answer_ttl_s': 120.0, 'proposal_source': 'shugocore-local', 'action_type': 'ask_user'}
+[TERMINAL] 2026-10-07 07:57:26,792 - INFO - Decision made for task: maintain_agent_loop - N/A
+[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
+[TERMINAL] 2026-10-07 07:57:26,792 - INFO - Decision: {'action_type': 'network_spatial_query', 'params': {'query': 'coffee shop', 'radius_km': 2, 'current_location': True}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-8', 'model_outputs': {'shugocore-local': '{"action_type": "network_spatial_query", "params": {"query": "coffee shop", "radius_km": 2, "current_location": true}, "confidence": 0.9, "text": "Querying for coffee shops within 2km radius from my current location."}'}, 'aggregated_output': 1.4641000000000006, 'memory_context': []}
+[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'network_spatial_query', 'params': {'query': 'coffee shop', 'radius_km': 2, 'current_location': True}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-8', 'model_outputs': {'shugocore-local': '{"action_type": "network_spatial_query", "params": {"query": "coffee shop", "radius_km": 2, "current_location": true}, "confidence": 0.9, "text": "Querying for coffee shops within 2km radius from my current location."}'}, 'aggregated_output': 1.4641000000000006, 'memory_context': []}
+[TERMINAL] 2026-10-07 07:57:26,792 - INFO - Execution result: {'status': 'refused', 'reason': 'runtime does not support spatial queries', 'proposal_source': 'shugocore-local', 'action_type': 'network_spatial_query'}
+[TERMINAL] INFO:logging_manager:Execution result: {'status': 'refused', 'reason': 'runtime does not support spatial queries', 'proposal_source': 'shugocore-local', 'action_type': 'network_spatial_query'}
+[TERMINAL] 2026-10-07 07:58:33,539 - INFO - Decision made for task: maintain_agent_loop - N/A
+[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
+[TERMINAL] 2026-10-07 07:58:33,540 - INFO - Decision: {'action_type': 'ask_user', 'params': {'text': "I'll ask the user to create the folder."}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-15', 'model_outputs': {'shugocore-local': '{"action_type": "ask_user", "params": {"text": "I\'ll ask the user to create the folder."}, "confidence": 0.9, "text": "As an AI assistant, I cannot directly control file systems or create folders on your desktop. I will ask for clarification."}'}, 'aggregated_output': 1.3176900000000007, 'memory_context': []}
+[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'ask_user', 'params': {'text': "I'll ask the user to create the folder."}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-15', 'model_outputs': {'shugocore-local': '{"action_type": "ask_user", "params": {"text": "I\'ll ask the user to create the folder."}, "confidence": 0.9, "text": "As an AI assistant, I cannot directly control file systems or create folders on your desktop. I will ask for clarification."}'}, 'aggregated_output': 1.3176900000000007, 'memory_context': []}
+[TERMINAL] 2026-10-07 07:58:33,540 - INFO - Execution result: {'status': 'success', 'asked': "I'll ask the user to create the folder.", 'delivered': True, 'awaiting_answer': True, 'answer_ttl_s': 120.0, 'proposal_source': 'shugocore-local', 'action_type': 'ask_user'}
+[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'asked': "I'll ask the user to create the folder.", 'delivered': True, 'awaiting_answer': True, 'answer_ttl_s': 120.0, 'proposal_source': 'shugocore-local', 'action_type': 'ask_user'}
 [TERMINAL] exit=0
-[STATUS ] mesh_role="follower"
+[STATUS ] mesh_role="primary"
 [STATUS ] security_baseline={"baseline_ok": true, "checked": 4, "violations": []}
 [STATUS ] pipeline={"stages": {"sensors": "unknown", "vision": "unknown", "hearing": "unknown", "speech": "ok", "model": "unknown", "memory": "ok"}, "overall": "unknown", "round_trips": 0, "backing": "none"}
 [AGENT  ] [AGENT] cwd -> G:\Program Prototype\shugocore\runtime\agency_node
 [AGENT  ] [AGENT] sound: policy says listen_mode=speech (sound perception is not enabled in configuration for this node)
-[AGENT  ] [PERSONALITY] resumed at gen 11
-[AGENT  ] [PERSONALITY] governor live (gen 11)
+[AGENT  ] [PERSONALITY] resumed at gen 14
+[AGENT  ] [PERSONALITY] governor live (gen 14)
 [AGENT  ] [AGENT] shugonet runtime started on port 9000 (memory=on, peers=0)
 [AGENT  ] [AGENT] delegation manager ready
 [AGENT  ] [AGENT] agent ready (device=desktop, api=http://127.0.0.1:11434, engine=DecisionEngine)
-[AGENT  ] [MESH] peer heartbeat over the mesh: shugo-tab prio=500 thermal=0 mem=194584576
-[AGENT  ] [MESH] peer heartbeat over the mesh: shugo-mac prio=10 thermal=0 mem=5323046912
-[AGENT  ] [MESH] peer heartbeat over the mesh: shugo-a51 prio=500 thermal=0 mem=97996800
-[AGENT  ] [MESH] peer heartbeat over the mesh: shugo-a16 prio=500 thermal=0 mem=138780672
+[AGENT  ] [MESH] peer heartbeat over the mesh: shugo-a16 prio=500 thermal=0 mem=155926528
+[AGENT  ] [MESH] peer heartbeat over the mesh: shugo-tab prio=500 thermal=0 mem=171225088

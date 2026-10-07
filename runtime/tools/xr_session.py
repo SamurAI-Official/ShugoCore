@@ -402,8 +402,19 @@ def main(argv=None) -> int:
         scan_world(facts)
         if not facts["world"]:
             facts["error"] = "the scaffold printed no world session"
-        good = bool(facts["world"]) and facts["acted"] and facts["replied"]
-        return write_and_report(args, facts, 0 if good else 1)
+        # Exit 0 whenever a transcript was written: producing it is this tool's job,
+        # and it is the evidence `claim_matrix.world_engagement` judges -- where a
+        # session that ran and never answered is judged on its merits.
+        #
+        # This used to exit 1 unless the session both acted *and* replied
+        # (`0 if good else 1`). The matrix treats any non-zero command exit as "the
+        # claim is contradicted", so a machine with no headset -- which is what
+        # `world=none` looks like from here -- marked the XR claim *failed*, and
+        # overrode the recorded session the live check had just read successfully.
+        # The three exits above still return 1, and should: no Godot binary, no
+        # desktop server, or a server that never answered are the tool failing to do
+        # its job, not a missing headset.
+        return write_and_report(args, facts, 0)
     finally:
         stop_process(server)
 

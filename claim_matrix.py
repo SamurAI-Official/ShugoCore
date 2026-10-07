@@ -386,11 +386,31 @@ def world_engagement(text: str) -> tuple:
     """
     body = text or ""
     worlds = re.findall(r"^\[WORLD\s*\]\s*(\S+)", body, re.MULTILINE)
+    if not worlds:
+        # No world session was recorded — which is not the same as a session that
+        # failed. The producer (`runtime/tools/xr_session.py`) writes
+        # `verdict: world=none ...` when the surface could not start at all, and
+        # measured here that is what happens on a machine with no headset: Godot
+        # reports "OpenXR was requested but failed to start. HMD was not
+        # detected", falls back to normal mode, and exits without a session.
+        #
+        # Marking that `False` recorded the claim as *contradicted* when the
+        # honest verdict is *could not evaluate* — the same standard
+        # `quest3_reach` applies to an absent headset, and the standard this
+        # module's own docstring states ("a row whose transcript is absent stays
+        # unproven rather than proven by its wiring tests"). `None` is that
+        # signal; the runner reports it as `unproven`.
+        verdict = re.search(r"^verdict:\s*(.+)$", body, re.MULTILINE)
+        if verdict:
+            detail = verdict.group(1).strip()
+            error = re.search(r"^error=(.+)$", body, re.MULTILINE)
+            if error:
+                detail = f"{detail}; {error.group(1).strip()}"
+            return None, f"no world session was recorded ({detail})"
+        return None, "no world session was recorded"
     goals = re.findall(r"^\[GOAL\s*\]\s*(.+)$", body, re.MULTILINE)
     actions = re.findall(r"^\[ACTION\s*\]\s*(.+)$", body, re.MULTILINE)
     replies = re.findall(r"^\[REPLY\s*\]\s*(.+)$", body, re.MULTILINE)
-    if not worlds:
-        return False, "no world session was recorded"
     world = worlds[0]
     if not goals:
         return False, f"no goal was expressed in {world}"
@@ -573,7 +593,19 @@ CLAIMS: List[Dict[str, Any]] = [
                 # The reply is the remaining gap -- a headless server has no speech output,
                 # so `speak` there is honestly `no_output` -- and until that half is recorded
                 # this row stays unproven. Unproven is not failed.
-                {"kind": "command", "argv": ["__PY__", "runtime/tools/xr_session.py"]},
+                #
+                # `--out` points into its own run directory on purpose. It used to
+                # default to runtime/evidence/world.xr.txt -- and the surface raw log
+                # sits beside it by fixed name -- so a sweep on a machine with no
+                # headset overwrote a recorded successful session (2026-10-03,
+                # presence=xr, replied=True) and its raw log with this machine's "the
+                # surface never started", and then judged that. The claim's verdict
+                # depended on whose machine ran it, and running it destroyed the
+                # evidence. This run's attempt lands in xr_session/ instead, leaving
+                # the recorded artifacts intact.
+                {"kind": "command", "argv": ["__PY__", "runtime/tools/xr_session.py",
+                                             "--out",
+                                             "runtime/evidence/xr_session/world.xr.txt"]},
                 {"kind": "live", "name": "world_engagement",
                  "path": "runtime/evidence/world.xr.txt"}]},
     {"id": "world.sandbox",
@@ -581,6 +613,19 @@ CLAIMS: List[Dict[str, Any]] = [
      "doc": "README 'Actuation sandbox', actuation_sandbox.py",
      "checks": [{"kind": "command", "argv": ["__PY__", "-m", "unittest",
                                              "tests.test_actuation_sandbox"]},
+                # Expected to be `unproven` on every default run, and deliberately
+                # not dressed up otherwise. `world_engagement` judges a
+                # [WORLD]/[GOAL]/[ACTION]/[REPLY] transcript, and *nothing produces
+                # that shape for the sandbox*: actuation_sandbox.py writes one audit
+                # chain per scenario (runtime/sandbox/sandbox_<scenario>.jsonl) and
+                # prints a pass/fail table. Its containment half is already judged by
+                # `containment.actuation` above, which runs the sandbox and proves.
+                #
+                # So this row needs an operator transcript to be evaluable. Marking it
+                # proven from the sandbox's own table would be the exact thing this
+                # module refuses to do -- grading a claim on wiring rather than on the
+                # evidence its text describes ("the agent proposes ... and it
+                # answers"). Left visibly unproven instead.
                 {"kind": "live", "name": "world_engagement", "path": ""}]},
     {"id": "mesh.quest3",
      "claim": "the operator's headset reaches the agent over the LAN, its task is executed "

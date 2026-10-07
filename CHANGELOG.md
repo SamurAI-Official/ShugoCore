@@ -4,6 +4,130 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.30.27] - 2026-10-07 — four roots, one source of truth
+
+### The runtime had four composition roots, and they had drifted
+
+Four places build a `DecisionEngine` without going through the agent's
+`create_agent`: `shugocore_server.build_engine`, `continuous_agent`, the
+`android_node` device node, and the agent itself. Only the agent anchored its
+state paths onto an absolute data dir and handed that dir to the engine as
+`log_dir`. The other three passed relative names and no data dir, so their state
+landed in whatever directory the process was started from.
+
+This is not hypothetical: the repository root contained `semantic_memory.db`,
+`audit_chain.jsonl`, `node_audit.jsonl` (227 KB), `node_journal_pixel8.jsonl`,
+`node_journal_testphone.jsonl` and a **415 KB** `decision_engine.log` — the bug's
+own output. The 1.30.25 release fixed a relative-path boot failure for one root
+and left the others alone.
+
+- **`state_paths.py` (new) is the single answer.** An absolute path is never
+  second-guessed; a relative one is anchored once, at construction, under the data
+  dir when there is one, otherwise under the working directory *at that moment*.
+  Resolving per-use instead is what let a `chdir` relocate a live node's state —
+  the failure `AndroidAgent`'s own comment describes. `:memory:`, SQLite URI
+  filenames and Postgres DSNs are addresses rather than locations and pass through
+  untouched; rewriting `:memory:` produced
+  `sqlite3.OperationalError: unable to open database file` across the server suite
+  until they were excluded.
+- **`DecisionEngine` applies the rule to `memory_db_path`, `audit_path`,
+  `episodic_journal_path` and its log file, and exposes them.** Every root reaches
+  the engine, so this is the choke point that makes them agree — measured: **8
+  unanchored state paths before, 0 after**, building every root from a throwaway
+  directory.
+- **`android_node.NodeConfig` gained `data_dir` and `journal_path`.** The node
+  wrote `node_journal_<device-id>.jsonl` from a hardcoded relative f-string that
+  ignored its own config entirely.
+- **`continuous_agent`'s three path defaults now match its own CLI.** They were
+  `None`, and `None` is not "leave it to the engine": it *overrode* the engine's
+  real defaults, so the documented `ContinuousAgent(models=[...])` — straight from
+  the module docstring — raised `ValueError` on construction while
+  `python3 continuous_agent.py`, which defaults the same flags, worked. The
+  engine's error message no longer blames `SHUGOCORE_MEMORY_BACKEND=postgres` for
+  a caller who never set it.
+
+`tests/test_composition_parity.py` (new, 15 tests) pins the promise from the
+outside: every root's state resolves absolutely, the device node honours a data
+dir, every root's engine still carries its gates, and the sentinels pass through.
+
+### The claims matrix was not telling the truth
+
+`claim_matrix.py` is this repository's own feature-verification instrument: 22
+claims, each with checks, a captured artifact and a `proven` / `unproven` /
+`failed` verdict. Driving it turned up three defects **in the instrument**, each
+of which made it report something other than the truth.
+
+- **"Contradicted" where it meant "could not evaluate."** `world_engagement` — one
+  parser serving `world.robotics`, `world.xr` and `world.sandbox` — returned
+  `False` for an absent transcript, while its own docstring says such a row *stays
+  unproven*, and its sibling `quest3_reach` already returned `None` for an absent
+  headset. So a machine with no headset reported the XR claim as **failed**. It
+  returns `None` now, and reads the `verdict: world=...` line the producer writes,
+  so "the surface never started" is distinguishable from "the session ran and did
+  not engage". The latter is still `False`, pinned by a test, so `None` cannot
+  become a blanket excuse.
+- **Running the matrix destroyed the evidence it was judging.**
+  `runtime/tools/xr_session.py` writes `runtime/evidence/world.xr.txt`, and that is
+  the same file the `world.xr` live check reads. Its `--out` defaulted there, so a
+  sweep on a headset-less machine overwrote the recorded successful session
+  (2026-10-03, `presence=xr`, `replied=True`) with `world=none` — and then judged
+  the result. The claim's verdict depended on whose machine ran it, and running it
+  destroyed the record. The command now writes into
+  `runtime/evidence/xr_session/`, and the live check keeps reading the record.
+- **The probe's exit code, not the judged evidence, decided the row.**
+  `run_claim` treats any non-zero command exit as `failed`, and `xr_session.py`
+  exited 1 unless the session both acted *and* replied — exactly what a missing
+  headset produces. It exits 0 whenever it wrote a transcript, and still 1 for its
+  three setup failures (no Godot binary, no desktop server, a server that never
+  answered), because those are the tool failing rather than the environment
+  lacking hardware.
+
+Result: **18 proven / 3 unproven / 1 failed → 19 proven / 3 unproven / 0 failed.**
+`world.sandbox` stays deliberately unproven and now says why: it is judged on a
+`[WORLD]/[GOAL]/[ACTION]/[REPLY]` transcript and nothing produces that shape for
+the sandbox. Marking it proven from the sandbox's own table would be the exact
+thing the matrix exists to prevent.
+
+### Four modules nothing could reach, and two of them were defects
+
+- **`check_apk.py` shipped a module that could not be imported.** It was a bare
+  script declared as a `py-modules` entry, so *importing* it opened
+  `platforms/android/app/build/outputs/apk/debug/app-debug.apk` and raised
+  `FileNotFoundError` on any machine without that exact build. The body lives in
+  `main(argv=None)` now, the archive is an argument, a missing APK reports and
+  exits 2 instead of tracebacking, and a doubled `apk.close()` is gone.
+- **`android_model_manager.ModelManager` is a stale copy of the live class** —
+  same method set, but it never received `MODEL_PERFORMANCE_CAP`, so its
+  performance tracking is unbounded where the live one is clamped. Nothing imports
+  it. It is marked deprecated with the divergence spelled out rather than left as
+  a trap, and **not** deleted: the 1.x policy removes deprecated functionality only
+  after at least one minor release of deprecation.
+- `talker` (a published placeholder with no code, by its own docstring) and
+  `test_local_run` are recorded as decisions.
+
+`tests/test_module_reachability.py` (new) keeps it that way: an unreachable root
+module fails the suite unless justified; a justification that goes stale fails
+too, so an excuse cannot outlive its reason; and a class name defined in two root
+modules must be recorded.
+
+### The map the repository was missing
+
+`ARCHITECTURE.md` now states the composition roots, the state-path rule, which
+module enforces which invariant, the derived artifacts that must never be
+hand-edited, and which commands actually run the suite. Its absence is what let
+the roots drift in the first place.
+
+`SECURITY.md`'s verification block told a reader that
+`python -m unittest discover -s tests -v` **is** the full suite. It is not: 30
+tests are invisible to that runner, which is exactly why CI runs a second one.
+Both commands are named now, with counts measured rather than remembered, and
+`tests/test_suite_completeness.py` fails if a `tests/test_*.py` file becomes
+collectable by neither runner — the way a suite silently stops running.
+
+The root is clean: the eleven orphaned `.release_notes_v*.md` files (v1.2.0
+through v1.30.5, tracked, referenced by nothing) moved to `docs/release-notes/`,
+and the stale node state the relative-path defect left behind is gone.
+
 ## [1.30.26] - 2026-10-06 — the desktop window, driven and honest
 
 ### The desktop window could be watched but never used

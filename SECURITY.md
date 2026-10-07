@@ -57,9 +57,22 @@ report should try to break:
 ```bash
 python -m compileall -q .
 ruff check .                                   # syntax errors + undefined names
-python -m unittest discover -s tests -v        # full suite
+# The suite takes BOTH runners: `unittest discover` cannot see pytest-style
+# files (30 tests), and a plain `pytest tests` re-collects the ones the first
+# command already ran. CI runs both; so should you. See ARCHITECTURE.md.
+python -m unittest discover -s tests -v        # the TestCase suites
+python -m pytest tests -p no:unittest -q       # the other 30
 bandit -q -r . -x ./.venv,./.llama_build,./platforms,./dist,./build,./tests -lll
-python audit.py verify audit_chain.jsonl       # audit-chain integrity
+shugocore-verify-audit verify audit_chain.jsonl   # audit-chain integrity
+```
+
+`claim_matrix.py` is the feature-verification instrument (22 claims, each with a
+captured artifact and a `proven` / `unproven` / `failed` verdict); run a row at a
+time:
+
+```bash
+python claim_matrix.py --only governance.consent
+python actuation_sandbox.py                    # 17 containment scenarios
 ```
 
 `tests/test_security.py`, `tests/test_shugocore_server.py`,

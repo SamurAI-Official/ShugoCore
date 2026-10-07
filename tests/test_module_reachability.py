@@ -36,9 +36,6 @@ JUSTIFIED_UNREACHABLE = {
     "android_model_manager":
         "deprecated duplicate of model_manager.ModelManager, kept only so the "
         "published 1.x surface still has the module (see its docstring)",
-    "check_apk":
-        "developer tool run directly (python check_apk.py); importing it is not "
-        "how it is used",
     "talker":
         "published placeholder with no code, by its own docstring; it exists to "
         "be carried by the wheel",

@@ -77,6 +77,11 @@ decoupled maintenance worker that never blocks the primary loop.
 
 ## System architecture
 
+**[ARCHITECTURE.md](ARCHITECTURE.md)** is the map: the composition roots (every
+place that builds a `DecisionEngine`), the state-path rule, which module enforces
+which invariant, the derived artifacts that must never be hand-edited, and which
+commands actually run the suite. The table below is the module index.
+
 | Module | Responsibility |
 |---|---|
 | `decision_engine.py` | Orchestrates models, ethics, memory and execution; entry point |

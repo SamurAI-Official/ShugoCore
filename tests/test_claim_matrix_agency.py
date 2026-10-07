@@ -210,6 +210,37 @@ class ModelBackedTestCase(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("nothing announced", detail)
 
+    def test_no_model_server_at_all_is_unproven_not_contradicted(self):
+        """Measured: with nothing listening, this row came out `failed`.
+
+        A claim recorded as contradicted because a service was not running is the
+        reading this matrix exists to refuse. The scenario records its own
+        precondition, so the parser can read which of the two happened.
+        """
+        text = ("[SESSION] scenario=model\n"
+                "[SESSION] warming the model endpoint at http://127.0.0.1:1234 "
+                "(budget 60s)\n"
+                "[SESSION] warm-up: NOT warm after 3 attempt(s) in 60s "
+                "(model 'x' -> ConnectionError: refused); running anyway\n")
+        ok, detail = claim_matrix.model_backed(text)
+        self.assertIsNone(ok, detail)
+        self.assertIn("no model answered", detail)
+
+    def test_an_endpoint_that_cannot_be_probed_is_unproven(self):
+        ok, detail = claim_matrix.model_backed(
+            "[SESSION] warm-up: cannot probe the endpoint (ImportError)\n")
+        self.assertIsNone(ok, detail)
+
+    def test_a_warm_endpoint_that_announces_nothing_is_still_a_failure(self):
+        """The unproven branch must not swallow a session that did run."""
+        text = ("[SESSION] warm-up: warm after 1 attempt(s) "
+                "(HTTP 200, model shugocore-local)\n"
+                "[TERMINAL]   [AGENT  ] cycle=1 outcome=ok\n")
+        ok, detail = claim_matrix.model_backed(text)
+        self.assertIs(ok, False, "a warmed session that announced nothing is a "
+                                 "real failure, not an unevaluated claim")
+        self.assertIn("nothing announced", detail)
+
     def test_a_model_that_could_not_be_reached_fails_the_claim(self):
         text = ("[TERMINAL]   [MODEL  ] decisions backed by shugocore-local\n"
                 "[TERMINAL]   [AGENT  ] cycle=1 outcome=BACKEND_FAILURE stages=OBSERVE\n")

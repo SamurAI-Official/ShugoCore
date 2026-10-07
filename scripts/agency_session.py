@@ -88,12 +88,19 @@ def warm_model(api_url: str, model: str = "", budget: float = 180.0) -> str:
             if not name:
                 continue
             try:
+                # A cold 27B can take minutes to load, and loading is the whole point of
+                # this call: the node's own 120s timeout is right for a *serving* model but
+                # too short to bring one up, so a shorter timeout here reported the
+                # endpoint cold while it was still loading.
+                #
+                # The wait has to stay inside the budget, though. A flat timeout=300
+                # inside a 180s budget let a single hung attempt outlive the budget
+                # entirely -- the deadline below is only checked once the call returns.
+                # Measured: that is how this scenario outlived the claims runner's own
+                # 300s cap and was killed with no transcript to judge.
                 reply = requests.post(
-                    # A cold 27B can take minutes to load, and loading is the whole point of
-                    # this call: the node's own 120s timeout is right for a *serving* model but
-                    # too short to bring one up, so a shorter timeout here reported the
-                    # endpoint cold while it was still loading.
-                    f"{base}/chat/completions", timeout=300,
+                    f"{base}/chat/completions",
+                    timeout=max(1.0, deadline - time.monotonic()),
                     json={"model": name, "temperature": 0.0, "max_tokens": 1,
                           "messages": [{"role": "user", "content": "ok"}]})
                 if reply.status_code < 400:

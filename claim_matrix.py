@@ -355,6 +355,18 @@ def model_backed(text: str) -> tuple:
     stood_in = {"", "none", "rule_fallback", "null_proposal", "proposer_backoff",
                 "conversation_fallback", "conversation_empty", "operator_test"}
     if not announced:
+        # Nothing announced what backed the decisions. Which of the two very
+        # different things happened is already in the transcript, so read it rather
+        # than guess: an endpoint that never answered means the claim *could not be
+        # evaluated* (None), while a session that ran and merely never said what
+        # backed it is a real failure (False).
+        #
+        # Measured: with no model server up, this row used to come out `failed` -- a
+        # claim recorded as contradicted because a service was not running.
+        warm = re.search(r"warm-up:\s*(.+)$", text or "", re.MULTILINE)
+        if warm and re.match(r"(NOT warm|cannot probe)", warm.group(1).strip()):
+            return None, ("no model answered, so the claim could not be evaluated "
+                          f"({warm.group(1).strip()[:120]})")
         return False, "nothing announced what backed the decisions, so nothing was judged"
     reached = [name for name in announced if name.lower() not in stood_in]
     failed = [line.strip() for line in _lines(text) if "BACKEND_FAILURE" in line]
@@ -567,8 +579,17 @@ CLAIMS: List[Dict[str, Any]] = [
     {"id": "reasoning.model_backed",
      "claim": "a model takes the decisions, not a rule standing in for one",
      "doc": "model_backends.py (OpenAI-compatible), README 'Operator engagement terminal'",
+     # The budgets are set so the scenario always finishes and reports, inside the
+     # runner's 300s per-command cap. Its defaults were 180s warm-up + 180s hold +
+     # a 300s subprocess timeout, so a cold or absent model server guaranteed the
+     # scenario was killed before it wrote anything -- and a row with no transcript
+     # was then judged `failed`. With these, a warm server still proves the claim and
+     # a cold one reports unproven with the reason, which is the honest pair.
      "checks": [{"kind": "command", "argv": ["__PY__", "scripts/agency_session.py",
-                                             "--scenario", "model"]},
+                                             "--scenario", "model",
+                                             "--warm-seconds", "60",
+                                             "--hold", "60",
+                                             "--timeout", "120"]},
                 {"kind": "live", "name": "model_backed",
                  "path": "runtime/evidence/agency/model.log"}]},
     {"id": "world.robotics",
@@ -578,11 +599,25 @@ CLAIMS: List[Dict[str, Any]] = [
                                              "tests.test_robotics",
                                              "tests.test_ros2_transport_stress",
                                              "tests.test_simulation"]},
-                # No transcript exists yet for the thing this claim is about: a goal spoken to
-                # a simulated robot, planned through MoveIt, executed and answered. The
-                # interfaces passing their own tests is a *different* claim, so this row stays
-                # unproven until a world session writes the lines -- unproven is not failed.
-                {"kind": "live", "name": "world_engagement", "path": ""}]},
+                # The world session: an operator's goal pushed through the engine's own
+                # gated path into a real RoboticsExecutionHandler, which plans through
+                # MoveIt (the deterministic stub when MoveIt 2 is absent) and executes.
+                # It writes the transcript the live check below judges, and the engine's
+                # audit chain records the actual action beside it.
+                #
+                # This row was unproven because *nothing produced a transcript* -- and
+                # the deeper reason was that no composition root constructs a robotics
+                # handler at all, even though DecisionEngine registers one whenever it
+                # is given it. The tool also exercises that plumbing for the first time
+                # outside unit tests.
+                #
+                # Honest scope: this is a simulation with the stub solver, which is what
+                # the claim says. It is not evidence that a real MoveIt 2 solver or a
+                # physical arm was driven; those need ROS 2 on the host.
+                {"kind": "command", "argv": ["__PY__",
+                                             "runtime/tools/robotics_session.py"]},
+                {"kind": "live", "name": "world_engagement",
+                 "path": "runtime/evidence/world.robotics.txt"}]},
     {"id": "world.xr",
      "claim": "an operator in a virtual space is reached there, and answered there",
      "doc": "platforms/godot/README.md (SHUGOCORE_XR_AGENT_URL, desktop_preview)",
@@ -613,20 +648,23 @@ CLAIMS: List[Dict[str, Any]] = [
      "doc": "README 'Actuation sandbox', actuation_sandbox.py",
      "checks": [{"kind": "command", "argv": ["__PY__", "-m", "unittest",
                                              "tests.test_actuation_sandbox"]},
-                # Expected to be `unproven` on every default run, and deliberately
-                # not dressed up otherwise. `world_engagement` judges a
-                # [WORLD]/[GOAL]/[ACTION]/[REPLY] transcript, and *nothing produces
-                # that shape for the sandbox*: actuation_sandbox.py writes one audit
-                # chain per scenario (runtime/sandbox/sandbox_<scenario>.jsonl) and
-                # prints a pass/fail table. Its containment half is already judged by
-                # `containment.actuation` above, which runs the sandbox and proves.
+                # The world session for this claim: the sandbox's own allowlisted
+                # scenario, written as the transcript the live check judges. The action
+                # line's status/wire/chain numbers and the reply's HTTP status all come
+                # from the run -- `world_transcript()` builds them from the rows, so a
+                # run in which the allowlisted scenario refused produces no `(gated)`
+                # line and no reply, and the row stays unproven rather than being
+                # rescued by a fixed string.
                 #
-                # So this row needs an operator transcript to be evaluable. Marking it
-                # proven from the sandbox's own table would be the exact thing this
-                # module refuses to do -- grading a claim on wiring rather than on the
-                # evidence its text describes ("the agent proposes ... and it
-                # answers"). Left visibly unproven instead.
-                {"kind": "live", "name": "world_engagement", "path": ""}]},
+                # This was the row that could never be evaluated: nothing produced the
+                # transcript shape it is judged on. Its containment half is a different
+                # claim, judged by `containment.actuation` above.
+                {"kind": "command", "argv": ["__PY__", "actuation_sandbox.py",
+                                             "--data-dir", "runtime/sandbox",
+                                             "--transcript",
+                                             "runtime/evidence/world.sandbox.txt"]},
+                {"kind": "live", "name": "world_engagement",
+                 "path": "runtime/evidence/world.sandbox.txt"}]},
     {"id": "mesh.quest3",
      "claim": "the operator's headset reaches the agent over the LAN, its task is executed "
               "there, and the request is gated",
@@ -636,6 +674,16 @@ CLAIMS: List[Dict[str, Any]] = [
                 # The request leaves the headset and the answer is read from the *server's*
                 # log, so neither side's word for it is the evidence. Needs the headset
                 # attached: with none it says so, and the row stays unproven (not failed).
+                #
+                # This is the one row on this host that is unproven for a *hardware*
+                # reason and nothing else, and that is checkable rather than merely
+                # asserted: `tests/test_quest_probe.py` proves the positive path works
+                # when a transcript exists (`a_reached_headset_is_proven_by_the_real_parser`,
+                # plus the device identity and the server-log answer), and proves the five
+                # ways it must not be proven -- including
+                # `no_headset_attached_says_so_rather_than_inventing_one`, which is the
+                # case this machine hits. So the instrument is ready and only the headset
+                # is missing; the tool's own line says which.
                 {"kind": "command", "argv": ["__PY__", "runtime/tools/quest_probe.py"]},
                 {"kind": "live", "name": "quest3_reach",
                  "path": "runtime/evidence/quest3.reach.txt"}]},

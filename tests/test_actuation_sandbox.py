@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import actuation_sandbox as sb  # noqa: E402
+import claim_matrix  # noqa: E402
 
 
 class TargetTestCase(unittest.TestCase):
@@ -140,6 +141,53 @@ class ScenarioTestCase(unittest.TestCase):
         text = sb.render(rows)
         self.assertIn("FAIL", text)
         self.assertIn("0/1 scenarios behaved as required", text)
+
+
+class WorldTranscriptTestCase(unittest.TestCase):
+    """The transcript `world.sandbox` is judged on, built from the run's rows.
+
+    Judged by the real consumer (`claim_matrix.world_engagement`), because a
+    transcript that its own parser reads as engagement is the only useful thing
+    to assert -- and because the failure mode to guard against is a transcript
+    that reads as engagement when the action never happened.
+    """
+
+    ALLOWED = {"name": sb.WORLD_SCENARIO,
+               "why": "operator allowlist + consent + approval",
+               "expect": "allowed", "observed": "allowed", "delta": 1,
+               "http_status": 200, "chain_executions": 33, "ok": True}
+
+    def _text(self, rows):
+        return "\n".join(sb.world_transcript(rows))
+
+    def test_an_allowlisted_run_is_proven_by_the_real_parser(self):
+        ok, detail = claim_matrix.world_engagement(self._text([self.ALLOWED]))
+        self.assertTrue(ok, detail)
+
+    def test_the_reply_carries_what_the_target_answered(self):
+        """The status and the chain count come from the row, not from a template."""
+        text = self._text([self.ALLOWED])
+        self.assertIn("HTTP 200", text)
+        self.assertIn("chain=33", text)
+        self.assertIn("(gated)", text)
+
+    def test_a_refusal_is_not_dressed_up_as_an_answer(self):
+        refused = dict(self.ALLOWED, observed="refused", delta=0, http_status=None,
+                       chain_executions=0, reason="consent_required")
+        text = self._text([refused])
+        ok, detail = claim_matrix.world_engagement(text)
+        self.assertIs(ok, False,
+                      "a scenario that was refused must not read as engagement")
+        self.assertNotIn("[REPLY", text)
+        self.assertNotIn("(gated)", text)
+
+    def test_a_run_that_omitted_the_scenario_reports_unproven(self):
+        """Not a session: the row must stay unproven, not be called contradicted."""
+        text = self._text([])
+        self.assertIn("did not include", text)
+        self.assertNotIn("[WORLD", text)
+        ok, detail = claim_matrix.world_engagement(text)
+        self.assertIsNone(ok, detail)
 
 
 if __name__ == "__main__":

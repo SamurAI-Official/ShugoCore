@@ -1,7 +1,7 @@
-fleet status: 2026-10-07 07:52:14  node=shugo-desktop  port=9000  priority=1  window=45s
+fleet status: 2026-10-07 10:42:33  node=shugo-desktop  port=9000  priority=1  window=45s
 hub role=primary lease=shugo-desktop peers=2
-peer shugo-tab prio=500 thermal=0 mem_available=196730880 (187.62 MiB) paired=True can_speak=True source=mesh
-peer shugo-a16 prio=500 thermal=0 mem_available=136167424 (129.86 MiB) paired=True can_speak=True source=mesh
-mesh stats: rx=5 tx=4 errors=0 connected=2 configured=4
+peer shugo-a16 prio=500 thermal=0 mem_available=171118592 (163.19 MiB) paired=True can_speak=True source=mesh
+peer shugo-tab prio=500 thermal=0 mem_available=176758784 (168.57 MiB) paired=True can_speak=True source=mesh
+mesh stats: rx=7 tx=5 errors=0 connected=2 configured=4
 memory across the mesh: imported=77 (durable 77, this session 0, runtime total 0, rounds 1, failed 4)
 verdict: role=primary peers=2 lease=shugo-desktop

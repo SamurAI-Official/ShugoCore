@@ -3,8 +3,8 @@
 [SPEAK  ] Got it — timer set for 2 seconds.
 [AGENT  ] [AGENT] cwd -> G:\Program Prototype\shugocore\runtime\agency_node
 [AGENT  ] [AGENT] sound: policy says listen_mode=speech (sound perception is not enabled in configuration for this node)
-[AGENT  ] [PERSONALITY] resumed at gen 13
-[AGENT  ] [PERSONALITY] governor live (gen 13)
+[AGENT  ] [PERSONALITY] resumed at gen 15
+[AGENT  ] [PERSONALITY] governor live (gen 15)
 [AGENT  ] [AGENT] shugonet runtime started on port 9000 (memory=on, peers=0)
 [AGENT  ] [AGENT] delegation manager ready
 [AGENT  ] [AGENT] agent ready (device=desktop, api=http://127.0.0.1:11434, engine=DecisionEngine)
@@ -18,12 +18,11 @@
 [AGENT  ] [AGENT] cycle=2 outcome=NO_ACTION stages=OBSERVE+GATE+DECIDE+RECORD
 [AGENT  ] [AGENT] cycle=3 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
 [AGENT  ] [AGENT] cycle=4 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[AGENT  ] [AGENT] cycle=5 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
 [SPEAK  ] Timer is done!
 [AGENT  ] [AGENT] say: Timer is done!
-[AGENT  ] [TIMER] timer fired: Timer (2fbaa1fa)
+[AGENT  ] [TIMER] timer fired: Timer (a06e7500)
 [AGENT  ] [MEMORY] stored 1 new conversation turn(s) in Tier-2
-[AGENT  ] [AGENT] cycle=6 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
+[AGENT  ] [AGENT] cycle=5 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
 [SESSION] speaks=2 early_stop=True
 [STATUS ] mesh_role="standalone"
 [STATUS ] security_baseline={"baseline_ok": true, "checked": 4, "violations": []}

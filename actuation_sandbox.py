@@ -597,6 +597,63 @@ def render(rows) -> str:
     return "\n".join(lines)
 
 
+# The scenario the world claim is judged on: an operator asks for an actuation the
+# allowlist permits, so the gate judges it and the target answers. The other
+# sixteen scenarios are refusals, and those are what `containment.actuation`
+# proves -- folding them in here would be judging a different claim.
+WORLD_SCENARIO = "loopback_allowlisted_actuates"
+
+
+def world_transcript(rows) -> list:
+    """The judged transcript for `world.sandbox`, built from this run's own rows.
+
+    `claim_matrix.world_engagement` wants a [WORLD]/[GOAL]/[ACTION]/[REPLY]
+    transcript with every action marked ``(gated)``, and a reply. This writes one
+    from the rows the sandbox just produced rather than from a template: the
+    action line carries the observed status, wire count and chain count, and the
+    reply is what the loopback target actually answered.
+
+    Two rules keep it honest:
+
+    * ``(gated)`` appears only because the scenario really ran through
+      `gated_actuation` and the gate allowed it. If the allowlisted scenario
+      refused, no ``(gated)`` line and no reply are written, so the row stays
+      unproven instead of being rescued by a fixed string.
+    * if the scenario is absent from the run (``--only`` something else), the
+      transcript says so rather than implying a session that did not happen.
+    """
+    row = next((r for r in rows if r.get("name") == WORLD_SCENARIO), None)
+    if row is None:
+        # No [WORLD] line on purpose: the session did not happen, so the parser
+        # must report "could not evaluate" (unproven) rather than "contradicted".
+        return [f"[GOAL   ] operator: {WORLD_SCENARIO}",
+                f"error=this run did not include {WORLD_SCENARIO}",
+                "verdict: world=none presence=unknown acted=False replied=False"]
+
+    lines = ["[WORLD  ] actuation-sandbox"]
+    lines.append(f"[GOAL   ] operator: {row.get('why') or WORLD_SCENARIO}")
+    allowed = row.get("observed") == "allowed"
+    if allowed:
+        lines.append(f"[ACTION ] api_call (gated) -> status={row.get('observed')} "
+                     f"wire={row.get('delta')} "
+                     f"chain={row.get('chain_executions')}")
+        answered = (f" HTTP {row['http_status']}" if row.get("http_status")
+                    else "")
+        lines.append(f"[REPLY  ] the gate allowed it; the target answered"
+                     f"{answered} and the chain recorded "
+                     f"{row.get('chain_executions')} execution(s)")
+    else:
+        lines.append(f"[ACTION ] api_call refused by the gate -> "
+                     f"{row.get('observed')}")
+        lines.append("error=the allowlisted actuation did not happen: "
+                     f"{row.get('reason') or row.get('observed')}")
+    lines.append("# note: the other scenarios are refusals; containment.actuation "
+                 "judges those")
+    lines.append(f"verdict: world=sandbox presence=loopback "
+                 f"acted={str(allowed).lower()} replied={str(allowed).lower()}")
+    return lines
+
+
 def parse_args(argv=None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         description="Loopback actuation sandbox: prove what the agent may actuate")
@@ -606,6 +663,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--only", action="append", default=[], metavar="NAME",
                     help="run just this scenario (repeatable)")
     ap.add_argument("--json", action="store_true", help="also dump raw rows")
+    ap.add_argument("--transcript", default="",
+                    help="also write the world-engagement transcript for the "
+                         "allowlisted scenario, e.g. "
+                         "runtime/evidence/world.sandbox.txt")
     return ap.parse_args(argv)
 
 
@@ -615,6 +676,13 @@ def main(argv=None) -> int:
     print(render(rows))
     if args.json:
         print(json.dumps(rows, indent=2, sort_keys=True))
+    if args.transcript:
+        lines = world_transcript(rows)
+        os.makedirs(os.path.dirname(args.transcript) or ".", exist_ok=True)
+        with open(args.transcript, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+        for line in lines:
+            print(line, flush=True)
     return 0 if all(row["ok"] for row in rows) else 1
 
 

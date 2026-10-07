@@ -1,7 +1,7 @@
 [SESSION] scenario=model node=shugo-desktop role=primary-capable data-dir=G:\Program Prototype\shugocore\runtime\agency_node
-[SESSION] warming the model endpoint at http://127.0.0.1:1234 (budget 180s)
-[SESSION] warm-up: warm after 1 attempt(s) (HTTP 200, model zai-org/glm-4.6v-flash)
-[TERMINAL] C:\Users\marku\AppData\Local\Programs\Python\Python310\python.exe G:\Program Prototype\shugocore\clients\desktop\shugocore_desktop.py --terminal --backend LM Studio (OpenAI-compatible) --url http://127.0.0.1:1234 --no-input --data-dir runtime\agency_node\model --mesh-port 9021 --say the charger is warm to the touch; note whether that warrants attention --exit-after 180.0
+[SESSION] warming the model endpoint at http://127.0.0.1:1234 (budget 60s)
+[SESSION] warm-up: warm after 1 attempt(s) (HTTP 200, model shugocore-local)
+[TERMINAL] C:\Users\marku\AppData\Local\Programs\Python\Python310\python.exe G:\Program Prototype\shugocore\clients\desktop\shugocore_desktop.py --terminal --backend LM Studio (OpenAI-compatible) --url http://127.0.0.1:1234 --no-input --data-dir runtime\agency_node\model --mesh-port 9021 --say the charger is warm to the touch; note whether that warrants attention --exit-after 60.0
 [TERMINAL] [SHUGOCORE_BOOT] chdir ok: G:\Program Prototype\shugocore\runtime\agency_node\model (was G:\Program Prototype\shugocore)
 [TERMINAL] ShugoCore engagement terminal
 [TERMINAL]   node      shugo-desktop   backend LM Studio (OpenAI-compatible) -> http://127.0.0.1:1234
@@ -15,7 +15,7 @@
 [TERMINAL]   commands  /status  /nodes  /say TEXT  /prove [ID]  /quit   (Ctrl+C also exits)
 [TERMINAL] 
 [TERMINAL] 
-[TERMINAL] Agent> Mild warmth from a charger is usually normal, but if itâ€™s hot to the touch or you notice issues like slow charging, it might be worth checking. Does your device charge at all? Or are there any other signs of trouble?
+[TERMINAL] Agent> A warm charger can often be normal from use, but if itâ€™s excessively hot or you spot other signs of trouble with the device, it might need a closer look. Do you notice any unusual heat on your phone or tablet too?
 [TERMINAL] 
 [TERMINAL]   [AGENT  ] cwd -> G:\Program Prototype\shugocore\runtime\agency_node\model
 [TERMINAL]   [AGENT  ] sound: policy says listen_mode=speech (sound perception is not enabled in configuration for this node)
@@ -26,95 +26,24 @@
 [TERMINAL]   [AGENT  ] agent ready (device=desktop, api=http://127.0.0.1:1234, engine=DecisionEngine)
 [TERMINAL]   [AGENT  ] orchestration mode: primary (holding the lease)
 [TERMINAL]   [AGENT  ] intent: UserIntent(question, conf=0.40)
-[TERMINAL]   [AGENT  ] conversation: spoke -> 'Mild warmth from a charger is usually normal, but if itâ€™s hot to the touch or yo'
+[TERMINAL]   [AGENT  ] conversation: spoke -> 'A warm charger can often be normal from use, but if itâ€™s excessively hot or you '
 [TERMINAL]   [AGENT  ] typed (terminal): the charger is warm to the touch; note whether that warrants attention
 [TERMINAL]   [ROUTE  ] shugo-desktop (score 0.5: speech:{'source': 'none', 'confidence': 1.0, 'face_fresh': false, 'speech_fresh': false, 'voice_fresh': false, 'gaze_toward_camera': none}, terminal-input) - shugo-desktop is closest to the operator (score 0.50: speech:{'source': 'none', 'confidence': 1.0, 'face_fresh': false, 'speech_fresh': false, 'voice_fresh': false, 'gaze_toward_camera': none}, terminal-input)
 [TERMINAL]   [MODEL  ] decisions backed by shugocore-local
 [TERMINAL] 
-[TERMINAL] Agent> What can I help you with today?
-[TERMINAL] 
-[TERMINAL]   [MEMORY ] stored 2 new conversation turn(s) in Tier-2
-[TERMINAL]   [AGENT  ] cycle=1 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL] 
-[TERMINAL] Agent> Hello! How can I help you today?
-[TERMINAL] 
-[TERMINAL]   [MEMORY ] stored 1 new conversation turn(s) in Tier-2
-[TERMINAL]   [AGENT  ] cycle=2 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [ROUTE  ] shugo-desktop (score 0.2: speech:{'source': 'none', 'confidence': 1.0, 'face_fresh': false, 'speech_fresh': false, 'voice_fresh': false, 'gaze_toward_camera': none}) - shugo-desktop is closest to the operator (score 0.20: speech:{'source': 'none', 'confidence': 1.0, 'face_fresh': false, 'speech_fresh': false, 'voice_fresh': false, 'gaze_toward_camera': none})
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL] 
-[TERMINAL] Agent> What would you like me to do?
-[TERMINAL] 
-[TERMINAL]   [MEMORY ] stored 1 new conversation turn(s) in Tier-2
-[TERMINAL]   [AGENT  ] cycle=3 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL] 
-[TERMINAL] Agent> Hello! I'm Shugo, your friendly local assistant. How can I help you today?
-[TERMINAL] 
-[TERMINAL]   [MEMORY ] stored 1 new conversation turn(s) in Tier-2
-[TERMINAL]   [AGENT  ] cycle=4 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=5 outcome=SUCCESS stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL]   [MODEL  ] decisions backed by shugocore-local
-[TERMINAL]   [MODEL  ] decisions backed by none
-[TERMINAL]   [AGENT  ] cycle=6 outcome=TASK_FAILURE stages=OBSERVE+GATE+DECIDE+EXECUTE+EVALUATE+RECORD
-[TERMINAL] 
-[TERMINAL] Agent> I'll ask the user to create the folder.
-[TERMINAL] 
-[TERMINAL] 
-[TERMINAL] terminal closed: 6 repl(s) delivered
+[TERMINAL] terminal closed: 1 repl(s) delivered
 [TERMINAL] SHUGONET: runtime started on port 9021 (peers=0)
 [TERMINAL] ORCHESTRATION: primary: holding the lease
-[TERMINAL] 2026-10-07 07:55:48,007 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-07 07:55:48,028 - INFO - Decision: {'action_type': 'ask_user', 'params': {'text': 'What can I help you with today?'}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-0', 'model_outputs': {'shugocore-local': '{\n    "action_type": "ask_user",\n    "params": { "text": "What can I help you with today?" },\n    "confidence": 0.9,\n    "text": "Asking for clarification on the task."\n}'}, 'aggregated_output': 1.0, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'ask_user', 'params': {'text': 'What can I help you with today?'}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-0', 'model_outputs': {'shugocore-local': '{\n    "action_type": "ask_user",\n    "params": { "text": "What can I help you with today?" },\n    "confidence": 0.9,\n    "text": "Asking for clarification on the task."\n}'}, 'aggregated_output': 1.0, 'memory_context': []}
-[TERMINAL] 2026-10-07 07:55:48,028 - INFO - Execution result: {'status': 'success', 'asked': 'What can I help you with today?', 'delivered': True, 'awaiting_answer': True, 'answer_ttl_s': 120.0, 'proposal_source': 'shugocore-local', 'action_type': 'ask_user'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'asked': 'What can I help you with today?', 'delivered': True, 'awaiting_answer': True, 'answer_ttl_s': 120.0, 'proposal_source': 'shugocore-local', 'action_type': 'ask_user'}
-[TERMINAL] 2026-10-07 07:56:21,803 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-07 07:56:21,803 - INFO - Decision: {'action_type': 'speak', 'params': {'text': 'Hello! How can I help you today?', 'utterance': 'Introducing myself as Shugo and offering assistance.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-2', 'model_outputs': {'shugocore-local': '{\n    "action_type": "speak",\n    "params": {\n        "text": "Hello! How can I help you today?"\n    },\n    "confidence": 0.95,\n    "text": "Introducing myself as Shugo and offering assistance."\n}'}, 'aggregated_output': 1.1, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'speak', 'params': {'text': 'Hello! How can I help you today?', 'utterance': 'Introducing myself as Shugo and offering assistance.'}, 'confidence': 0.95, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-2', 'model_outputs': {'shugocore-local': '{\n    "action_type": "speak",\n    "params": {\n        "text": "Hello! How can I help you today?"\n    },\n    "confidence": 0.95,\n    "text": "Introducing myself as Shugo and offering assistance."\n}'}, 'aggregated_output': 1.1, 'memory_context': []}
-[TERMINAL] 2026-10-07 07:56:21,803 - INFO - Execution result: {'status': 'success', 'spoken': 'Hello! How can I help you today?', 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'spoken': 'Hello! How can I help you today?', 'delivered': True, 'proposal_source': 'shugocore-local', 'action_type': 'speak'}
-[TERMINAL] 2026-10-07 07:56:56,155 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-07 07:56:56,155 - INFO - Decision: {'action_type': 'ask_user', 'params': {'text': 'What would you like me to do?'}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-4', 'model_outputs': {'shugocore-local': '{\n  "action_type": "ask_user",\n  "params": {\n    "text": "What would you like me to do?"\n  },\n  "confidence": 0.9,\n  "text": "Asking user for clarification on the task."\n}'}, 'aggregated_output': 1.2100000000000002, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'ask_user', 'params': {'text': 'What would you like me to do?'}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-4', 'model_outputs': {'shugocore-local': '{\n  "action_type": "ask_user",\n  "params": {\n    "text": "What would you like me to do?"\n  },\n  "confidence": 0.9,\n  "text": "Asking user for clarification on the task."\n}'}, 'aggregated_output': 1.2100000000000002, 'memory_context': []}
-[TERMINAL] 2026-10-07 07:56:56,155 - INFO - Execution result: {'status': 'success', 'asked': 'What would you like me to do?', 'delivered': True, 'awaiting_answer': True, 'answer_ttl_s': 120.0, 'proposal_source': 'shugocore-local', 'action_type': 'ask_user'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'asked': 'What would you like me to do?', 'delivered': True, 'awaiting_answer': True, 'answer_ttl_s': 120.0, 'proposal_source': 'shugocore-local', 'action_type': 'ask_user'}
-[TERMINAL] 2026-10-07 07:57:15,556 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-07 07:57:15,557 - INFO - Decision: {'action_type': 'ask_user', 'params': {'text': "Hello! I'm Shugo, your friendly local assistant. How can I help you today?"}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-6', 'model_outputs': {'shugocore-local': '{\n    "action_type": "ask_user",\n    "params": {\n        "text": "Hello! I\'m Shugo, your friendly local assistant. How can I help you today?"\n    },\n    "confidence": 1.0,\n    "text": "Asking user for initial task or query."\n}'}, 'aggregated_output': 1.3310000000000004, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'ask_user', 'params': {'text': "Hello! I'm Shugo, your friendly local assistant. How can I help you today?"}, 'confidence': 1.0, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-6', 'model_outputs': {'shugocore-local': '{\n    "action_type": "ask_user",\n    "params": {\n        "text": "Hello! I\'m Shugo, your friendly local assistant. How can I help you today?"\n    },\n    "confidence": 1.0,\n    "text": "Asking user for initial task or query."\n}'}, 'aggregated_output': 1.3310000000000004, 'memory_context': []}
-[TERMINAL] 2026-10-07 07:57:15,557 - INFO - Execution result: {'status': 'success', 'asked': "Hello! I'm Shugo, your friendly local assistant. How can I help you today?", 'delivered': True, 'awaiting_answer': True, 'answer_ttl_s': 120.0, 'proposal_source': 'shugocore-local', 'action_type': 'ask_user'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'asked': "Hello! I'm Shugo, your friendly local assistant. How can I help you today?", 'delivered': True, 'awaiting_answer': True, 'answer_ttl_s': 120.0, 'proposal_source': 'shugocore-local', 'action_type': 'ask_user'}
-[TERMINAL] 2026-10-07 07:57:26,792 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-07 07:57:26,792 - INFO - Decision: {'action_type': 'network_spatial_query', 'params': {'query': 'coffee shop', 'radius_km': 2, 'current_location': True}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-8', 'model_outputs': {'shugocore-local': '{"action_type": "network_spatial_query", "params": {"query": "coffee shop", "radius_km": 2, "current_location": true}, "confidence": 0.9, "text": "Querying for coffee shops within 2km radius from my current location."}'}, 'aggregated_output': 1.4641000000000006, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'network_spatial_query', 'params': {'query': 'coffee shop', 'radius_km': 2, 'current_location': True}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-8', 'model_outputs': {'shugocore-local': '{"action_type": "network_spatial_query", "params": {"query": "coffee shop", "radius_km": 2, "current_location": true}, "confidence": 0.9, "text": "Querying for coffee shops within 2km radius from my current location."}'}, 'aggregated_output': 1.4641000000000006, 'memory_context': []}
-[TERMINAL] 2026-10-07 07:57:26,792 - INFO - Execution result: {'status': 'refused', 'reason': 'runtime does not support spatial queries', 'proposal_source': 'shugocore-local', 'action_type': 'network_spatial_query'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'refused', 'reason': 'runtime does not support spatial queries', 'proposal_source': 'shugocore-local', 'action_type': 'network_spatial_query'}
-[TERMINAL] 2026-10-07 07:58:33,539 - INFO - Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] INFO:logging_manager:Decision made for task: maintain_agent_loop - N/A
-[TERMINAL] 2026-10-07 07:58:33,540 - INFO - Decision: {'action_type': 'ask_user', 'params': {'text': "I'll ask the user to create the folder."}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-15', 'model_outputs': {'shugocore-local': '{"action_type": "ask_user", "params": {"text": "I\'ll ask the user to create the folder."}, "confidence": 0.9, "text": "As an AI assistant, I cannot directly control file systems or create folders on your desktop. I will ask for clarification."}'}, 'aggregated_output': 1.3176900000000007, 'memory_context': []}
-[TERMINAL] INFO:logging_manager:Decision: {'action_type': 'ask_user', 'params': {'text': "I'll ask the user to create the folder."}, 'confidence': 0.9, 'proposal_source': 'shugocore-local', 'decision_id': 'dec-15', 'model_outputs': {'shugocore-local': '{"action_type": "ask_user", "params": {"text": "I\'ll ask the user to create the folder."}, "confidence": 0.9, "text": "As an AI assistant, I cannot directly control file systems or create folders on your desktop. I will ask for clarification."}'}, 'aggregated_output': 1.3176900000000007, 'memory_context': []}
-[TERMINAL] 2026-10-07 07:58:33,540 - INFO - Execution result: {'status': 'success', 'asked': "I'll ask the user to create the folder.", 'delivered': True, 'awaiting_answer': True, 'answer_ttl_s': 120.0, 'proposal_source': 'shugocore-local', 'action_type': 'ask_user'}
-[TERMINAL] INFO:logging_manager:Execution result: {'status': 'success', 'asked': "I'll ask the user to create the folder.", 'delivered': True, 'awaiting_answer': True, 'answer_ttl_s': 120.0, 'proposal_source': 'shugocore-local', 'action_type': 'ask_user'}
 [TERMINAL] exit=0
 [STATUS ] mesh_role="primary"
 [STATUS ] security_baseline={"baseline_ok": true, "checked": 4, "violations": []}
 [STATUS ] pipeline={"stages": {"sensors": "unknown", "vision": "unknown", "hearing": "unknown", "speech": "ok", "model": "unknown", "memory": "ok"}, "overall": "unknown", "round_trips": 0, "backing": "none"}
 [AGENT  ] [AGENT] cwd -> G:\Program Prototype\shugocore\runtime\agency_node
 [AGENT  ] [AGENT] sound: policy says listen_mode=speech (sound perception is not enabled in configuration for this node)
-[AGENT  ] [PERSONALITY] resumed at gen 14
-[AGENT  ] [PERSONALITY] governor live (gen 14)
+[AGENT  ] [PERSONALITY] resumed at gen 16
+[AGENT  ] [PERSONALITY] governor live (gen 16)
 [AGENT  ] [AGENT] shugonet runtime started on port 9000 (memory=on, peers=0)
 [AGENT  ] [AGENT] delegation manager ready
 [AGENT  ] [AGENT] agent ready (device=desktop, api=http://127.0.0.1:11434, engine=DecisionEngine)
-[AGENT  ] [MESH] peer heartbeat over the mesh: shugo-a16 prio=500 thermal=0 mem=155926528
-[AGENT  ] [MESH] peer heartbeat over the mesh: shugo-tab prio=500 thermal=0 mem=171225088
+[AGENT  ] [MESH] peer heartbeat over the mesh: shugo-tab prio=500 thermal=0 mem=198225920
+[AGENT  ] [MESH] peer heartbeat over the mesh: shugo-a16 prio=500 thermal=0 mem=152952832

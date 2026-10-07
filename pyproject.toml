@@ -63,7 +63,7 @@ py-modules = ["acceleration", "actuation_sandbox", "agent_runtime", "android_bri
               "persona", "pg_memory", "policy", "py_compat", "reinforcement_learning",
               "response_routing", "robotics_handler", "ros2_interface", "security",
               "security_inventory", "shugonet_bridge", "shugocore_agent", "shugocore_server",
-              "state_machine", "subconscious", "talker", "task_manager", "telemetry", "token_budget",
+              "state_machine", "state_paths", "subconscious", "talker", "task_manager", "telemetry", "token_budget",
               "vector_db", "version"]
 
 [tool.ruff]

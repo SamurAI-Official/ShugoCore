@@ -69,9 +69,18 @@ class ContinuousAgent:
                  interval: float = 1.0,
                  max_iterations: Optional[int] = None,
                  max_seconds: Optional[float] = None,
-                 memory_db_path: Optional[str] = None,
-                 audit_path: Optional[str] = None,
-                 episodic_journal_path: Optional[str] = None,
+                 # These three defaults must match this module's own CLI
+                 # (`--memory-db` / `--audit` / `--journal`). They were `None`,
+                 # and `None` is not "leave it to the engine": the engine's
+                 # defaults are real filenames, so passing None *overrode* them.
+                 # For memory_db_path that was fatal -- `_resolve_memory_source`
+                 # cannot invent an address, so the documented
+                 # `ContinuousAgent(models=[...])` raised ValueError on
+                 # construction while the CLI, which defaults the same flag,
+                 # worked. Two entry points, two answers; now they agree.
+                 memory_db_path: Optional[str] = "semantic_memory.db",
+                 audit_path: Optional[str] = "audit_chain.jsonl",
+                 episodic_journal_path: Optional[str] = "episodic_journal.jsonl",
                  **engine_kwargs: Any):
         # Build the engine unless one was injected (tests / embedding).
         if engine is not None:

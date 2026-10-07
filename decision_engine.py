@@ -103,6 +103,7 @@ from security import (
     sanitize_text,
 )
 from state_machine import AgentState, ExecutionGovernor, GovernorError
+from state_paths import anchor, anchor_data_dir
 from subconscious import SubconsciousModel
 from task_manager import TaskManager
 from telemetry import get_tracer
@@ -308,7 +309,21 @@ class DecisionEngine:
         # Writable directory for file-based artifacts (logs, audit). On Android
         # the Python cwd is "/" (read-only); pass data_dir so FileHandler
         # targets a real, writable path instead of failing with EROFS.
-        self._log_dir = log_dir
+        #
+        # One source of truth for where this node keeps its state (state_paths).
+        # Every composition root reaches the engine, so anchoring here is what
+        # makes them agree: the data dir when one is given, otherwise the
+        # working directory frozen *now*. Resolving per-use instead is how a
+        # relative path let a later chdir relocate a live node's state.
+        self.state_dir = anchor_data_dir(log_dir) or os.getcwd()
+        memory_db_path = anchor(memory_db_path, self.state_dir)
+        audit_path = anchor(audit_path, self.state_dir)
+        episodic_journal_path = anchor(episodic_journal_path, self.state_dir)
+        # Kept public so the guarantee is inspectable, not just internal.
+        self.memory_db_path = memory_db_path
+        self.audit_path = audit_path
+        self.episodic_journal_path = episodic_journal_path
+        self._log_dir = self.state_dir
         self._model_failures = 0  # consecutive model parse failures (rule-fallback trigger)
         # Consecutive cycles where the model was *asked* and could not be reached at all. Kept
         # apart from `_model_failures`: an unreachable backend gets the same safe substitution
@@ -427,8 +442,7 @@ class DecisionEngine:
         # The queue executes through the same gated path (no bypass).
         self.task_manager.set_executor(self.execute_task)
         self.logging_manager = LoggingManager(
-            log_file=os.path.join(self._log_dir, "decision_engine.log")
-            if self._log_dir else "decision_engine.log")
+            log_file=os.path.join(self._log_dir, "decision_engine.log"))
 
         # Tiered memory system: Tier 0/1 isolated, Tier 2/3 shareable.
         if core_identity is not None:
@@ -444,10 +458,16 @@ class DecisionEngine:
             #   SHUGOCORE_MEMORY_BACKEND=postgres     -> requires DSN or path
             resolved_source = _resolve_memory_source(memory_db_path)
             if resolved_source is None:
+                # This used to name SHUGOCORE_MEMORY_BACKEND=postgres
+                # unconditionally, so callers who had never set it -- and whose
+                # real mistake was passing memory_db_path=None -- were sent to
+                # look at an environment variable that was not involved.
                 raise ValueError(
-                    "SHUGOCORE_MEMORY_BACKEND=postgres requires "
-                    "SHUGOCORE_MEMORY_DSN (or an explicit memory_db_path); "
-                    "a database address cannot be invented")
+                    "no Tier 2 memory source: memory_db_path is None and "
+                    "SHUGOCORE_MEMORY_DSN is unset, so there is no database "
+                    "address to open (the engine default is "
+                    "'semantic_memory.db'; SHUGOCORE_MEMORY_BACKEND=postgres "
+                    "alone cannot invent one)")
             if pg_mem:
                 semantic = pg_mem(resolved_source)
             else:

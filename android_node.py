@@ -47,6 +47,7 @@ from policy import CapabilityRegistry
 from ros2_interface import StubROS2Interface, Twist, sanitize_twist
 from security import sanitize_text
 from state_machine import ExecutionGovernor
+from state_paths import anchor, state_dir
 from fallbacks import FallbackController
 from telemetry import get_tracer
 
@@ -115,7 +116,8 @@ class NodeConfig:
                  publish_hz: float = 10.0,
                  capabilities: Optional[CapabilityRegistry] = None,
                  db_path: str = "node_semantic_memory.db",
-                 audit_path: str = "node_audit.jsonl"):
+                 audit_path: str = "node_audit.jsonl",
+                 data_dir: Optional[str] = None):
         if role not in ROLES:
             raise ValueError(f"unknown role '{role}' (available: {ROLES})")
         self.device_id = sanitize_text(device_id, 48)
@@ -129,8 +131,17 @@ class NodeConfig:
         self.sensors = [sanitize_text(s, 32) for s in (sensors or ["battery", "imu", "gps"])]
         self.publish_hz = max(0.5, min(50.0, float(publish_hz)))
         self.capabilities = capabilities if capabilities is not None else CapabilityRegistry()
-        self.db_path = str(db_path)
-        self.audit_path = str(audit_path)
+        # Every state path this node writes is frozen once, here, by the same
+        # rule the engine and the agent root follow (state_paths). Without it the
+        # node wrote node_audit.jsonl and node_journal_<id>.jsonl into whatever
+        # directory it was started from -- which is why both turned up in the
+        # repository root. The journal used to be a hardcoded f-string that
+        # ignored this config entirely; it is a config path now.
+        self.state_dir = state_dir(data_dir)
+        self.db_path = anchor(db_path, self.state_dir)
+        self.audit_path = anchor(audit_path, self.state_dir)
+        self.journal_path = anchor(f"node_journal_{self.device_id}.jsonl",
+                                   self.state_dir)
 
 class AndroidShugoCoreNode:
     """
@@ -148,7 +159,7 @@ class AndroidShugoCoreNode:
         self.fallbacks = FallbackController(governor=self.governor, audit=self.audit)
         self.memory = MemoryManager(agent_id=f"android-{self.device_id}",
                                     semantic=None, core=None,
-                                    episodic_journal_path=f"node_journal_{self.device_id}.jsonl")
+                                    episodic_journal_path=config.journal_path)
         self.runtime = AndroidRuntime(
             bridge=config.bridge,
             fallbacks=self.fallbacks,
@@ -391,7 +402,7 @@ class AndroidShugoCoreNode:
                              "collection_name": f"node_{self.device_id}"},
             capabilities=self.config.capabilities,
             audit_path=self.config.audit_path,
-            episodic_journal_path=f"node_journal_{self.device_id}.jsonl")
+            episodic_journal_path=self.config.journal_path)
 
     def run_autonomous_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """App-shell entry point: execute one task through the gated engine."""

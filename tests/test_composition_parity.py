@@ -219,22 +219,34 @@ class SqliteSentinelTestCase(unittest.TestCase):
     in-memory database into a file path and broke every server test with
     `sqlite3.OperationalError: unable to open database file` -- discovered by
     the full-suite gate, not by the parity tests.
+
+    The data dir is a real temporary directory, not a `C:\\...` literal: on Linux
+    a Windows-style path is *relative*, so `abspath` prepends the working
+    directory and a literal-based assertion fails there while passing on
+    Windows. CI runs the suite on five Pythons on ubuntu, and that is how this
+    was found.
     """
 
+    def setUp(self):
+        self.data_dir = tempfile.mkdtemp(prefix="shugocore_sentinel_")
+
+    def tearDown(self):
+        shutil.rmtree(self.data_dir, ignore_errors=True)
+
     def test_the_in_memory_sentinel_is_left_alone(self):
-        self.assertEqual(anchor(":memory:", r"C:\somewhere"), ":memory:")
+        self.assertEqual(anchor(":memory:", self.data_dir), ":memory:")
 
     def test_a_sqlite_uri_filename_is_left_alone(self):
         uri = "file:shared?mode=memory&cache=shared"
-        self.assertEqual(anchor(uri, r"C:\somewhere"), uri)
+        self.assertEqual(anchor(uri, self.data_dir), uri)
 
     def test_a_postgres_dsn_is_left_alone(self):
         dsn = "postgres://user:pw@db:5432/fleet"
-        self.assertEqual(anchor(dsn, r"C:\somewhere"), dsn)
+        self.assertEqual(anchor(dsn, self.data_dir), dsn)
 
     def test_a_plain_name_is_still_anchored(self):
-        self.assertEqual(anchor("mem.db", r"C:\somewhere"),
-                         os.path.join(r"C:\somewhere", "mem.db"))
+        self.assertEqual(anchor("mem.db", self.data_dir),
+                         os.path.join(os.path.abspath(self.data_dir), "mem.db"))
 
 
 if __name__ == "__main__":

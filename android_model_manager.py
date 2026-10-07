@@ -1,3 +1,16 @@
+"""Deprecated: a stale copy of `model_manager.ModelManager`.
+
+This is an early duplicate of the live model manager, kept only so the module
+still exists in the published 1.x surface. **Nothing imports it** -- `autonomy`,
+`decision_engine` and `reinforcement_learning` all use
+`model_manager.ModelManager` -- and the two have already diverged: this copy
+lacks `MODEL_PERFORMANCE_CAP`, so its performance tracking is unbounded where the
+live one is clamped. Import the other one.
+
+Scheduled for removal after a minor release of deprecation (the project's 1.x
+policy is that deprecated functionality is removed only after at least one minor
+release of deprecation, so it is not deleted in the same release it is noticed).
+"""
 import logging
 import threading
 from typing import List, Dict, Any

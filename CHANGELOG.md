@@ -4,6 +4,77 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.30.28] - 2026-10-07 — a world session for the world claims
+
+### Three rows that could not be judged, and one that was judged wrongly
+
+The claims matrix is this repository's feature-verification instrument: 22 claims,
+each with checks, a captured artifact and a `proven` / `unproven` / `failed`
+verdict. Three rows had never been evaluated; closing them turned up a fourth that
+had gone from `proven` to `failed` for a reason that was not a defect at all.
+**18 proven / 3 unproven / 1 failed → 21 / 1 / 0.**
+
+- **`world.sandbox` was not evaluable on any machine.** It is judged from a
+  `[WORLD]/[GOAL]/[ACTION]/[REPLY]` transcript, and nothing produced that shape
+  for the sandbox: it writes one audit chain per scenario and prints a pass/fail
+  table. `actuation_sandbox.py` gained `--transcript`, backed by
+  `world_transcript(rows)`, which builds the transcript **from the run's own
+  rows** — the status, wire count, chain count and the target's HTTP status all
+  come from the row, and the reply says what the target actually answered
+  (`HTTP 200`, 33 chain entries). A refusal writes no reply and no `(gated)`
+  marker, so it cannot read as engagement; a run that omitted the scenario writes
+  no `[WORLD]` line at all, so the parser reports *could not evaluate* rather than
+  *contradicted*.
+- **`world.robotics` was not missing evidence so much as missing a caller.**
+  `DecisionEngine` registers a `RoboticsExecutionHandler` for every robotics
+  action type whenever it is given one — and **no composition root ever
+  constructs one**. (The *mobile* handler is wired by `shugocore_server.main()` in
+  exactly the same way; robotics is not.) `tests/test_robotics.py` was the only
+  place it was ever built, so the claim could not be evidenced because there was
+  nothing to run. `runtime/tools/robotics_session.py` (new) drives it offline —
+  the deterministic ROS 2, MoveIt 2 and Gazebo stubs — and pushes an operator's
+  goal through the engine's own two gated steps, `_gate_decision` and
+  `_execute_gated`. The engine's audit chain records the real execution beside the
+  transcript. Scope is stated in the row: a simulation with the stub solver, which
+  is what the claim says; not a real MoveIt 2 solver or a physical arm.
+- **`mesh.quest3` is unproven for hardware, and now visibly so.** No Quest
+  headset is attached on this machine and `quest_probe.py` says exactly that and
+  exits 0, so the row is unproven rather than failed — there was nothing to fix.
+  What it gained is a reason a reader can check: `tests/test_quest_probe.py`
+  already proves the positive path works when a transcript exists
+  (`a_reached_headset_is_proven_by_the_real_parser`) and proves the five ways it
+  must not be proven, including
+  `no_headset_attached_says_so_rather_than_inventing_one`. The instrument is
+  ready and only the headset is missing — a different statement from "unproven,
+  cause unknown", and the one the evidence supports.
+- **`reasoning.model_backed` was red for a service, not for a defect.** The
+  scenario's own budgets (180 s warm-up + 180 s hold + a 300 s subprocess timeout)
+  exceeded the runner's fixed 300 s per command, so a cold or absent model server
+  got the scenario *killed before it wrote anything* — and a row with no
+  transcript was then judged `failed`. The warm-up request could also outlive its
+  own budget, because `requests.post(timeout=300)` sat inside a 180 s loop whose
+  deadline is only checked once the call returns. The request is now bounded by
+  the remaining budget, the claim's budgets fit inside the cap
+  (`--warm-seconds 60 --hold 60 --timeout 120`), and `model_backed` returns `None`
+  — *could not evaluate* — when the transcript's own warm-up line says no model
+  answered. Both directions are pinned: an unavailable endpoint is unproven, while
+  a *warmed* session that announced nothing stays `False`, so the new branch
+  cannot swallow a real failure.
+
+### A test that passed here and failed on Linux
+
+CI on the 1.30.27 tag failed on all five Pythons at
+`python -m unittest discover -s tests`, while the same command passed locally.
+The cause was a test of ours: `SqliteSentinelTestCase` asserted against a
+`C:\somewhere` literal, and on Linux a Windows-style path is *relative*, so
+`abspath` prepends the working directory. It was verified without a Linux host by
+running the same arithmetic through `posixpath`
+(`<cwd>/C:\somewhere/mem.db` versus `C:\somewhere/mem.db`), and fixed to use a real
+temporary directory. That fix carries in this release: the published 1.30.27
+*wheel* was never affected (tests are not in it, and `anchor` behaves correctly on
+Linux), but its *sdist* does carry `tests/`, and `v1.30.27` could not be re-pointed
+because PyPI is immutable and its Release workflow had already published.
+
 ## [1.30.27] - 2026-10-07 — four roots, one source of truth
 
 ### The runtime had four composition roots, and they had drifted

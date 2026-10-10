@@ -4192,6 +4192,22 @@ class AndroidAgent:
             outcome = "ENGINE_FAILURE"
             trail = ("OBSERVE",)
             detail = f"{type(exc).__name__}: {exc}"[:120]
+        # Resolve this cycle's decision source *before* anything reads it.
+        #
+        # `_decision_source` is reset to "none" at the top of every tick, and this
+        # record used to read it while the assignment that fills it happened
+        # further down -- so `last_cycle_result["decision_source"]` was
+        # permanently "none" (measured: 3 of 5 consecutive cycles named the wrong
+        # source, and the desktop control plane prints this dict) while
+        # `get_status()["decision_source"]`, which reads the attribute directly,
+        # was correct. Two fields in one status payload disagreeing is the shape
+        # this project keeps having to fix; the source is resolved once, here,
+        # above every reader.
+        source = (engine_result.get("proposal_source")
+                  if isinstance(engine_result, dict) else None)
+        action_type = (engine_result.get("action_type")
+                       if isinstance(engine_result, dict) else None)
+        self._decision_source = str(source)[:64] if source else "none"
         self._last_stages = list(trail)
         self._last_cycle_result = {"outcome": outcome, "stages": list(trail),
                                    "detail": detail, "executed": executed,
@@ -4200,16 +4216,8 @@ class AndroidAgent:
         self._last_action = action
         self._last_evaluation = outcome.lower()
         self._last_tick_ts = time.time()
-        # v1.30.2: account the cycle (bounded counters, stage stamps) from
-        # the truth this tick already computed. The engine result now carries
-        # proposal_source/action_type (v1.20 cycle truth, completed), so the
-        # accounting is by the real source — and the status key
-        # decision_source is finally populated instead of a constant "none".
-        source = (engine_result.get("proposal_source")
-                  if isinstance(engine_result, dict) else None)
-        action_type = (engine_result.get("action_type")
-                       if isinstance(engine_result, dict) else None)
-        self._decision_source = str(source)[:64] if source else "none"
+        # v1.30.2: account the cycle (bounded counters, stage stamps) from the
+        # truth this tick already computed, by the real source.
         self._record_cycle(outcome, trail, source, action_type,
                            duration_ms=(time.monotonic() - cycle_started)
                                        * 1000.0)

@@ -371,6 +371,56 @@ class PersonalityGovernorTestCase(unittest.TestCase):
         self.assertEqual(PersonalityGovernor._count_sentences(""), 0)
 
 
+class ReservedConfigTestCase(unittest.TestCase):
+    """`proactivity` is parsed and merged -- and read by nothing.
+
+    Pinned rather than fixed: "greet on arrival" and "offer help" are behaviour
+    with product decisions attached, so wiring them is a deliberate act, not
+    something to infer from a flag. What must not happen is the current state
+    being forgotten -- an operator setting `offer_help` today sees nothing change,
+    and the next reader should know that without re-deriving it.
+    """
+
+    def test_the_profile_carries_the_switches(self):
+        profile = PersonalityProfile()
+        for key in ("greet_on_arrival", "ask_follow_up", "offer_help"):
+            self.assertIn(key, profile.proactivity)
+
+    def test_an_operators_values_are_loaded_into_the_profile(self):
+        """So the omission is not in the loader -- the config really is read."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "personality.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump({"proactivity": {"offer_help": True,
+                                           "greet_on_arrival": False}}, handle)
+            from personality import load_personality
+            profile = load_personality(tmp)
+        self.assertTrue(profile.proactivity["offer_help"])
+        self.assertFalse(profile.proactivity["greet_on_arrival"])
+
+    def test_the_prompt_does_not_render_the_switches(self):
+        prompt = personality_system_prompt(PersonalityProfile())
+        for key in ("greet_on_arrival", "ask_follow_up", "offer_help"):
+            self.assertNotIn(key, prompt)
+
+    def test_the_living_model_does_not_carry_the_block(self):
+        """`as_profile()` is what the agent hands the prompt layer after boot.
+
+        The sharp form: birth a model from a profile whose `offer_help` is on, and
+        render it back. If the rendered profile says `False`, the operator's
+        setting did not survive the one step between the config and the prompt.
+        """
+        profile = PersonalityProfile()
+        profile.proactivity = {"greet_on_arrival": False, "ask_follow_up": False,
+                               "offer_help": True}
+        rendered = PersonalityModel.genesis(profile).as_profile()
+        self.assertTrue(profile.proactivity["offer_help"])
+        self.assertFalse(
+            rendered.proactivity["offer_help"],
+            "as_profile() now carries proactivity: if it is being wired up, "
+            "update ARCHITECTURE.md and the loader note too")
+
+
 if __name__ == "__main__":
     unittest.main()
 

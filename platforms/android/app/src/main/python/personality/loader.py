@@ -38,6 +38,21 @@ class PersonalityProfile:
         "honest_about_limitations": True,
         "no_impersonation": True,
     })
+    # Reserved, and NOT consumed yet -- stated here because the loader parses and
+    # merges it either way, so an operator can set these and see nothing happen.
+    # Measured across the runtime: `greet_on_arrival`, `ask_follow_up` and
+    # `offer_help` appear only in this file's defaults. `personality_system_prompt`
+    # renders identity, traits, speech, never_say and boundaries -- not this -- and
+    # `PersonalityModel.as_profile()` (which is what the agent hands the prompt
+    # layer after boot) does not carry it at all.
+    #
+    # The name also collides with something else that *is* live: the governor reads
+    # a learned trait, `model.traits["proactivity"]`, as a threshold input. That is
+    # a grown value from the turn window, unrelated to these switches.
+    #
+    # Left in place rather than removed (frozen 1.x), and left unwired on purpose:
+    # "greet on arrival" and "offer help" are behaviour with product decisions
+    # attached (when, and what to offer), not something to infer from a flag.
     proactivity: Dict[str, Any] = field(default_factory=lambda: {
         "greet_on_arrival": True,
         "ask_follow_up": True,

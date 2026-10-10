@@ -119,6 +119,88 @@ executes side effects.
 its gates; `actuation_sandbox.py` proves the containment property end to end
 (17 scenarios, refusals never reach the wire).
 
+## The personality model
+
+Four layers, each with one job, and the boundaries between them are the point:
+personality decides *how the node speaks*, never *what it does*.
+
+| Layer | File | Job |
+|---|---|---|
+| `PersonalityProfile` | `personality/loader.py` | editable character config: `name`, `traits` (prose), `speech` (`style`, `formality`, `max_sentences`, `first_person`, `never_say`), `boundaries`, `proactivity`. Read from `personality.json`; missing or malformed falls back to defaults, so *the agent always has a character* |
+| `PersonalityModel` | `personality/model.py` | the **living** model: a vector of `TraitState(value, confidence, evidence_count, last_gen)` with a generation counter, born via `genesis(profile)` and moved by `apply_delta(...)` |
+| `PersonalityGovernor` | `personality/governor.py` | annotates a proposed decision and returns a `PersonalityVerdict(verdict, tone_score, verbosity_ok, appropriateness, adjustments, route_to, reason)` where `verdict ∈ {pass, modify, reroute}` |
+| `PersonaShaper` | `persona.py` | phrases a spoken line through an OpenAI-compatible endpoint. **Optional and off by default** (see Composition roots) |
+
+### Two files, and which is which
+
+| File | Holds | Written by |
+|---|---|---|
+| `personality.json` | the *rendered profile* — what the prompt is built from | an operator (it is config) |
+| `personality_model.json` | the *living model* — traits, confidences, generation, history | the growth cycle, via `PersonalityModel.save()` |
+
+At boot the agent loads the living model (`PersonalityModel.load`), and only if
+that is absent does it call `genesis(profile)` and save — so a restart continues a
+character rather than resetting one. `traits` in the profile are then **replaced**
+by `PersonalityModel.as_profile()` on every growth, which is what makes new growth
+live rather than waiting for a restart.
+
+### The growth cycle
+
+`GROWTH_EVERY = 25` conversational turns is one generation. Within a window the
+agent counts turns, feedback, questions, commands, new facts and tool failures
+(`_growth_observe` / `_growth_note_intent` / `_growth_note_failure`), and at the
+window's end `grow_from_memory()` turns those stats into deltas
+(`synthesize_deltas`, with `extract_feedback` reading praise and complaints from
+the transcript), applies them clamped by the model, reports the before/after
+comparison and drift, persists, and refreshes the rendered profile.
+
+`grow_from_memory` is explicit that it does not persist — *"The caller is
+responsible for persistence"* — and the agent is that caller. Growth is judged by
+`agency.personality_growth`, which requires **both** the turn-window marker and a
+`grew gen N -> M` line with `M > N`: a generation that cannot be attributed to a
+window is not evidence of anything.
+
+### The policy is frozen at genesis
+
+`genesis()` extracts a *policy* from the profile (the `never_say` list, the
+boundaries) and it does not move afterwards — `test_policy_never_moves` and
+`test_policy_survives_growth_across_restart` pin it. Growth can change warmth,
+curiosity or formality; it can never grow a node out of its boundaries.
+
+### Annotate-only, and where that is enforced
+
+`DecisionEngine._apply_personality` runs the governor, attaches
+`decision["personality_verdict"]`, and returns the decision — then
+`_apply_persona` shapes the phrasing. The rule the code states is that personality
+*"can only restrict/modify, never pre-approve"*, and the tool path is annotated
+with `advisory_only=True`, which means **never modify**. Speech is the only
+passenger. `tests/test_persona.py` pins it from both ends:
+`test_a_tool_action_is_never_phrased` ("only speech goes near the persona model")
+and `test_the_tool_path_stays_unshaped_even_for_speech` ("advisory_only means
+'never modify'"). A shaper that raises is style-only, and an unavailable persona
+leaves the line alone.
+
+### `proactivity` in the profile is reserved, not consumed
+
+One config block is parsed, defaulted and merged — and read by nothing. The loader
+accepts an operator's `proactivity` settings and `_from_dict` merges them over the
+defaults, so they load cleanly; but measured across the runtime,
+`greet_on_arrival`, `ask_follow_up` and `offer_help` appear **only** in the
+loader's own defaults. `personality_system_prompt` renders identity, traits,
+speech, `never_say` and boundaries — not this — and `as_profile()`, which is what
+the agent hands the prompt layer after boot, does not carry the block at all. So an
+operator editing `config/personality.json` to turn `offer_help` on would see
+nothing change.
+
+The name also collides with something that *is* live: the governor reads a learned
+trait, `model.traits["proactivity"]`, as a threshold input, grown from the turn
+window. Two different things share the word, one wired and one not.
+
+Left in place (frozen 1.x) and deliberately unwired: "greet on arrival" and "offer
+help" are behaviour with product decisions attached — when, and what to offer —
+not something to infer from a flag. `tests/test_personality_model.py` pins the
+current state so that wiring it later is a deliberate act.
+
 ## Derived artifacts — never edit the copy
 
 | Artifact | Source | Guard |

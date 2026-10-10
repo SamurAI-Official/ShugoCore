@@ -100,6 +100,19 @@ _FORWARD_WAIT_S = 8.0
 PIPELINE_STAGES = ("OBSERVE", "VERIFY_ATTENTION", "GATE", "DECIDE",
                    "EXECUTE", "EVALUATE", "RECORD", "CONSOLIDATE")
 
+# A trail can also end at a *marker*: a place a cycle stopped that is not a step it
+# performed. `DELEGATED` is the one today -- a subordinate node observed and handed
+# the decision up, so its trail is OBSERVE+DELEGATED and it never reached GATE.
+#
+# Markers are recorded in the trail (so they appear in `last_cycle_result`, which
+# the desktop control plane prints) but are deliberately NOT rendered by the
+# per-stage liveness view, which iterates PIPELINE_STAGES: a marker has no liveness
+# of its own, and showing it as `unknown` forever on a node that never delegates
+# would be noise. Measured: `DELEGATED` is stamped into `_stage_last_ts` and is
+# absent from `loop_stages`, which is the intended shape and is pinned by
+# tests/test_cycle_contract.py.
+LOOP_MARKERS = ("DELEGATED",)
+
 # -- cycle outcome contract (v1.10) -------------------------------------------
 # Canonical cycle outcomes. NO_ACTION is NOT an error: "nothing to do" is a
 # healthy, recorded cycle. BACKEND_FAILURE means the model ensemble could not
@@ -3977,6 +3990,8 @@ class AndroidAgent:
             subordinate = mode in ("subordinate", "degraded")
             if subordinate:
                 outcome = "NO_ACTION"
+                # OBSERVE + the DELEGATED marker (see LOOP_MARKERS): the cycle
+                # stopped here, handing the decision up, so it has no GATE/DECIDE.
                 trail = ("OBSERVE", "DELEGATED")
                 detail = f"{mode}: {why}"[:120]
                 decision = f"{mode} of {why}"[:90]

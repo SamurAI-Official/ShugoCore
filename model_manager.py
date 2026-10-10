@@ -37,6 +37,23 @@ class ModelManager:
     def aggregate_outputs(self, model_outputs: List[tuple]) -> Dict[str, Any]:
         """
         Aggregate model outputs using weighted voting based on performance.
+
+        **Unused, and left visible rather than removed (1.x).** `DecisionEngine`
+        does its own multi-model selection: every selected model is asked, each
+        `{action_type: ...}` proposal is scored by
+        ``confidence x (weight x get_model_performance(id))``, and the best
+        scoring executable proposal becomes the decision -- with
+        ``model_outputs`` and ``aggregated_output`` recorded on it. Measured with
+        a two-model probe in which the only change was one model's learned
+        performance: the pick followed that model's performance, so the live
+        aggregation is the engine's, not this method's (which was called **zero**
+        times during the same decisions).
+
+        So this is a second aggregation implementation nobody calls. Wiring it in
+        would give the engine two ways to combine the same proposals, which is the
+        two-sources-of-truth failure this project keeps having to undo. It stays
+        for the frozen 1.x surface and is scheduled for removal after a minor
+        release of deprecation.
         """
         weighted_sum = {}
         total_weight = sum(weight for _, _, weight in model_outputs)

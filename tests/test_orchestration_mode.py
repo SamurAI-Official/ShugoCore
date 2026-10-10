@@ -31,6 +31,16 @@ class FakeElection:
     def live_peers(self):
         return list(self._peers)
 
+    def primary(self):
+        """The lease as `get_status()` reads it.
+
+        Added because the fake was an incomplete stand-in: `get_status()` calls
+        `self.mesh_election.primary()`, so any test that put this fake in place and
+        then read the status raised AttributeError instead of exercising the
+        subordinate path it was there to exercise.
+        """
+        return self.tick()
+
     def add(self, node_id, priority, mem):
         self._peers.append({"node_id": node_id, "priority": priority,
                             "mem_available_bytes": mem, "thermal_status": 0})

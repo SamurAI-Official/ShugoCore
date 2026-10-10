@@ -20,8 +20,11 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from shugocore_agent import (CYCLE_OUTCOMES, PIPELINE_STAGES,  # noqa: E402
-                             _OUTCOME_TRAILS, create_agent)
+from shugocore_agent import (CYCLE_OUTCOMES, LOOP_MARKERS,  # noqa: E402
+                             PIPELINE_STAGES, _OUTCOME_TRAILS, create_agent)
+# One stand-in for MeshElection, not two: the orchestration suite already has a
+# fake, and it now answers `primary()` the way get_status() needs.
+from tests.test_orchestration_mode import FakeElection as _FakeElection  # noqa: E402
 
 # The minimal engine result the contract is defined over. It carries its own
 # stage list, which is the case that matters: a result that reports its stages.
@@ -128,6 +131,70 @@ class TheReportedTrailTestCase(unittest.TestCase):
         self.agent.tick()
         stages = self.agent.get_status()["last_cycle_result"]["stages"]
         self.assertIn("VERIFY_ATTENTION", stages)
+
+
+class TheTrailVocabularyTestCase(unittest.TestCase):
+    """A trail names pipeline stages -- and, where a cycle stopped, a marker.
+
+    `DELEGATED` is not a step a cycle performed; it is where a subordinate node's
+    cycle ended, handing the decision up. It belongs in the trail (the control
+    plane prints it, and it is how an operator tells "deferring" from "broken")
+    and deliberately not in the per-stage liveness view. That distinction was
+    measured, and this pins it so it stays a decision.
+    """
+
+    def test_a_marker_is_not_a_pipeline_stage(self):
+        for marker in LOOP_MARKERS:
+            self.assertNotIn(marker, PIPELINE_STAGES,
+                             f"{marker} is a marker, not a step: rendering it as "
+                             f"a stage would show `unknown` forever on every node "
+                             f"that never delegates")
+
+    def test_a_subordinate_cycle_reports_observe_then_delegated(self):
+        """The gate that stops the loop, checked through the status it reports."""
+        agent = create_agent(device_caps="contract-test",
+                             api_url="http://127.0.0.1:9")
+        self.addCleanup(self._cleanup, agent)
+        calls = []
+        if getattr(agent, "engine", None) is not None:
+            original = agent.engine.execute_task
+
+            def spy(task):
+                calls.append(task)
+                return original(task)
+
+            agent.engine.execute_task = spy
+        election = _FakeElection(primary="shugo-desktop")
+        election.add("shugo-desktop", 10, 12 * 1024 ** 3)
+        agent.mesh_election = election
+        self.addCleanup(setattr, agent, "mesh_election", None)
+        agent.tick()
+        status = agent.get_status()
+        self.assertEqual(agent._orchestration["mode"], "subordinate")
+        self.assertEqual(calls, [], "a subordinate node asked the engine to decide")
+        self.assertEqual(status["last_cycle_result"]["outcome"], "NO_ACTION")
+        self.assertEqual(status["last_cycle_result"]["stages"],
+                         ["OBSERVE", "DELEGATED"])
+
+    def test_a_marker_is_stamped_but_not_rendered_as_a_stage(self):
+        agent = create_agent(device_caps="contract-test",
+                             api_url="http://127.0.0.1:9")
+        self.addCleanup(self._cleanup, agent)
+        election = _FakeElection(primary="shugo-desktop")
+        election.add("shugo-desktop", 10, 12 * 1024 ** 3)
+        agent.mesh_election = election
+        self.addCleanup(setattr, agent, "mesh_election", None)
+        agent.tick()
+        status = agent.get_status()
+        self.assertIn("DELEGATED", agent._stage_last_ts)
+        self.assertNotIn("DELEGATED", status["loop_stages"],
+                         "the per-stage view must render the pipeline only")
+
+    def _cleanup(self, agent):
+        try:
+            agent.cleanup()
+        except Exception:
+            pass
 
 
 class TheDecisionSourceTestCase(unittest.TestCase):

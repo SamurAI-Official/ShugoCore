@@ -33,9 +33,25 @@ others.
 | **Server** | `shugocore_server.py` (`shugocore-server`) | `build_engine()` (`:1189`) |
 | **Daemon** | `continuous_agent.py` (`python3 continuous_agent.py`) | `ContinuousAgent.__init__` (`:80`) |
 | **Device node** | `android_node.py` (`--role`) | `AndroidShugoCoreNode` (`:388`) |
+| **Host node** | `scripts/desktop_agent.py` | calls `create_agent` — the headless non-Android fleet node (Windows/macOS/Termux) |
 | **Control plane** | `clients/desktop/shugocore_desktop.py` | calls `create_agent` |
 | **Containment harness** | `actuation_sandbox.py` | `build_engine()` (its own, `:272` — same name, different purpose) |
 | **Benchmarks** | `benchmarks/run.py` | `_build_engine()` |
+
+`scripts/agency_session.py` also calls `create_agent`, but it is the *agency
+instrument* the claims matrix drives rather than a deployment root.
+
+`scripts/desktop_agent.py` is on this list because **it is the only home of the
+persona (phrasing) layer.** `create_agent(persona_shaper=...)` is optional and
+deliberately off by default — "optional phrasing model elsewhere in the hive
+(`persona.py`). Off unless an [explicitly provided]" (`shugocore_agent.py:221`) —
+and the headless host node is the one entry point that supplies it, through
+`--persona-url` / `--persona-model` / `--persona-recheck`. So the Android service,
+the server, the daemon, the device node and the Tk control plane all run with
+`decision_engine._apply_persona` inert. That is the design, not an oversight: a
+shaper makes every spoken line a model round trip, so it is opt-in. The omission of
+this entry point from an earlier version of this table is what made the persona
+layer look orphaned.
 
 ### The state-path rule
 

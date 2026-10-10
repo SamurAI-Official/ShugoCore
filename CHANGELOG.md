@@ -4,6 +4,109 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
+## [1.30.29] - 2026-10-09 — the cycle, the ensemble, and the character
+
+### The per-cycle record named the wrong decision source
+
+Driving the eight-stage loop end to end and checking that what it reports is what
+happened: the loop held up, one field did not.
+
+`last_cycle_result["decision_source"]` was **permanently `"none"`**.
+`_decision_source` is reset to `"none"` at the top of every tick, and the per-cycle
+record read it *before* the assignment that fills it ran — so the record always
+stored the reset value, while `get_status()["decision_source"]`, which reads the
+attribute directly, was correct. The payload carried **two fields disagreeing about
+the same cycle**, and it is user-visible: the desktop control plane prints
+`last_cycle_result` and `/api/v1/status` serves it.
+
+Measured with a probe that wraps `_execute_engine_task`, so the engine's own
+`proposal_source` for a tick sits beside the node's reported `decision_source` for
+the same tick: **3 of 5** consecutive live cycles named the wrong source before,
+**0 of 5** after. Fixed by resolving the source once, above every reader.
+
+The rest of the contract checked out as designed: `NO_ACTION` is recorded and
+counted as the healthy cycle it is, the outcome vocabulary is closed, and a stage
+that genuinely has not run — `CONSOLIDATE`, which fires every tenth tick — reads
+`unknown` rather than being fabricated as success.
+
+### Multi-model orchestration routes by measured capacity
+
+The README says models are "selected and aggregated"; what that means in code is
+that every selected model is asked, each proposal is scored by
+``confidence x (weight x learned performance)``, and the best-scoring executable
+proposal wins. Verified with two models and one change at a time: the more
+confident one wins when all else is equal, and **dropping only the first model's
+learned performance flips the pick** — with the same two proposals and the same
+confidences. That is what "orchestrated by measured capacity" has to mean.
+
+`aggregated_output` turned out to be a *capacity* aggregate, not a confidence one:
+it is the sum of the proposal scores, so a healthy two-model node reports **2.0**
+however confident either model was. Documented as measured, because a reader would
+otherwise take 2.0 for a confidence score.
+
+### A second aggregation nobody calls
+
+`ModelManager.aggregate_outputs` (weighted voting) is called **zero** times across
+those decisions — the engine does its own selection. Deprecated in place with the
+measurement rather than wired: two ways to combine the same proposals is the
+two-sources-of-truth failure this review keeps undoing. A test fails if a decision
+ever starts calling it.
+
+### Top-down orchestration, and one vocabulary that leaked
+
+A node with a better peer available enters subordinate mode and **the engine is
+never called**: outcome `NO_ACTION`, trail `OBSERVE+DELEGATED`, with the mode
+announced to stderr as well as the log so a harness can tell "deferring" from
+"broken". That trail exposed a vocabulary leak — `DELEGATED` was stamped into the
+stage timestamps but is not in `PIPELINE_STAGES`, so the per-stage view never
+rendered it, and nothing said whether that was intended. It is now a documented
+**marker** (`LOOP_MARKERS`): where a cycle *stopped*, not a step it *performed*.
+
+### The host node was missing from the map, and so was the personality model
+
+`ARCHITECTURE.md` listed seven composition roots and omitted
+`scripts/desktop_agent.py` — the headless non-Android host node, which calls
+`create_agent`, handles `--deploy-target`, and is **the only home of the persona
+(phrasing) layer**. That omission is what made the persona layer look orphaned
+during the review.
+
+It is not orphaned, it is opt-in, and the distinction matters: `create_agent`'s
+`persona_shaper` is optional and off by default — *"optional phrasing model
+elsewhere in the hive (persona.py). Off unless an [explicitly provided]"* — precisely
+because a shaper makes every spoken line a model round trip. The map now says so,
+and `scripts/agency_session.py` is noted as an instrument rather than a root.
+
+The personality model itself had **no architecture section at all**. There is now
+one: the four layers and the boundary between them (`PersonalityProfile` →
+`PersonalityModel` → `PersonalityGovernor` → `PersonaShaper`), which of the two
+files is config (`personality.json`) and which is the living model
+(`personality_model.json`, written by the growth cycle), the 25-turn generation
+window and what feeds it, the policy that is **frozen at genesis** so a node cannot
+grow out of its boundaries, and the annotate-only rule that makes the tool path
+unshapeable.
+
+### Found while documenting it: a config block nothing reads
+
+`PersonalityProfile.proactivity` is parsed, defaulted and merged by the loader —
+and **read by nothing**. Measured across the runtime, `greet_on_arrival`,
+`ask_follow_up` and `offer_help` appear only in the loader's own defaults;
+`personality_system_prompt` renders identity, traits, speech, `never_say` and
+boundaries and stops; and `as_profile()` — what the agent hands the prompt layer
+after boot — does not carry the block. Concretely: a profile with `offer_help` set
+to `true` renders back from the living model with it `false`, so an operator editing
+`config/personality.json` to turn it on would see nothing change.
+
+The name also collides with something that *is* live: the governor reads
+`model.traits["proactivity"]`, a **learned** trait grown from the turn window and
+used as a threshold input. One is wired, one is not, and the same word names both.
+
+Left in place (frozen 1.x) and deliberately unwired — "greet on arrival" and "offer
+help" are behaviour with product decisions attached (*when*, and *what* to offer),
+not something to infer from a flag during verification. What is fixed is that the
+state is no longer invisible: the loader field carries the measurement and the
+reason, the architecture section states it, and a test pins it in both directions
+so wiring it later is a deliberate act.
+
 ## [1.30.28] - 2026-10-07 — a world session for the world claims
 
 ### Three rows that could not be judged, and one that was judged wrongly

@@ -4,7 +4,47 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
-## [1.30.29] - 2026-10-09 — the cycle, the ensemble, and the character
+## [1.30.30] - 2026-10-09 — a claim may not be proven by seeing nothing
+
+### An empty transcript proved two claims
+
+`claim_matrix.py` verifies the README's claims by reading captured transcripts, and
+every live checker returns one of three verdicts: `True` (evidence supports the
+claim), `False` (evidence contradicts it) or `None` — `unproven`, the run never
+produced the evidence. The architecture calls that third state out explicitly,
+because the instrument "never marks a claim proven because it is written down".
+
+Two checkers marked a claim proven because **nothing was seen at all**:
+
+| checker | on an empty transcript | proved |
+| --- | --- | --- |
+| `phone_quiet` | `True, "no local model calls"` | `orchestration.top_down` |
+| `no_third_party_egress` | `True, "no external host appears in the session at all"` | `privacy.no_third_party_egress` |
+
+Both count a *missing* marker, so an empty file — no phone attached, a scenario that
+crashed before it logged anything — counted zero times and came back proof. That is
+worse than a false failure: a false failure is visibly wrong, while a false proof is
+indistinguishable from a real one and retires the check that would have caught the
+real thing. Neither was vacuous *here* (the logcat is 51 MB and `sandbox.log` is 5 KB,
+so both judged real evidence), which is exactly why it went unnoticed.
+
+Eleven more checkers answered the same empty input with `False` — recording claims as
+*contradicted* because a machine was not set up, the bug already fixed once for
+`model_backed` and `world_engagement` and never swept for.
+
+Fixed at the class level rather than the two call sites: `nothing_to_judge()` returns
+the `unproven` verdict whenever there is nothing to read, all **fourteen** live
+checkers call it first, and the contract is now asserted for every entry in
+`LIVE_CHECKS` instead of one checker at a time —
+`tests/test_claim_matrix_agency.py::TheVerdictContractTestCase` fails with a list of
+offenders if any checker ever judges a claim it has no evidence for.
+
+Measured (`runtime/phase0_evidence/verdict_contract_probe.py`): **14 of 14** checkers
+now report `unproven` on blank input, zero prove and zero contradict a claim from no
+evidence — and replaying all **15** verdicts the sweeps had already recorded against
+the same evidence files gives **0** changes, confirming the fix touched only the
+empty-evidence path.
+
 
 ### The per-cycle record named the wrong decision source
 

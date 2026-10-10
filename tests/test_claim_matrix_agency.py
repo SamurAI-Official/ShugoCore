@@ -365,7 +365,82 @@ class RegistryTestCase(unittest.TestCase):
             self.assertIn(expected, ids, "%s is not in the matrix" % expected)
 
 
+class TheVerdictContractTestCase(unittest.TestCase):
+    """Every live checker obeys one contract, checked for all of them at once.
+
+    `True` means evidence exists and supports the claim; `False` means evidence
+    exists and contradicts it; `None` means the evidence was never produced. The
+    third state is the one that gets lost, and losing it is not symmetric: a
+    checker that answers an empty transcript with `False` records a claim as
+    contradicted because a machine was not set up, and one that answers it with
+    `True` marks a claim **proven** because nothing was seen at all.
+
+    Measured before this test existed: `phone_quiet("")` returned
+    `True, "no local model calls"` and `no_third_party_egress("")` returned
+    `True, "no external host appears in the session at all"` -- so an empty log
+    proved `orchestration.top_down` and `privacy.no_third_party_egress`. The matrix
+    promises never to mark a claim proven because it is written down; proving one
+    from nothing at all is worse.
+    """
+
+    BLANKS = ("", "   ", "\n", "\n  \t \n")
+
+    def test_every_checker_reports_unproven_for_no_evidence(self):
+        offenders = []
+        for name, checker in sorted(claim_matrix.LIVE_CHECKS.items()):
+            for blank in self.BLANKS:
+                try:
+                    result = checker(blank)
+                except Exception as exc:      # a crash is not a verdict either
+                    offenders.append(f"{name} raised {type(exc).__name__}")
+                    continue
+                if not (isinstance(result, tuple) and len(result) == 2):
+                    offenders.append(f"{name} returned {result!r}, not a tuple")
+                elif result[0] is not None:
+                    offenders.append(f"{name}({blank!r}) -> {result[0]!r}: "
+                                     f"{str(result[1])[:50]}")
+        self.assertEqual(
+            offenders, [],
+            "these checkers judge a claim they have no evidence for -- `None` "
+            "(unproven) is the only verdict available with nothing to read:\n  "
+            + "\n  ".join(offenders))
+
+    def test_no_checker_proves_a_claim_from_an_empty_transcript(self):
+        """The worst case, named separately so a regression is unambiguous."""
+        for name in ("phone_quiet", "no_third_party_egress"):
+            with self.subTest(checker=name):
+                ok, detail = claim_matrix.LIVE_CHECKS[name]("")
+                self.assertIsNot(
+                    ok, True,
+                    f"{name} proved its claim from an empty transcript ({detail})")
+
+    def test_a_checker_still_judges_real_evidence(self):
+        """The guard must not swallow the judging: a non-empty transcript counts."""
+        ok, detail = claim_matrix.hub_role("role=follower")
+        self.assertIs(ok, False, "a status line naming the wrong role must fail")
+        ok, detail = claim_matrix.hub_role("  role=primary  ")
+        self.assertIs(ok, True, detail)
+
+
+class TheRegistryCoversEveryLiveCheckTestCase(unittest.TestCase):
+    """A claim naming a checker that does not exist would report as `not run`."""
+
+    def test_every_live_check_name_in_the_registry_exists(self):
+        missing = []
+        for claim in claim_matrix.CLAIMS:
+            for check in claim.get("checks", []):
+                if check.get("kind") != "live":
+                    continue
+                name = str(check.get("name"))
+                if name not in claim_matrix.LIVE_CHECKS:
+                    missing.append(f"{claim['id']} -> {name}")
+        self.assertEqual(missing, [],
+                         "claims naming a live checker that is not registered:\n  "
+                         + "\n  ".join(missing))
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 

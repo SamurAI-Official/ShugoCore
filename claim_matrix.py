@@ -5,7 +5,10 @@ The README and CHANGELOG assert things ("the hive elects one primary", "a build
 reaches any node", "a follower cannot actuate"). This tool turns each claim into a
 row: the check that decides it, the artifact captured from that check, and a
 verdict. It never marks a claim proven because it is written down -- only because
-a command exited zero or a live check saw the fact.
+a command exited zero or a live check saw the fact. The corollary matters just as
+much: a live check that saw *nothing* has not seen the fact, so it answers None
+(unproven) rather than proving or failing the claim. See the verdict contract
+above `LIVE_CHECKS` -- two checkers used to answer an empty transcript with True.
 
     python3 claim_matrix.py                  # run everything, capture artifacts
     python3 claim_matrix.py --only mesh.election --json
@@ -26,8 +29,46 @@ DEFAULT_ARTIFACTS = os.path.join("runtime", "evidence")
 
 # live(status_text) -> (ok, detail): pure parsers, so a captured status line can
 # be re-checked in a test without a running hive.
+#
+# The verdict contract every checker below obeys:
+#
+#   True   -- evidence exists and supports the claim.
+#   False  -- evidence exists and contradicts it.
+#   None   -- the evidence needed to judge was never produced. `unproven`, which is
+#             never reported as provenance.
+#
+# The third state is the one that gets lost, and losing it is not symmetric. A
+# checker that answers an empty transcript with False records a claim as
+# *contradicted* because a machine was not set up -- that was `model_backed` and
+# `world_engagement` before they were fixed. A checker that answers it with **True**
+# is worse: it marks a claim *proven* because nothing was seen at all, which is the
+# single thing this matrix promises never to do. Both were measured: `phone_quiet("")`
+# returned `True, "no local model calls"` and `no_third_party_egress("")` returned
+# `True, "no external host appears in the session at all"`, so an empty log proved
+# `orchestration.top_down` and `privacy.no_third_party_egress`.
+#
+# `tests/test_claim_matrix_agency.py` now asserts the contract for *every* entry in
+# LIVE_CHECKS, so the class cannot come back one checker at a time.
 ROLE_RE = re.compile(r"role=(\w+)")
 IMPORTED_RE = re.compile(r"imported=(\d+)")
+
+
+def nothing_to_judge(text: str, what: str) -> Optional[tuple]:
+    """The `(None, reason)` verdict when there is nothing to judge, else None.
+
+    Call it first in a checker:
+
+        blank = nothing_to_judge(text, "the audit chain")
+        if blank is not None:
+            return blank
+
+    Kept as a helper rather than a decorator so each checker's own `what` phrase
+    reaches the artifact a reader looks at.
+    """
+    if not (text or "").strip():
+        return None, (f"nothing was recorded about {what}, so the claim could not be "
+                      f"evaluated")
+    return None
 
 
 def quest3_reach(status_text: str) -> tuple:
@@ -45,6 +86,9 @@ def quest3_reach(status_text: str) -> tuple:
     evaluated* rather than being contradicted, and the row is unproven. A headset that goes to
     sleep is not a claim that failed.
     """
+    blank = nothing_to_judge(status_text, "the headset transcript")
+    if blank is not None:
+        return blank
     body = status_text or ""
     if not re.search(r"^\[HEAD\s*\]\s*device=", body, re.MULTILINE):
         if "no Quest headset is attached" in body:
@@ -83,6 +127,9 @@ def dev_task_ran(status_text: str) -> tuple:
     pristine. What must never happen is the hub recording something the peer did not say, and
     that is what the agreement check is for.
     """
+    blank = nothing_to_judge(status_text, "the dev-task transcript")
+    if blank is not None:
+        return blank
     plain = status_text or ""
     wire = re.search(r"wire payload[^:]*: (\{.*\})", plain)
     if not wire:
@@ -114,6 +161,9 @@ def dev_task_ran(status_text: str) -> tuple:
 
 def hub_role(status_text: str) -> tuple:
     """A hub status line must show a primary lease held by this node."""
+    blank = nothing_to_judge(status_text, "the fleet status line")
+    if blank is not None:
+        return blank
     match = ROLE_RE.search(status_text or "")
     if not match:
         return False, "no role= in the status line"
@@ -125,6 +175,9 @@ def hub_role(status_text: str) -> tuple:
 
 def hub_imported(status_text: str) -> tuple:
     """The memory mesh must have actually moved facts, not just connected."""
+    blank = nothing_to_judge(status_text, "the fleet status line")
+    if blank is not None:
+        return blank
     match = IMPORTED_RE.search(status_text or "")
     if not match:
         return False, "no imported= counter"
@@ -136,6 +189,9 @@ def hub_imported(status_text: str) -> tuple:
 
 def phone_quiet(log_text: str) -> tuple:
     """A subordinate node must not be running the model-backed loop itself."""
+    blank = nothing_to_judge(log_text, "the node log")
+    if blank is not None:
+        return blank
     hits = (log_text or "").count("ANDROID_INFERENCE generate called")
     if hits:
         return False, f"{hits} local model call(s) on a subordinate node"
@@ -144,6 +200,9 @@ def phone_quiet(log_text: str) -> tuple:
 
 def chain_present(chain_text: str) -> tuple:
     """The audit chain must exist and be hash-linked, not just a log file."""
+    blank = nothing_to_judge(chain_text, "the audit chain")
+    if blank is not None:
+        return blank
     lines = [line for line in (chain_text or "").splitlines() if line.strip()]
     if not lines:
         return False, "the chain is empty"
@@ -176,6 +235,9 @@ def timer_fired(text: str) -> tuple:
     to ask for again is not the node pursuing anything, so a typed turn in the gap fails
     the claim rather than being ignored by it.
     """
+    blank = nothing_to_judge(text, "the timed session")
+    if blank is not None:
+        return blank
     lines = _lines(text)
     speaks = _speaks(text)
     accepted = next((line for line in speaks if "timer set" in line.lower()), "")
@@ -203,6 +265,9 @@ def memory_recalled(text: str) -> tuple:
     answer this tool would like to see, and the restart marker is required so a single
     process answering its own memory cannot pass as durability.
     """
+    blank = nothing_to_judge(text, "the memory session")
+    if blank is not None:
+        return blank
     lines = _lines(text)
     taught = [line for line in lines
               if line.startswith("[TURN") and "remember" in line.lower()]
@@ -234,6 +299,9 @@ def personality_grew(text: str) -> tuple:
     A generation is a window of turns, so the window marker is required too: growth that
     cannot be attributed to a window is not evidence of anything.
     """
+    blank = nothing_to_judge(text, "the personality session")
+    if blank is not None:
+        return blank
     lines = _lines(text)
     window = [line for line in lines if "GROWTH_EVERY=" in line]
     if not window:
@@ -259,6 +327,9 @@ def heard_caused_action(text: str) -> tuple:
     The same no-input rule as the timer: the operator typed nothing, so whatever the node
     did with the phrase came from having heard it.
     """
+    blank = nothing_to_judge(text, "the perception session")
+    if blank is not None:
+        return blank
     lines = _lines(text)
     heard = [index for index, line in enumerate(lines) if line.startswith("[HEARD")]
     if not heard:
@@ -284,6 +355,9 @@ def pipeline_reported(text: str) -> tuple:
     beside ``ok``, and every organ has to appear -- a health surface that only knows how to
     paint green is how a node with no model reads as healthy.
     """
+    blank = nothing_to_judge(text, "the status session")
+    if blank is not None:
+        return blank
     snapshots = []
     for line in _lines(text):
         if line.startswith("[STATUS") and "pipeline=" in line:
@@ -323,6 +397,9 @@ def no_third_party_egress(text: str) -> tuple:
     library that fails to reach its analytics endpoint says so as
     ``HTTPSConnectionPool(host='us.i.posthog.com')`` rather than as a URL.
     """
+    blank = nothing_to_judge(text, "the session")
+    if blank is not None:
+        return blank
     body = text or ""
     hosts = {host.lower() for host in re.findall(r"https?://([A-Za-z0-9_.\-]+)", body)}
     hosts |= {host.lower() for host in
@@ -350,6 +427,9 @@ def model_backed(text: str) -> tuple:
     not the claim -- it is precisely the reading that made a node with no model served report
     itself healthy, so a transcript showing only rule-backed decisions fails this.
     """
+    blank = nothing_to_judge(text, "the terminal session")
+    if blank is not None:
+        return blank
     announced = re.findall(r"decisions backed by\s+([^\s]+)", text or "")
     announced += re.findall(r"backed by\s+([A-Za-z0-9_./-]+)", text or "")
     stood_in = {"", "none", "rule_fallback", "null_proposal", "proposer_backoff",

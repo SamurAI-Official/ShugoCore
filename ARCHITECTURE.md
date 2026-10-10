@@ -244,6 +244,22 @@ collectable by *neither* runner — the way a suite silently stops running.
 checks, a captured artifact under `runtime/evidence/`, and a verdict that is
 `proven`, `unproven` (could not evaluate — never the same as failed) or `failed`.
 
+The three-state verdict is the whole point, and the middle state is the one that
+gets lost. A live checker reads a captured transcript, so it has to say what it can
+know from *nothing*: `True` only when evidence exists and supports the claim,
+`False` only when evidence exists and contradicts it, and `None` — `unproven` — when
+the run never produced the evidence. Getting that third state wrong is not
+symmetric. `model_backed` and `world_engagement` once answered an empty transcript
+with `False`, recording a claim as *contradicted* because a machine was not set up.
+Two others answered it with **`True`**: `phone_quiet("")` returned
+`no local model calls` and `no_third_party_egress("")` returned
+`no external host appears in the session at all`, so an empty log *proved*
+`orchestration.top_down` and `privacy.no_third_party_egress`. Proving a claim
+because nothing was seen is the one thing this instrument promises never to do.
+All fourteen checkers now take the empty case through `nothing_to_judge()`, and
+`tests/test_claim_matrix_agency.py` asserts the contract for every entry in
+`LIVE_CHECKS` rather than one checker at a time.
+
 ```bash
 python claim_matrix.py --only mesh.election      # one row, with its evidence
 python claim_matrix.py --json                    # all of them

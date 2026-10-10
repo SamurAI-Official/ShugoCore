@@ -200,7 +200,10 @@ anything else. One unprompted line is spoken per arrival, under `greet_on_arriva
 with greetings switched off, that same trigger will instead offer help when
 `offer_help` allows it. The *edge* is what fires, so someone already in frame is
 greeted once rather than once per tick, and a 120 s cooldown rides out the
-attending/diverted flapping that face detection produces. `ask_follow_up` is
+attending/diverted flapping that face detection produces. What gets logged is what was
+*delivered*, not what was chosen: `_speak_direct` refuses on a node that may not
+announce to the room, so a follower records the arrival as `(not delivered)` instead
+of leaving a greeting in the log that never left the node. `ask_follow_up` is
 deliberately not an utterance: a follow-up question belongs inside the model's own
 reply, so it is consumed by the prompt rather than by injecting a second spoken line.
 

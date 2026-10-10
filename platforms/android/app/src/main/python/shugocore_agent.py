@@ -2112,9 +2112,14 @@ class AndroidAgent:
         # Throttle on the attempt, not on delivery: a node that may not speak
         # (a follower with no mouth) must not retry the same arrival every tick.
         self._last_proactive_speak_at = now
-        self.log("PROACTIVE", f"arrival ({previous or 'unknown'} -> {current}) "
-                              f"as {kind}: {line}")
-        self._proactive_speak(kind, line)
+        delivered = self._proactive_speak(kind, line)
+        # Report what happened, not what was intended. `_speak_direct` refuses on a
+        # node that may not announce to the room, and a line claiming a greeting
+        # that never left this node is a false record in the operator's own log --
+        # which is how "the phone greeted me" gets believed about a follower.
+        self.log("PROACTIVE",
+                 f"arrival ({previous or 'unknown'} -> {current}) as {kind}"
+                 f"{'' if delivered else ' (not delivered)'}: {line}")
 
     def _handle_conversational_input(self, observation: Dict[str, Any]) -> None:
         """Fast path for responding to user speech.

@@ -238,5 +238,44 @@ class TheTickCallsItTestCase(unittest.TestCase):
         self.assertIn("_check_arrival_greeting()", source)
 
 
+class TheLogTellsTheTruthTestCase(unittest.TestCase):
+    """A follower must not have a greeting recorded that it never spoke.
+
+    `_speak_direct` refuses on a node that may not announce to the room, so the
+    mouth can decline after the line has been chosen. Logging the intent would
+    leave "the phone greeted me" in the operator's log about a node that stayed
+    silent -- and the phone is the common follower.
+    """
+
+    def _logs(self, agent, delivered):
+        lines = []
+        agent.log = lambda source, message, **kw: lines.append((source, message))
+        agent._proactive_speak = lambda kind, text: delivered
+        agent._check_arrival_greeting()
+        return lines
+
+    def test_a_refused_greeting_is_recorded_as_not_delivered(self):
+        agent = _agent(state=AttentionState.ATTENDING)
+        lines = self._logs(agent, delivered=False)
+        self.assertTrue(lines, "the arrival should still be recorded")
+        self.assertTrue(any("not delivered" in message for _, message in lines),
+                        lines)
+
+    def test_a_delivered_greeting_is_not_hedged(self):
+        agent = _agent(state=AttentionState.ATTENDING)
+        lines = self._logs(agent, delivered=True)
+        self.assertTrue(lines)
+        self.assertFalse(any("not delivered" in message for _, message in lines),
+                         lines)
+
+    def test_the_arrival_and_the_switch_are_both_named(self):
+        agent = _agent(state=AttentionState.ATTENDING)
+        lines = self._logs(agent, delivered=True)
+        source, message = lines[0]
+        self.assertEqual(source, "PROACTIVE")
+        self.assertIn("attending", message)
+        self.assertIn("greet_on_arrival", message)
+
+
 if __name__ == "__main__":
     unittest.main()

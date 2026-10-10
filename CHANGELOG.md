@@ -4,7 +4,36 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
-## [1.30.31] - 2026-10-10 — the switches a character was missing
+## [1.30.32] - 2026-10-10 — the greeting a follower never spoke
+
+### An arrival was logged as spoken even when the mouth refused
+
+1.30.31 wired `greet_on_arrival` to an arrival, and logged the line as it chose it:
+
+```python
+self.log("PROACTIVE", f"arrival (...) as {kind}: {line}")
+delivered = self._proactive_speak(kind, line)
+```
+
+`_speak_direct` refuses on a node that may not announce to the room — the Track 1
+primary-only guardrail (`_mesh_may_act("speak_direct")`) — so on a **follower** the
+line was chosen, refused, and then *recorded as if it had been said*. The log is the
+operator's own record of what the node did, and the phone is the common follower, so
+that is a false entry in exactly the case it is most likely to occur: "the phone
+greeted me" would be believed about a node that stayed silent.
+
+Fixed by reporting the outcome rather than the intent — `_proactive_speak` returns
+whether anything was said, and a refused line is recorded as `(not delivered)`:
+
+```
+PROACTIVE arrival (unknown -> attending) as greet_on_arrival (not delivered): Hello — I'm Shugo. Good to see you.
+```
+
+`tests/test_proactivity.py::TheLogTellsTheTruthTestCase` pins both directions: a
+refused greeting is marked not delivered, and a delivered one is not hedged. This is
+the same rule the rest of the verification surface follows — record what happened, not
+what was meant — and it was worth a release rather than a tag rewrite, since a
+published wheel is immutable.
 
 ### `proactivity` was config the operator could set and nothing would read
 

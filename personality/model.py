@@ -72,9 +72,10 @@ def _extract_policy(profile: Any) -> Dict[str, Any]:
     """Freeze the PolicyPerimeters out of a PersonalityProfile.
 
     The policy is the immutable seed of the baby state: boundaries,
-    forbidden phrases and consent rules. Everything else about the
-    personality is allowed to grow; this is not.
+    forbidden phrases, consent rules and the operator's speech permissions.
+    Everything else about the personality is allowed to grow; this is not.
     """
+    from personality.loader import normalise_proactivity
     boundaries = dict(getattr(profile, "boundaries", {}) or {})
     speech = dict(getattr(profile, "speech", {}) or {})
     return {
@@ -82,6 +83,13 @@ def _extract_policy(profile: Any) -> Dict[str, Any]:
         "never_say": list(speech.get("never_say") or []),
         "first_person": bool(speech.get("first_person", True)),
         "refuse_harmful": bool(boundaries.get("refuse_harmful", True)),
+        # The proactivity switches are permission, not temperament, so they belong
+        # to the frozen perimeters: growth may not invent a permission the operator
+        # never gave. Carried here so `as_profile()` can hand them back — the agent
+        # replaces its loaded profile with `as_profile()` at boot, so a switch that
+        # is dropped at genesis is a switch the operator set and nothing sees.
+        "proactivity": normalise_proactivity(
+            getattr(profile, "proactivity", None)),
     }
 
 
@@ -291,8 +299,14 @@ class PersonalityModel:
         translator of config -> instructions; the living model feeds it
         by expressing its current trait vector as natural-language trait
         phrases and its frozen policy as boundaries / never_say.
+
+        The proactivity switches come back out too. This is the whole
+        step the operator's setting has to survive: the agent loads
+        personality.json, births the model from it, and then *replaces*
+        `self.personality` with what this returns — so anything omitted
+        here is a config value that reached nothing.
         """
-        from personality.loader import PersonalityProfile
+        from personality.loader import PersonalityProfile, normalise_proactivity
         trait_text = {}
         for trait, state in self.traits.items():
             phrases = self._PHRASES.get(trait)
@@ -310,6 +324,10 @@ class PersonalityModel:
                 "never_say": list(self.policy.get("never_say") or []),
             },
             boundaries=dict(self.policy.get("boundaries") or {}),
+            # Absent from the policy of a model persisted before this existed, so
+            # normalise rather than assume: an upgraded device keeps its defaults.
+            proactivity=normalise_proactivity(
+                self.policy.get("proactivity")),
         )
 
     def __repr__(self) -> str:

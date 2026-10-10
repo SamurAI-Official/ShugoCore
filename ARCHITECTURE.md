@@ -180,26 +180,44 @@ and `test_the_tool_path_stays_unshaped_even_for_speech` ("advisory_only means
 'never modify'"). A shaper that raises is style-only, and an unavailable persona
 leaves the line alone.
 
-### `proactivity` in the profile is reserved, not consumed
+### `proactivity`: permission from config, readiness from growth
 
-One config block is parsed, defaulted and merged — and read by nothing. The loader
-accepts an operator's `proactivity` settings and `_from_dict` merges them over the
-defaults, so they load cleanly; but measured across the runtime,
-`greet_on_arrival`, `ask_follow_up` and `offer_help` appear **only** in the
-loader's own defaults. `personality_system_prompt` renders identity, traits,
-speech, `never_say` and boundaries — not this — and `as_profile()`, which is what
-the agent hands the prompt layer after boot, does not carry the block at all. So an
-operator editing `config/personality.json` to turn `offer_help` on would see
-nothing change.
+The three switches in `config/personality.json` — `greet_on_arrival`,
+`ask_follow_up`, `offer_help` — are the operator's **permission** for the agent to
+originate speech rather than only answer it. They were once parsed, merged and read
+by nothing. They are now consumed in three places, and the third is the one that was
+silently losing them:
 
-The name also collides with something that *is* live: the governor reads a learned
-trait, `model.traits["proactivity"]`, as a threshold input, grown from the turn
-window. Two different things share the word, one wired and one not.
+| Where | What it does |
+|---|---|
+| `personality_system_prompt` | renders each switch as an instruction; `offer_help` switched off is stated outright — "Do not volunteer help that was not asked for" |
+| `PersonalityModel` | freezes the block into `policy` at `genesis` and returns it from `as_profile()`. This is the step that mattered: the agent **replaces** `self.personality` with `as_profile()` at boot, so a block dropped there is config an operator set and nothing reads |
+| `ShugoAgent.proactive_permitted` | gates what the agent itself says — fail-closed, so an unknown kind is never a permission |
 
-Left in place (frozen 1.x) and deliberately unwired: "greet on arrival" and "offer
-help" are behaviour with product decisions attached — when, and what to offer —
-not something to infer from a flag. `tests/test_personality_model.py` pins the
-current state so that wiring it later is a deliberate act.
+The one behaviour with a real trigger is an **arrival**: the attention layer
+transitioning into `attending` ("human present AND attending to the agent") from
+anything else. One unprompted line is spoken per arrival, under `greet_on_arrival`;
+with greetings switched off, that same trigger will instead offer help when
+`offer_help` allows it. The *edge* is what fires, so someone already in frame is
+greeted once rather than once per tick, and a 120 s cooldown rides out the
+attending/diverted flapping that face detection produces. `ask_follow_up` is
+deliberately not an utterance: a follow-up question belongs inside the model's own
+reply, so it is consumed by the prompt rather than by injecting a second spoken line.
+
+Permission and *readiness* are different questions, and only one of them is the
+operator's. `offer_help` additionally requires the learned `proactivity` trait to
+clear `PersonalityGovernor.policy["proactivity_threshold"]` (0.40) — the same value
+the governor already thresholds for self-initiated speech. A fresh node sits at 0.30,
+so a permitted-but-unready agent stays quiet until it has grown into the offer. A
+greeting needs permission only: the operator asked for greetings by name, and it is a
+social convention rather than volunteering. The name still collides with the learned
+trait `model.traits["proactivity"]` — that is the readiness half, and it is what gates
+the offer.
+
+Measured (`runtime/phase0_evidence/proactivity_probe.py`): the switches survive boot
+into `agent.personality`; an arrival greets exactly once across repeated ticks;
+`greet_on_arrival: false` is silent; `offer_help` stays silent at trait 0.30 and
+speaks at 0.50; the cooldown holds an immediate re-arrival; an unknown kind is denied.
 
 ## Derived artifacts — never edit the copy
 

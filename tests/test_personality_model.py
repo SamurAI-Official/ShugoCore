@@ -371,14 +371,14 @@ class PersonalityGovernorTestCase(unittest.TestCase):
         self.assertEqual(PersonalityGovernor._count_sentences(""), 0)
 
 
-class ReservedConfigTestCase(unittest.TestCase):
-    """`proactivity` is parsed and merged -- and read by nothing.
+class ProactivityConfigTestCase(unittest.TestCase):
+    """`proactivity` grants the agent permission to originate speech.
 
-    Pinned rather than fixed: "greet on arrival" and "offer help" are behaviour
-    with product decisions attached, so wiring them is a deliberate act, not
-    something to infer from a flag. What must not happen is the current state
-    being forgotten -- an operator setting `offer_help` today sees nothing change,
-    and the next reader should know that without re-deriving it.
+    It used to be parsed and merged and read by nothing, and this class used to pin
+    that as reserved. It is now wired, so the pins are inverted: the switches must
+    survive the config -> living model -> prompt -> agent round trip, because the
+    step that used to lose them was silent (`as_profile()` replaces
+    `self.personality` at boot).
     """
 
     def test_the_profile_carries_the_switches(self):
@@ -387,7 +387,6 @@ class ReservedConfigTestCase(unittest.TestCase):
             self.assertIn(key, profile.proactivity)
 
     def test_an_operators_values_are_loaded_into_the_profile(self):
-        """So the omission is not in the loader -- the config really is read."""
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "personality.json")
             with open(path, "w", encoding="utf-8") as handle:
@@ -398,27 +397,71 @@ class ReservedConfigTestCase(unittest.TestCase):
         self.assertTrue(profile.proactivity["offer_help"])
         self.assertFalse(profile.proactivity["greet_on_arrival"])
 
-    def test_the_prompt_does_not_render_the_switches(self):
-        prompt = personality_system_prompt(PersonalityProfile())
-        for key in ("greet_on_arrival", "ask_follow_up", "offer_help"):
-            self.assertNotIn(key, prompt)
+    def test_an_unknown_switch_is_not_read_as_permission(self):
+        """Closed vocabulary: only the three known keys can grant anything."""
+        from personality.loader import (PROACTIVITY_DEFAULTS,
+                                        normalise_proactivity)
+        self.assertEqual(normalise_proactivity({"offerHelp": True}),
+                         PROACTIVITY_DEFAULTS)
+        self.assertEqual(normalise_proactivity("not a dict").keys(),
+                         PROACTIVITY_DEFAULTS.keys())
 
-    def test_the_living_model_does_not_carry_the_block(self):
-        """`as_profile()` is what the agent hands the prompt layer after boot.
-
-        The sharp form: birth a model from a profile whose `offer_help` is on, and
-        render it back. If the rendered profile says `False`, the operator's
-        setting did not survive the one step between the config and the prompt.
-        """
+    def test_the_living_model_carries_the_block(self):
+        """The one step between the config and the agent that used to drop it."""
         profile = PersonalityProfile()
         profile.proactivity = {"greet_on_arrival": False, "ask_follow_up": False,
                                "offer_help": True}
         rendered = PersonalityModel.genesis(profile).as_profile()
-        self.assertTrue(profile.proactivity["offer_help"])
-        self.assertFalse(
-            rendered.proactivity["offer_help"],
-            "as_profile() now carries proactivity: if it is being wired up, "
-            "update ARCHITECTURE.md and the loader note too")
+        self.assertTrue(rendered.proactivity["offer_help"])
+        self.assertFalse(rendered.proactivity["greet_on_arrival"])
+
+    def test_the_block_survives_a_save_and_load(self):
+        profile = PersonalityProfile()
+        profile.proactivity = {"greet_on_arrival": False, "ask_follow_up": False,
+                               "offer_help": True}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "personality_model.json")
+            PersonalityModel.genesis(profile).save(path)
+            reloaded = PersonalityModel.load(path).as_profile()
+        self.assertTrue(reloaded.proactivity["offer_help"])
+
+    def test_a_model_persisted_before_this_existed_keeps_the_defaults(self):
+        """Upgraded devices: an old `policy` has no `proactivity` key at all."""
+        profile = PersonalityProfile()
+        profile.proactivity = {"greet_on_arrival": False, "ask_follow_up": False,
+                               "offer_help": True}
+        legacy = PersonalityModel.genesis(profile).to_dict()
+        legacy["policy"].pop("proactivity")
+        from personality.loader import PROACTIVITY_DEFAULTS
+        rendered = PersonalityModel.from_dict(legacy).as_profile()
+        self.assertEqual(rendered.proactivity, PROACTIVITY_DEFAULTS)
+
+    def test_the_prompt_renders_the_switches(self):
+        prompt = personality_system_prompt(PersonalityProfile())
+        self.assertIn("greet someone when they arrive", prompt)
+        self.assertIn("ask a follow-up question", prompt)
+        # offer_help defaults off, and the refusal is stated rather than implied.
+        self.assertIn("Do not volunteer help that was not asked for.", prompt)
+        self.assertNotIn("offer help you were not asked for", prompt)
+
+    def test_the_prompt_follows_the_switches_both_ways(self):
+        profile = PersonalityProfile()
+        profile.proactivity = {"greet_on_arrival": False, "ask_follow_up": False,
+                               "offer_help": True}
+        prompt = personality_system_prompt(profile)
+        self.assertIn("offer help you were not asked for", prompt)
+        self.assertNotIn("greet someone when they arrive", prompt)
+        self.assertNotIn("Do not volunteer help that was not asked for.", prompt)
+
+    def test_the_model_is_the_prompt_source_the_agent_actually_holds(self):
+        """`as_profile()` output is what drives the agent's prompt at boot."""
+        profile = PersonalityProfile()
+        profile.proactivity = {"greet_on_arrival": False, "ask_follow_up": True,
+                               "offer_help": True}
+        rendered = PersonalityModel.genesis(profile).as_profile()
+        prompt = personality_system_prompt(rendered)
+        self.assertIn("offer help you were not asked for", prompt)
+        self.assertNotIn("greet someone when they arrive", prompt)
 
 
 if __name__ == "__main__":

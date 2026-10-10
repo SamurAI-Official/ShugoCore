@@ -4,7 +4,71 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
-## [1.30.30] - 2026-10-09 — a claim may not be proven by seeing nothing
+## [1.30.31] - 2026-10-10 — the switches a character was missing
+
+### `proactivity` was config the operator could set and nothing would read
+
+`config/personality.json` carries three switches that grant the agent permission to
+*originate* speech instead of only answering it:
+
+```json
+"proactivity": { "greet_on_arrival": true, "ask_follow_up": true,
+                 "offer_help": false }
+```
+
+They were parsed, defaulted and merged by the loader, so they loaded cleanly — and
+were read by nothing. `personality_system_prompt` rendered identity, traits, speech,
+`never_say` and boundaries; `PersonalityModel.as_profile()` did not carry the block at
+all. That second omission is the one that mattered, and it was invisible: at boot the
+agent loads `personality.json`, births the living model from it, and then **replaces
+`self.personality` with `as_profile()`** — so a block dropped at genesis is a setting
+the operator made that reaches nothing, forever, without an error.
+
+Three consumptions now, one behaviour:
+
+* **the prompt** renders each switch as an instruction. `offer_help` switched off is
+  stated rather than implied — "Do not volunteer help that was not asked for" —
+  because a model told nothing tends to help itself to helpfulness.
+* **the living model** freezes the block into the frozen `policy` at `genesis()`
+  (permission is not temperament, so growth may not invent it) and hands it back out
+  of `as_profile()`. A model persisted before this existed has no such key and
+  normalises to the defaults, so an upgraded device keeps its behaviour.
+* **the agent** gates what it says. `ShugoAgent.proactive_permitted(kind)` is
+  fail-closed: an unknown kind is never a permission, and a typo cannot grant one.
+
+The one trigger with real behaviour is an **arrival** — the attention layer
+transitioning into `attending` ("human present AND attending to the agent") from
+anything else. One unprompted line per arrival: a greeting under `greet_on_arrival`,
+or (with greetings off) an offer when `offer_help` allows it. The *edge* fires, not
+the state, so a person already in frame is greeted once rather than every tick, and a
+120 s cooldown absorbs the attending/diverted flapping face detection produces.
+`ask_follow_up` is deliberately not an utterance: a follow-up question belongs inside
+the model's own reply, so the prompt carries it.
+
+**Permission and readiness are different questions**, and only one is the operator's.
+`offer_help` additionally requires the learned `proactivity` trait to clear the
+governor's `proactivity_threshold` (0.40) — the value the governor already thresholds
+for self-initiated speech. A fresh node sits at 0.30, so a permitted-but-unready agent
+stays quiet until it has grown into the offer. A greeting needs permission alone: it
+is a social convention the operator asked for by name, not volunteering.
+
+### A bug the probe caught in this change itself
+
+`_arrival_line()` first returned only text, and its caller always passed
+`kind="greet_on_arrival"` to the gate — so the *offer* branch was built and then
+silently rejected by a switch that was off. `offer_help` would have shipped looking
+wired and doing nothing, which is the same class of defect this release exists to
+remove. It now returns `(switch, line)` and passes the gate the switch that granted
+the line. `test_the_gate_is_passed_the_switch_that_granted_the_line` pins it.
+
+Measured (`runtime/phase0_evidence/proactivity_probe.py`, 7/7): the switches survive
+boot into `agent.personality`; an arrival greets exactly once across repeated ticks;
+`greet_on_arrival: false` is silent even on an arrival; `offer_help` stays silent at
+trait 0.30 and speaks at 0.50; the cooldown holds an immediate re-arrival; an unknown
+kind is denied. 29 new tests — 20 in `tests/test_proactivity.py` and 9 in
+`tests/test_personality_model.py` — cover the gate, the mirror of that gate in the
+living model, the prompt both ways round, and the migration of a model persisted
+before the block was carried.
 
 ### An empty transcript proved two claims
 

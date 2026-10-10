@@ -7,7 +7,7 @@ instructions — edit the JSON, change the character.
 """
 from typing import List
 
-from personality.loader import PersonalityProfile
+from personality.loader import PersonalityProfile, normalise_proactivity
 
 # Default personality used when no config file exists.
 DEFAULT_PERSONALITY = PersonalityProfile()
@@ -63,5 +63,24 @@ def personality_system_prompt(profile: PersonalityProfile) -> str:
         boundary_parts.append("never impersonate others without permission")
     if boundary_parts:
         parts.append("You " + ", ".join(boundary_parts) + ".")
+
+    # --- Proactivity: what the agent may originate, not just answer ---
+    # The operator's permission switches, rendered as instructions. `offer_help`
+    # is written in the negative when off: the default is to not volunteer, and a
+    # model that is told nothing tends to help itself to helpfulness.
+    switches = normalise_proactivity(getattr(profile, "proactivity", None))
+    proactive_parts: List[str] = []
+    if switches["greet_on_arrival"]:
+        proactive_parts.append("greet someone when they arrive")
+    if switches["ask_follow_up"]:
+        proactive_parts.append(
+            "ask a follow-up question when it would genuinely help")
+    if switches["offer_help"]:
+        proactive_parts.append(
+            "offer help you were not asked for when you notice it is needed")
+    if proactive_parts:
+        parts.append("You may " + ", ".join(proactive_parts) + ".")
+    if not switches["offer_help"]:
+        parts.append("Do not volunteer help that was not asked for.")
 
     return "\n".join(parts)

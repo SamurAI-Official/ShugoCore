@@ -113,6 +113,33 @@ PIPELINE_STAGES = ("OBSERVE", "VERIFY_ATTENTION", "GATE", "DECIDE",
 # tests/test_cycle_contract.py.
 LOOP_MARKERS = ("DELEGATED",)
 
+# -- proactivity: speech the agent originates ---------------------------------
+# The `personality.json` `proactivity` switches grant the agent permission to
+# originate speech rather than only answer it (see personality.loader
+# PROACTIVITY_DEFAULTS). Two of them have a real trigger in the runtime:
+#
+#   greet_on_arrival  an *arrival* -- the attention layer transitioning into
+#                     ATTENDING ("human present AND attending to the agent") from
+#                     anything else. `evaluate()`'s three states are unknown /
+#                     attending / diverted, so the attending edge is the only
+#                     truthful "someone just showed up and is here with me"; a
+#                     greeting on `diverted` would address a back. Gating on the
+#                     transition (not the state) is what stops a greeting every
+#                     tick, and the cooldown absorbs the attending<->diverted
+#                     flapping that face detection produces. Measured before this
+#                     existed: `greet_on_arrival` was parsed, merged, and read by
+#                     nothing at all.
+#   offer_help        the same arrival, but as an offer instead of a greeting when
+#                     greetings are switched off -- and this one must ALSO clear
+#                     the learned proactivity trait, because an unrequested offer
+#                     is exactly the volunteering that trait governs.
+#
+# `ask_follow_up` is deliberately not an utterance trigger: a follow-up question
+# belongs *inside* the model's own reply, so it is consumed by
+# personality_system_prompt rather than by injecting a second spoken line.
+_ATTENDING_STATE = "attending"
+_ARRIVAL_GREETING_COOLDOWN_S = 120.0
+
 # -- cycle outcome contract (v1.10) -------------------------------------------
 # Canonical cycle outcomes. NO_ACTION is NOT an error: "nothing to do" is a
 # healthy, recorded cycle. BACKEND_FAILURE means the model ensemble could not
@@ -299,6 +326,12 @@ class AndroidAgent:
         self._open_question: Optional[Dict[str, Any]] = None
         # v1.20 attention verification layer (provider-side).
         self.attention = AttentionLayer() if _HAS_ATTENTION else None
+        # Proactivity (personality.json): the arrival detector for
+        # `greet_on_arrival`, and the throttle shared by every unprompted line the
+        # agent originates. Empty previous state means the first sighting of an
+        # attending person counts as an arrival.
+        self._last_attention_state = ""
+        self._last_proactive_speak_at = 0.0
         # Track 1: mesh primary election. Android hardware is the
         # page-robot custodian (Exynos-1380 family): a HIGH priority number,
         # so a paired desktop (lower priority) holds the primary lease and
@@ -1974,6 +2007,114 @@ class AndroidAgent:
                                   f"({timer.timer_id})")
         except Exception as exc:
             self.log("TIMER", f"timer check failed: {exc}", level="WARN")
+
+    def _proactive_speak(self, kind: str, text: str) -> bool:
+        """Speak one unprompted line, if the operator's config permits it.
+
+        The one gate every self-initiated utterance goes through, so
+        `personality.json` stays the single place an operator turns this off.
+        Returns whether anything was said.
+        """
+        if not self.proactive_permitted(kind):
+            self.log("PROACTIVE", f"{kind} is switched off in personality.json")
+            return False
+        return self._speak_direct(text)
+
+    def proactive_permitted(self, kind: str) -> bool:
+        """May the agent originate speech of this kind? Fail-closed.
+
+        `kind` is one of the `personality.json` proactivity switches
+        (`greet_on_arrival`, `ask_follow_up`, `offer_help`). The answer comes from
+        the operator's config, so an unknown kind -- or a profile that lost the
+        block on its way through the living model -- is a *no*, never a yes.
+        """
+        from personality.loader import (PROACTIVITY_DEFAULTS,
+                                        normalise_proactivity)
+        if kind not in PROACTIVITY_DEFAULTS:
+            return False
+        settings = normalise_proactivity(
+            getattr(getattr(self, "personality", None), "proactivity", None))
+        return bool(settings.get(kind, False))
+
+    def proactivity_ready(self) -> bool:
+        """Has the *learned* proactivity trait cleared the governor's threshold?
+
+        Permission and readiness are two questions, and only one of them is the
+        operator's. The config says whether the agent *may* volunteer; the grown
+        `proactivity` trait says whether it is ready to, right now. This is the
+        learned half of the pair -- the same value `PersonalityGovernor` already
+        thresholds for self-initiated speech -- read here because the agent, not
+        the governor, is what decides to speak unprompted. A node with no governor
+        cannot answer the question, and saying nothing is the safe side of that.
+        """
+        governor = getattr(self, "personality_governor", None)
+        if governor is None:
+            return False
+        try:
+            policy = governor.policy
+            return (float(policy.get("proactivity", 0.0))
+                    >= float(policy.get("proactivity_threshold", 0.0)))
+        except Exception:
+            return False
+
+    def _arrival_line(self) -> Optional[Tuple[str, str]]:
+        """Which switch to speak under when someone arrives, and what to say.
+
+        Returns `(switch, line)` so the caller passes the gate the same kind that
+        granted the line. Returning only the text is a real trap: the greeting
+        branch and the offer branch are permitted by *different* switches, so a
+        caller that always quoted `greet_on_arrival` would have its offer silently
+        rejected -- `offer_help` switched on and doing nothing, which is the exact
+        shape of bug this whole change exists to remove.
+        """
+        name = (getattr(getattr(self, "personality", None), "name", None)
+                or "Shugo")
+        if self.proactive_permitted("greet_on_arrival"):
+            return "greet_on_arrival", f"Hello — I'm {name}. Good to see you."
+        # Greeting switched off, but the operator may still have allowed the agent
+        # to acknowledge an arrival by offering help -- and that one is also gated
+        # on the learned trait, because an offer is volunteering.
+        if (self.proactive_permitted("offer_help")
+                and self.proactivity_ready()):
+            return "offer_help", f"{name} here — anything you'd like a hand with?"
+        return None
+
+    def _check_arrival_greeting(self) -> None:
+        """Speak one unprompted line when a person arrives (proactivity).
+
+        Called every tick, beside `_check_timers` -- both are things the agent
+        does on its own rather than in answer to a turn. The edge, not the state,
+        is what triggers: someone already in front of the camera is greeted once,
+        not once per tick, and the cooldown rides out the attending/diverted
+        flapping that face detection produces.
+
+        Silence is the default outcome, and every reason for it is cheap: no
+        attention layer, no permission, no readiness, or the cooldown.
+        """
+        if self.attention is None:
+            return
+        try:
+            state, _confidence = self.attention.evaluate()
+        except Exception:
+            return
+        current = str(getattr(state, "value", state) or "").strip().lower()
+        previous = self._last_attention_state
+        self._last_attention_state = current
+        if current != _ATTENDING_STATE or previous == _ATTENDING_STATE:
+            return
+        now = time.monotonic()
+        if now - self._last_proactive_speak_at < _ARRIVAL_GREETING_COOLDOWN_S:
+            return
+        choice = self._arrival_line()
+        if not choice:
+            return
+        kind, line = choice
+        # Throttle on the attempt, not on delivery: a node that may not speak
+        # (a follower with no mouth) must not retry the same arrival every tick.
+        self._last_proactive_speak_at = now
+        self.log("PROACTIVE", f"arrival ({previous or 'unknown'} -> {current}) "
+                              f"as {kind}: {line}")
+        self._proactive_speak(kind, line)
 
     def _handle_conversational_input(self, observation: Dict[str, Any]) -> None:
         """Fast path for responding to user speech.
@@ -3954,6 +4095,9 @@ class AndroidAgent:
         engine_result: Dict[str, Any] = {}
         # Phase 3.2: poll background timers each tick — no sleep threads.
         self._check_timers()
+        # Proactivity: one unprompted line when a person arrives, if the operator's
+        # personality.json permits it and the attention layer can see them.
+        self._check_arrival_greeting()
         # v1.30.5: an open question that nobody answered is recorded as
         # expired (never silently forgotten).
         self._expire_open_question()

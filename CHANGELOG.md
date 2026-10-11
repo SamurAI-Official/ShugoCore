@@ -4,7 +4,70 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
-## [1.30.32] - 2026-10-10 — the greeting a follower never spoke
+## [1.30.33] - 2026-10-11 — three ways a robot could not be stopped
+
+### The emergency stop was allowed and then dropped
+
+`DecisionEngine` registered a robotics handler for `ROBOTICS_ACTION_TYPES` only, while a
+node's robotics vocabulary also carries the safety class (`robot_stop`) and the read
+class (`robot_query_state`, `robot_scan`). Measured with a real engine and a real
+handler (`runtime/phase0_evidence/robotics_dispatch_probe.py`): **four of the seven**
+robotics actions a node advertises reached `_dispatch` with no handler installed and
+were answered **"Unknown action type"** — including `robot_stop`, which the policy gate
+had just *allowed* (safety actions bypass consent and approval, by design). An emergency
+stop the engine accepts and then discards is worse than one it refuses: the operator is
+told nothing and the robot keeps moving.
+
+Fixed by registering all three classes, exactly as the mobile and network handlers
+already did.
+
+### `robot_look` was documented as shipped and was not
+
+1.19.0's release note says "*`robot_look` (head pan/tilt) added to
+`ROBOTICS_ACTION_TYPES`*". The dispatch branch and `_handle_look` were written; the set
+itself was not — and that set is what the engine iterates to install handlers. So the
+type was offered to the model, gated, consented, and then answered "Unknown action
+type".
+
+### Moving a robot needed no consent at all
+
+`policy.py` states it plainly — "*Robotics actions: physical side effects, require
+consent AND approval*" — and the README lists robotics among the consent-gated families
+in two places. Nothing enforced it: `_CONSENT_GATED_ACTION_TYPES` (the set
+`_gate_decision` checks) omitted the motion class, `memory.check_policy` does not check
+it, and `robotics_handler` stores `capabilities` without ever calling it.
+
+Measured on a node with **no** consent granted and **no** approval channel attached
+(`runtime/phase0_evidence/robotics_gate_probe.py`): `robot_manipulate`,
+`robot_navigate`, `robot_gripper` and `robot_look` were all **ALLOWED**, while a mobile
+action — which *is* in the union — was refused with "no external consent grant". Fixed
+by adding the motion class to the union. Read actions and `robot_stop` stay deliberately
+outside it: reads need no consent, and the stop must always be triggerable.
+
+### A root can now construct a robotics handler, deliberately
+
+No composition root constructed a robotics handler at all, which is why the
+`world.robotics` claim had to be driven by a tool. The server now takes
+`--enable-robotics`, default **off** — opt-in rather than opt-out like the mobile fleet,
+because the handler falls back to deterministic stubs when ROS 2 is absent and **those
+stubs succeed**. Enabling it by default would let a laptop report that it moved an arm
+it does not have. The flag says which it got:
+
+```
+robotics: enabled against the deterministic stub -- no ROS 2 on this host, so
+nothing physical will move and every result is simulated
+```
+
+One consequence worth knowing: attaching a handler arms the watchdog, so a node that
+receives no motion command within the watchdog window auto-stops and latches until an
+operator reset. That is the watchdog's fail-safe design, visible now that a handler can
+finally be attached.
+
+Measured after the fix: handler-claims == policy-vocabulary == engine-registers (all
+seven types); every type dispatches, with `robot_stop` returning
+`{"status": "success", "action": "emergency_stop"}`; and the same bare node that moved a
+robot before now refuses all four motion types while still allowing reads and the stop.
+7 new tests in `tests/test_robotics.py::TestDecisionEngineIntegration`.
 
 ### An arrival was logged as spoken even when the mouth refused
 

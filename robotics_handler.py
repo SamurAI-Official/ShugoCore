@@ -24,8 +24,16 @@ from gazebo_simulation import create_gazebo_simulation
 
 logger = logging.getLogger(__name__)
 
-# Action types handled by this handler
-ROBOTICS_ACTION_TYPES = {"robot_navigate", "robot_manipulate", "robot_gripper"}
+# Action types handled by this handler.
+#
+# `robot_look` belongs here and was documented as added ("robot_look (head pan/tilt)
+# added to ROBOTICS_ACTION_TYPES", 1.19.0) -- the dispatch branch and `_handle_look`
+# were written, but the set itself was not updated. Because this set is what
+# `DecisionEngine` iterates to install handlers, the type was consent-gated by policy,
+# offered to the model, and then answered "Unknown action type" at execution: the
+# release note described a capability the engine could not dispatch.
+ROBOTICS_ACTION_TYPES = {"robot_navigate", "robot_manipulate", "robot_gripper",
+                         "robot_look"}
 # Safety-critical actions: bypass consent/approval gates. Must always be triggerable.
 ROBOTICS_SAFETY_ACTION_TYPES = {"robot_stop"}
 # Read-only actions: no consent required.

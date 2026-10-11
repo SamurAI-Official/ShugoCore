@@ -1289,6 +1289,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--no-mobile", action="store_true",
                         help="disable the mobile fleet/sensor subsystem "
                              "(enabled by default)")
+    parser.add_argument("--enable-robotics", action="store_true",
+                        help="register the robotics handlers so this node can drive "
+                             "a robot (motion requires operator consent and approval; "
+                             "the emergency stop never does). Off by default -- see "
+                             "the note at the registration site for why")
     args = parser.parse_args(argv)
 
     # Fail-closed exposure: a non-loopback bind must be authenticated unless
@@ -1346,6 +1351,38 @@ def main(argv: Optional[List[str]] = None) -> int:
                         "(nodes appear in /api/v1/fleet once paired)")
         except Exception as exc:
             logger.warning("mobile fleet disabled (%s: %s)",
+                           type(exc).__name__, exc)
+
+    # Robotics is deliberate opt-in, unlike the mobile fleet above. The mobile
+    # handler only reports on nodes that are actually paired; a robotics handler
+    # silently falls back to deterministic stubs when ROS 2 is absent -- and those
+    # stubs *succeed*. Enabling this by default would let a laptop answer "I moved
+    # the arm" about an arm it does not have, so the flag is explicit and the log
+    # states which of the two it ended up driving.
+    #
+    # The gate is what makes it safe to turn on: motion (`robot_navigate`,
+    # `robot_manipulate`, `robot_gripper`, `robot_look`) is consent- AND
+    # approval-gated in `DecisionEngine`, while `robot_stop` and the read actions
+    # are not, so situational awareness and stopping are never blocked. Measured
+    # in tests/test_robotics.py::TestDecisionEngineIntegration.
+    if args.enable_robotics:
+        try:
+            from robotics_handler import RoboticsExecutionHandler
+            from ros2_interface import create_ros2_interface
+
+            _robotics_ros2 = create_ros2_interface(
+                node_name="shugocore_server_robotics")
+            engine_kwargs["robotics_handler"] = RoboticsExecutionHandler(
+                ros2=_robotics_ros2)
+            if _robotics_ros2.is_available():
+                logger.info("robotics: enabled against real ROS 2 (motion needs "
+                            "operator consent and approval; robot_stop never does)")
+            else:
+                logger.warning("robotics: enabled against the deterministic stub -- "
+                               "no ROS 2 on this host, so nothing physical will "
+                               "move and every result is simulated")
+        except Exception as exc:
+            logger.warning("robotics disabled (%s: %s)",
                            type(exc).__name__, exc)
 
     try:

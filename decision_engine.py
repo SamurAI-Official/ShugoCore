@@ -246,7 +246,22 @@ _NETWORK_CONSENT_GATED = NETWORK_ACTION_TYPES if _HAS_SHUGONET else frozenset()
 # signing key forces an uninstall that wipes that node's memory: consent-gated
 # like the side-effecting class even though it is not a member of it.
 _FLEET_CONSENT_GATED = FLEET_ACTION_TYPES if _HAS_FLEET else frozenset()
+# Moving a robot is the most physical side effect there is, and `policy.py` states
+# the contract outright ("Robotics actions: physical side effects, require consent
+# AND approval"), as does the handler ("Safety-critical actions bypass consent/
+# approval gates" -- which only says something if the rest do not). Robotics was
+# missing from this union, so `_gate_decision` never checked it, `memory.check_policy`
+# does not check it, and the handler stores `capabilities` without calling it.
+# Measured on a node with no consent granted and no approval channel attached:
+# robot_manipulate, robot_navigate, robot_gripper and robot_look were all ALLOWED,
+# while a mobile action -- in the union -- was refused with "no external consent
+# grant". Only `robot_query_state`, `robot_scan` and `robot_stop` should pass that
+# node, and they do: reads need no consent, and the emergency stop must always be
+# triggerable (which is why ROBOTICS_SAFETY_ACTION_TYPES is deliberately NOT here).
+_ROBOTICS_CONSENT_GATED = (ROBOTICS_ACTION_TYPES if _HAS_ROBOTICS
+                           else frozenset())
 _CONSENT_GATED_ACTION_TYPES = (SIDE_EFFECTING_ACTION_TYPES
+                               | _ROBOTICS_CONSENT_GATED
                                | (MOBILE_ACTION_TYPES if _HAS_MOBILE
                                   else frozenset())
                                | _NETWORK_CONSENT_GATED
@@ -414,10 +429,19 @@ class DecisionEngine:
             audit=self.audit,
             request_timeout=request_timeout,
         )
-        # Robotics handler: register for all robotics action types
+        # Robotics handler: register every class it declares, exactly as the mobile
+        # and network handlers below do. Registering only ROBOTICS_ACTION_TYPES left
+        # the safety and read classes unreachable: `robot_stop` passed the policy
+        # gate -- safety actions are meant to bypass consent and approval, and they
+        # do -- and then hit `_dispatch` with no handler installed, returning
+        # "Unknown action type" while the robot kept moving. An emergency stop the
+        # engine accepts and then drops is worse than one it refuses outright.
+        # `robot_query_state` and `robot_scan` were dead the same way.
         self.robotics_handler = robotics_handler
         if _HAS_ROBOTICS and self.robotics_handler is not None:
-            for action_type in ROBOTICS_ACTION_TYPES:
+            for action_type in (ROBOTICS_ACTION_TYPES
+                                | ROBOTICS_SAFETY_ACTION_TYPES
+                                | ROBOTICS_READ_ACTION_TYPES):
                 self.execution_layer.register_handler(
                     action_type, self.robotics_handler.handle)
             # Start the robotics watchdog for auto-stop on command loss

@@ -686,10 +686,15 @@ CLAIMS: List[Dict[str, Any]] = [
                 # audit chain records the actual action beside it.
                 #
                 # This row was unproven because *nothing produced a transcript* -- and
-                # the deeper reason was that no composition root constructs a robotics
+                # the deeper reason was that no composition root constructed a robotics
                 # handler at all, even though DecisionEngine registers one whenever it
-                # is given it. The tool also exercises that plumbing for the first time
-                # outside unit tests.
+                # is given it. The tool also exercises that plumbing outside unit tests.
+                #
+                # v1.30.33 closed that: the server takes `--enable-robotics` (opt-in,
+                # because the stub ROS 2 fallback *succeeds* and would otherwise let a
+                # node without a robot report having moved one). The tool remains the
+                # claim's evidence either way -- this row is about the world session,
+                # not about what a deployment chooses to enable.
                 #
                 # Honest scope: this is a simulation with the stub solver, which is what
                 # the claim says. It is not evidence that a real MoveIt 2 solver or a

@@ -506,6 +506,148 @@ class TestDecisionEngineIntegration(unittest.TestCase):
         engine = DecisionEngine(models, {"type": "chroma"})
         self.assertIsNone(engine.robotics_handler)
 
+    # -- what the engine can actually reach (measured before the fix) ---------
+
+    def _engine(self):
+        from decision_engine import DecisionEngine
+        from robotics_handler import RoboticsExecutionHandler
+        handler = RoboticsExecutionHandler()
+        models = [{"id": "test", "type": "text", "weight": 1.0,
+                   "backend": {"type": "stub"}}]
+        engine = DecisionEngine(models, {"type": "chroma"},
+                                robotics_handler=handler)
+        return engine, handler
+
+    def test_the_engine_registers_every_class_the_handler_declares(self):
+        """Only the motion class used to be registered, so two classes the node
+        *advertises* -- the read class and the safety class -- landed in
+        `_dispatch` with no handler and were answered "Unknown action type".
+        """
+        from robotics_handler import (ROBOTICS_ACTION_TYPES,
+                                      ROBOTICS_READ_ACTION_TYPES,
+                                      ROBOTICS_SAFETY_ACTION_TYPES)
+        engine, handler = self._engine()
+        try:
+            registered = set(engine.execution_layer._handlers)
+            for action_type in (ROBOTICS_ACTION_TYPES
+                                | ROBOTICS_SAFETY_ACTION_TYPES
+                                | ROBOTICS_READ_ACTION_TYPES):
+                with self.subTest(action_type=action_type):
+                    self.assertIn(action_type, registered)
+        finally:
+            handler.shutdown()
+
+    def test_the_emergency_stop_reaches_the_robot(self):
+        """The whole point of a stop is that it is not dropped after being allowed.
+
+        Measured before the fix: `_gate_decision` allowed `robot_stop` (safety
+        actions bypass consent and approval, correctly) and `_execute_gated` then
+        returned "Unknown action type" while the robot kept moving. An accepted
+        stop that never arrives is worse than one that is refused.
+        """
+        engine, handler = self._engine()
+        try:
+            decision = {"action_type": "robot_stop", "confidence": 0.9,
+                        "decision_id": "dec-stop-test", "params": {}}
+            allowed, reason = engine._gate_decision(decision)
+            self.assertTrue(allowed, f"the stop was refused by the gate: {reason}")
+            result = engine._execute_gated(decision) or {}
+            self.assertEqual(result.get("status"), "success", result)
+            self.assertEqual(result.get("action"), "emergency_stop")
+            self.assertTrue(handler.is_emergency_stopped())
+        finally:
+            handler.reset_emergency_stop(reset_by="test")
+            handler.shutdown()
+
+    def test_robot_look_is_claimed_by_the_handler(self):
+        """1.19.0 said `robot_look` was added to ROBOTICS_ACTION_TYPES.
+
+        The dispatch branch and `_handle_look` were written; the set was not, and the
+        set is what the engine iterates to install handlers.
+        """
+        from robotics_handler import ROBOTICS_ACTION_TYPES
+        self.assertIn("robot_look", ROBOTICS_ACTION_TYPES)
+
+    def test_policy_and_handler_agree_on_the_robotics_vocabulary(self):
+        """The general form: policy advertises a type nothing can execute.
+
+        A node offers the model `policy.KNOWN_ACTION_TYPES`, and the handler is the
+        only thing that can run a robotics action, so anything policy declares that
+        the handler does not claim is an action that gets gated, consented and then
+        answered "Unknown action type".
+        """
+        import policy
+        from robotics_handler import (ROBOTICS_ACTION_TYPES,
+                                      ROBOTICS_READ_ACTION_TYPES,
+                                      ROBOTICS_SAFETY_ACTION_TYPES)
+        advertised = (policy.ROBOTICS_ACTION_TYPES
+                      | policy.ROBOTICS_SAFETY_ACTION_TYPES
+                      | policy.ROBOTICS_READ_ACTION_TYPES)
+        claimed = (ROBOTICS_ACTION_TYPES | ROBOTICS_SAFETY_ACTION_TYPES
+                   | ROBOTICS_READ_ACTION_TYPES)
+        self.assertEqual(sorted(advertised - claimed), [],
+                         "policy offers robotics actions nothing can execute")
+
+    def _bare_engine(self):
+        """An engine with a handler and NO consent grant or approval channel."""
+        from decision_engine import DecisionEngine
+        from policy import ApprovalBroker, CapabilityRegistry, ConsentRegistry
+        from robotics_handler import RoboticsExecutionHandler
+        handler = RoboticsExecutionHandler()
+        engine = DecisionEngine(
+            models=[{"id": "test", "type": "text", "weight": 1.0,
+                     "backend": {"type": "stub"}}],
+            vector_db_config={"type": "chroma"},
+            capabilities=CapabilityRegistry({}),
+            consents=ConsentRegistry(),
+            approvals=ApprovalBroker(ttl_seconds=1.0),
+            robotics_handler=handler)
+        return engine, handler
+
+    def test_moving_a_robot_needs_consent(self):
+        """Measured before the fix: a node with no grant and no approval channel
+        attached moved the robot anyway, while a mobile action was refused.
+
+        `_CONSENT_GATED_ACTION_TYPES` -- the set `_gate_decision` checks -- omitted
+        the robotics motion class entirely, even though policy states the contract:
+        "Robotics actions: physical side effects, require consent AND approval".
+        """
+        engine, handler = self._bare_engine()
+        try:
+            for action_type in ("robot_manipulate", "robot_navigate",
+                                "robot_gripper", "robot_look"):
+                with self.subTest(action_type=action_type):
+                    allowed, reason = engine._gate_decision(
+                        {"action_type": action_type, "confidence": 0.9,
+                         "params": {"target": {"x": 0.1, "y": 0.1, "z": 0.1}}})
+                    self.assertFalse(
+                        allowed, f"{action_type} was allowed without consent")
+                    self.assertIn("consent", str(reason))
+        finally:
+            handler.shutdown()
+
+    def test_read_only_and_safety_actions_need_no_consent(self):
+        """The other half: tightening the motion class must not close the door on
+        situational awareness, or on stopping."""
+        from decision_engine import _CONSENT_GATED_ACTION_TYPES
+        from robotics_handler import (ROBOTICS_READ_ACTION_TYPES,
+                                      ROBOTICS_SAFETY_ACTION_TYPES)
+        for action_type in (ROBOTICS_SAFETY_ACTION_TYPES
+                            | ROBOTICS_READ_ACTION_TYPES):
+            with self.subTest(action_type=action_type):
+                self.assertNotIn(action_type, _CONSENT_GATED_ACTION_TYPES)
+        engine, handler = self._bare_engine()
+        try:
+            for action_type in ("robot_query_state", "robot_scan", "robot_stop"):
+                with self.subTest(action_type=action_type):
+                    allowed, reason = engine._gate_decision(
+                        {"action_type": action_type, "confidence": 0.9,
+                         "params": {}})
+                    self.assertTrue(allowed, f"{action_type}: {reason}")
+        finally:
+            handler.reset_emergency_stop(reset_by="test")
+            handler.shutdown()
+
 
 
 

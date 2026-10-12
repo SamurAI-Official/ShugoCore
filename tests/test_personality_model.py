@@ -72,6 +72,31 @@ class GrowthTest(unittest.TestCase):
             model.apply_delta({"curiosity": GROWTH_RATE})
         self.assertLessEqual(model.traits["curiosity"].value, 1.0)
 
+    def test_a_saturated_trait_does_not_advance_the_generation(self):
+        """No movement is not a generation.
+
+        A trait already at its bound absorbs every further delta. The old code
+        bumped the generation anyway and returned `{trait: 0.0}`, so a fully
+        saturated model reported "grew gen 35 -> 36" with nothing moving -- and
+        `agency.personality_growth` reads exactly that number as proof of growth.
+        """
+        model = _baby()
+        for _ in range(10):
+            model.apply_delta({"curiosity": GROWTH_RATE})
+        self.assertEqual(model.traits["curiosity"].value, 1.0)
+        saturated_generation = model.generation
+        evidence_before = model.traits["curiosity"].evidence_count
+        history_before = len(model.history)
+
+        applied = model.apply_delta({"curiosity": GROWTH_RATE})
+
+        self.assertEqual(applied, {}, "an absorbed delta is not an applied one")
+        self.assertEqual(model.generation, saturated_generation)
+        self.assertEqual(len(model.history), history_before)
+        # The observation still counts: the trait was exercised.
+        self.assertEqual(model.traits["curiosity"].evidence_count,
+                         evidence_before + 1)
+
     def test_evidence_and_confidence_rise(self):
         model = _baby()
         model.apply_delta({"warmth": 0.05})
@@ -322,6 +347,56 @@ class PersonalityGovernorTestCase(unittest.TestCase):
         self.assertEqual(v.route_to, "ask_user")
         applied = gov.apply(decision, v)
         self.assertEqual(applied["action_type"], "ask_user")
+
+    def test_a_reroute_naming_route_to_on_the_verdict_is_honoured(self):
+        """`PersonalityVerdict.route_to` is the documented field for the target.
+
+        `apply()` short-circuited on an empty `adjustments` dict, which made its
+        own `verdict.route_to` fallback unreachable: a reroute that named its
+        target the documented way did nothing at all, and said nothing.
+        """
+        from personality.governor import PersonalityVerdict
+        gov = self._governor()
+        decision = {"action_type": "speak", "params": {"text": "Hello."}}
+        applied = gov.apply(decision,
+                            PersonalityVerdict(verdict="reroute",
+                                               route_to="ask_user"))
+        self.assertEqual(applied["action_type"], "ask_user")
+        self.assertTrue(applied.get("personality_rerouted"))
+
+    def test_the_appropriateness_floor_is_what_reroutes(self):
+        """`BLOCK_THRESHOLD` decides, rather than the content-rule branch.
+
+        The constant was documented as "appropriateness <= BLOCK_THRESHOLD forces
+        reroute" and read by nothing: the forbidden-phrase check returned early with
+        its own reroute. Now the rule lowers the score and the floor redirects, so a
+        check that lowers appropriateness cannot be silently ignored -- and the
+        fallback wording still survives.
+        """
+        from personality.governor import BLOCK_THRESHOLD
+        gov = self._governor()
+        forbidden = (PersonalityProfile().speech["never_say"] or [])[0]
+        decision = {"action_type": "speak",
+                    "params": {"text": f"Well, {forbidden}, I think."}}
+        v = gov.annotate(decision)
+        self.assertLessEqual(v.appropriateness, BLOCK_THRESHOLD)
+        self.assertEqual(v.verdict, "reroute")
+        self.assertIn("block threshold", v.reason)
+        applied = gov.apply(decision, v)
+        self.assertNotIn(forbidden, applied["params"]["text"])
+        self.assertTrue(applied["params"]["text"].strip(),
+                        "the floor must carry the content rule's fallback wording "
+                        "through, not just blank the line")
+
+    def test_block_threshold_is_read_and_not_merely_declared(self):
+        from personality import governor as govmod
+        with open(govmod.__file__, encoding="utf-8") as handle:
+            readers = [line for line in handle
+                       if "BLOCK_THRESHOLD" in line.split("#", 1)[0]
+                       and "=" not in line.split("#", 1)[0]]
+        self.assertTrue(readers,
+                        "BLOCK_THRESHOLD is declared and documented as a rule, "
+                        "but no executable line reads it")
 
     def test_proactivity_allows_prompted_speak(self):
         gov = self._governor(proactivity=0.1)

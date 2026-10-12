@@ -142,12 +142,14 @@ class PersonalityGovernor:
             rules = pol["content_rules"]
 
             # 1. Content rules (never_say / boundaries) -- the hard gate.
-            #    A hit is a direct violation of frozen policy: force reroute.
+            #    A hit zeroes appropriateness and supplies the replacement line;
+            #    the appropriateness floor below is what turns that into the
+            #    reroute. One place decides that a low score redirects, and the
+            #    fallback wording stays with the rule that earned it.
             hits = [phrase for phrase in rules["never_say"]
                     if text and phrase and phrase.lower() in text.lower()]
             if hits:
                 verdict.appropriateness = 0.0
-                verdict.verdict = "reroute"
                 verdict.route_to = "speak"
                 verdict.adjustments = {
                     "text": "I'd rather not say that.",
@@ -155,9 +157,26 @@ class PersonalityGovernor:
                     "personality_blocked": hits,
                 }
                 verdict.reason = f"content rule hit: forbidden phrase(s) {hits!r}"
+
+            # 2. Appropriateness floor -- the rule BLOCK_THRESHOLD's own comment and
+            #    the PersonalityVerdict docstring both state: <= the threshold forces
+            #    a reroute to a safe fallback. This is the only place that decides it,
+            #    so a future check that lowers the score cannot be ignored, and it
+            #    runs before the proactivity check so a forbidden phrase is never
+            #    traded for a question. Evaluated here rather than after the tone
+            #    checks because those cannot lower appropriateness.
+            if verdict.appropriateness <= BLOCK_THRESHOLD:
+                verdict.verdict = "reroute"
+                verdict.route_to = verdict.route_to or "ask_user"
+                verdict.adjustments = dict(verdict.adjustments,
+                                           route_to=verdict.route_to)
+                floor = (f"appropriateness {verdict.appropriateness:.2f} <= "
+                         f"block threshold {BLOCK_THRESHOLD:.2f}")
+                verdict.reason = (f"{verdict.reason}; {floor}"
+                                  if verdict.reason else floor)
                 return verdict
 
-            # 2. Verbosity check.
+            # 3. Verbosity check.
             if text:
                 sentence_count = self._count_sentences(text)
                 verdict.verbosity_ok = sentence_count <= pol["verbosity_budget"]
@@ -167,11 +186,11 @@ class PersonalityGovernor:
                         verdict.tone_score - 0.1 * (
                             sentence_count - pol["verbosity_budget"]))
 
-            # 3. Tone / register match.
+            # 4. Tone / register match.
             if text:
                 verdict.tone_score = self._tone_match(text, pol)
 
-            # 4. Proactivity check -- only for self-initiated speaks.
+            # 5. Proactivity check -- only for self-initiated speaks.
             is_self_initiated = bool(context and context.get("self_initiated"))
             if (is_self_initiated and action_type == "speak"
                     and pol["proactivity"] < pol["proactivity_threshold"]):
@@ -183,7 +202,7 @@ class PersonalityGovernor:
                     f"< threshold {pol['proactivity_threshold']:.2f}")
                 return verdict
 
-            # 5. Disposition.
+            # 6. Disposition.
             if not verdict.verbosity_ok:
                 verdict.verdict = "modify"
                 truncated = self._truncate_to_budget(text, pol["verbosity_budget"])
@@ -211,14 +230,25 @@ class PersonalityGovernor:
         The safety gate still runs AFTER this on the returned action --
         personality never pre-approves.
         """
-        if verdict.verdict == "pass" or not verdict.adjustments:
+        if verdict.verdict == "pass":
+            return proposed_action
+
+        # A reroute may name its target either way: in `adjustments["route_to"]`
+        # (what `annotate` builds) or on the verdict itself (`PersonalityVerdict
+        # .route_to`, which is the *documented* field for it). The old guard was
+        # `not verdict.adjustments -> return unchanged`, which made the documented
+        # form unreachable: the code below reads `verdict.route_to` as its fallback,
+        # but execution never got there. Two ways to say the same thing, one of them
+        # silently doing nothing.
+        route_to = (verdict.adjustments.get("route_to", verdict.route_to)
+                    if verdict.verdict == "reroute" else None)
+        if not verdict.adjustments and not route_to:
             return proposed_action
 
         action = dict(proposed_action)
         params = dict(action.get("params") or {})
 
         if verdict.verdict == "reroute":
-            route_to = verdict.adjustments.get("route_to", verdict.route_to)
             if route_to:
                 action["action_type"] = route_to
             if "text" in verdict.adjustments:

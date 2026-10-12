@@ -4,7 +4,68 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
-## [1.30.33] - 2026-10-11 — three ways a robot could not be stopped
+## [1.30.34] - 2026-10-11 — three personality rules that were only written down
+
+Verifying the personality layer against its own documentation by construction rather
+than by reading it (`runtime/phase0_evidence/personality_verification_probe.py`,
+32 checks across verdict routing, growth deltas and the persona boundary).
+
+### A reroute that named its target the documented way did nothing
+
+`PersonalityVerdict.route_to` is the field documented as "*action type to redirect to
+on reroute*", and `apply()` read it — but only *after* an early return that fired
+whenever `adjustments` was empty:
+
+```python
+if verdict.verdict == "pass" or not verdict.adjustments:
+    return proposed_action
+```
+
+So a reroute carrying `route_to` and no `adjustments` returned the action **unchanged**,
+silently. `annotate()` happens to build both today, so nothing was visibly broken — and
+that is exactly why it survived: the documented form of the field was unreachable and
+looked fine. The same shape as the `_arrival_line` bug in 1.30.31, in a different layer.
+
+### `BLOCK_THRESHOLD` was documented as a rule and read by nothing
+
+The constant's own comment and the `PersonalityVerdict` docstring both state
+"*appropriateness <= BLOCK_THRESHOLD forces reroute*". Nothing read it: the only check
+that lowered `appropriateness` (a forbidden phrase) returned early with its own
+reroute, so the threshold was decorative and a future check that lowered the score
+would have been ignored. Now the content rules lower the score and supply the fallback
+wording, and the floor is the single place that turns a low score into a reroute — and
+it runs *before* the proactivity check, so a forbidden phrase is never traded for a
+question.
+
+### A saturated personality reported growth that did not happen
+
+`apply_delta` clamped each trait but recorded the *movement* — 0.0 included — and
+bumped the generation whenever the dict came back non-empty. A trait already at its
+bound therefore produced `applied={'curiosity': 0.0, 'warmth': 0.0}` while the
+generation advanced anyway. Measured: a model with all six traits at 1.0 went
+**35 → 36**, `grow_from_memory` returned a report, and the agent logged
+"grew gen 35 → 36" — the exact line `agency.personality_growth` reads as proof — for a
+generation in which nothing moved.
+
+An absorbed delta is not an applied one now: the generation advances only when at least
+one trait actually moved, no history entry is written otherwise, and
+`grow_from_memory` returns `None` so the window is not announced as growth. The
+observation still counts either way — evidence and confidence rise.
+
+### What checked out as designed
+
+The ordering the docs promise holds: the safety gate runs **after** the personality
+pass, so a personality verdict can never pre-approve, and `apply()` neither mutates the
+proposed action nor adds a policy token. The persona shaper is annotate-only in every
+direction — a tool action is never handed to it, `advisory_only` never phrases, an
+unconfigured shaper is skipped, a raising shaper costs style but not the line, and a
+shaper that returns an `action_type` in its result cannot change the action. Growth
+never moves the frozen policy, and traits stay in [0, 1].
+
+Measured after: **32/32** probe checks. The growth suite's generation counts also fall
+correctly now — a 20-generation loop over three traits stops at 6, when they saturate,
+instead of counting 13 empty generations.
+
 
 ### The emergency stop was allowed and then dropped
 

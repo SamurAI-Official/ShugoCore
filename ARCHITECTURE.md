@@ -167,6 +167,30 @@ boundaries) and it does not move afterwards — `test_policy_never_moves` and
 `test_policy_survives_growth_across_restart` pin it. Growth can change warmth,
 curiosity or formality; it can never grow a node out of its boundaries.
 
+A generation is only a generation if something moved. A trait already at its bound
+absorbs every further push, and `apply_delta` returns the deltas that were actually
+applied — so a saturated personality returns `{}`, does not advance the generation and
+writes no history. Measured before this held: a model with all six traits at 1.0
+advanced 35 → 36 and reported `applied={'curiosity': 0.0, 'warmth': 0.0}`, which is
+exactly the "grew gen N → M" line `agency.personality_growth` reads as proof. The
+observation still counts even when the value cannot move: evidence and confidence rise.
+
+### Verdict routing: one place decides a redirect
+
+`PersonalityVerdict` carries `verdict ∈ {pass, modify, reroute}`, `route_to` and
+`adjustments`, and `apply()` honours both ways of naming a reroute's target — the
+`adjustments["route_to"]` that `annotate()` builds, and the verdict's own `route_to`
+field. It used to short-circuit on an empty `adjustments` dict, which made the *second*
+form unreachable: the documented field did nothing at all. `apply()` never mutates the
+proposed action and never adds a policy token.
+
+`BLOCK_THRESHOLD` (0.30) is the single decision point for a low appropriateness score:
+the content-rules check lowers `appropriateness` and supplies the fallback wording,
+then the floor converts that into the reroute. The constant was previously documented
+as "*appropriateness <= BLOCK_THRESHOLD forces reroute*" and read by nothing — the
+content-rule check returned early with its own reroute, so the rule was decorative and
+a future check that lowered the score would have been ignored.
+
 ### Annotate-only, and where that is enforced
 
 `DecisionEngine._apply_personality` runs the governor, attaches

@@ -151,23 +151,44 @@ class PersonalityModel:
         Returns the deltas actually applied (after clamping).
         """
         applied: Dict[str, float] = {}
+        pending = []
         for trait, delta in (deltas or {}).items():
             state = self.traits.get(trait)
             if state is None:
                 continue  # unknown traits cannot appear via growth
             bounded = max(-GROWTH_RATE, min(GROWTH_RATE, float(delta)))
             new_value = max(0.0, min(1.0, state.value + bounded))
-            applied[trait] = round(new_value - state.value, 6)
-            state.value = new_value
+            pending.append((trait, state, new_value,
+                            round(new_value - state.value, 6)))
+
+        for trait, state, new_value, move in pending:
+            # The observation counts either way: the trait was exercised, even
+            # when it had no room left to move.
             state.evidence_count += 1
             state.confidence = min(1.0, state.confidence + 0.1)
-            state.last_gen = self.generation + 1
-        if applied:
-            self.generation += 1
-            self.updated_at = time.time()
-            self.history.append({
-                "gen": self.generation, "note": note,
-                "deltas": applied, "at": self.updated_at})
+            state.value = new_value
+            if move:
+                applied[trait] = move
+
+        if not applied:
+            # Every proposed delta was absorbed by the clamp -- a saturated
+            # personality, where a trait is already at 1.0 (or 0.0) and every
+            # push is into the bound. Bumping the generation here would report
+            # growth that did not happen, and `agency.personality_growth` reads
+            # exactly that number: measured, a model with all six traits at 1.0
+            # advanced 35 -> 36 with `applied={'curiosity': 0.0, 'warmth': 0.0}`.
+            # Nothing moved, so nothing is recorded, and the caller's
+            # `if not applied: return None` says so.
+            return {}
+
+        self.generation += 1
+        self.updated_at = time.time()
+        for trait, state, _new_value, _move in pending:
+            if trait in applied:
+                state.last_gen = self.generation
+        self.history.append({
+            "gen": self.generation, "note": note,
+            "deltas": applied, "at": self.updated_at})
         return applied
 
     # -- comparison -----------------------------------------------------------

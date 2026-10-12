@@ -23,6 +23,8 @@ from personality.loader import PersonalityProfile, load_personality, save_person
 from personality.prompt import personality_system_prompt, DEFAULT_PERSONALITY
 from personality.model import PersonalityModel, TraitState, GROWTH_RATE
 from personality.governor import PersonalityGovernor, PersonalityVerdict
+from personality.persona_pack import (PERSONA_SCHEMA, PersonaError, PersonaPack,
+                                     birth as adopt_persona, load as load_persona)
 
 __all__ = [
     "PersonalityProfile",
@@ -35,4 +37,11 @@ __all__ = [
     "GROWTH_RATE",
     "PersonalityGovernor",
     "PersonalityVerdict",
+    # The boundary for personalities produced elsewhere (personality/persona_pack.py):
+    # ShugoCore accepts them, never trains them.
+    "PERSONA_SCHEMA",
+    "PersonaError",
+    "PersonaPack",
+    "adopt_persona",
+    "load_persona",
 ]

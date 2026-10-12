@@ -236,8 +236,14 @@ class AndroidAgent:
                  mesh_priority: int = 500,
                  node_role: str = "primary-capable",
                  local_model: bool = True,
-                 persona_shaper: Optional[Any] = None):
+                 persona_shaper: Optional[Any] = None,
+                 persona_pack: Optional[str] = None):
         self.device_caps = device_caps or "Unknown"
+        # A released persona to seed this node's character from (persona_pack.py):
+        # a path to a pack produced elsewhere -- the trainer and any tuned weights
+        # live in their own repository. Empty means "birth a blank character from
+        # the local config", which is what every node did before this existed.
+        self.persona_pack = str(persona_pack or "").strip()
         # What this node is configured to be (follower or primary-capable), and whether
         # it may load a model of its own. The follower posture is the test configuration
         # for phones: perception, memory and capacity, no local weights.
@@ -544,12 +550,27 @@ class AndroidAgent:
                 pm_path = self._join_data("personality_model.json")
                 self.personality_model = PersonalityModel.load(pm_path)
                 if self.personality_model is None:
-                    self.personality_model = PersonalityModel.genesis(
-                        self.personality)
+                    adopted = self._adopt_persona_pack()
+                    if adopted is not None:
+                        self.personality_model = adopted
+                    else:
+                        self.personality_model = PersonalityModel.genesis(
+                            self.personality)
                     self.personality_model.save(pm_path)
-                    self.log("PERSONALITY", "genesis: baby state born "
-                             "(gen 0, policy only)")
+                    if adopted is None:
+                        self.log("PERSONALITY", "genesis: baby state born "
+                                 "(gen 0, policy only)")
                 else:
+                    if self.persona_pack:
+                        # A pack seeds a character; it never replaces one that has
+                        # lived. Adopting over an existing model would throw away
+                        # everything that model grew, so the pack is ignored loudly
+                        # instead -- and the operator can delete the model file if
+                        # they really mean to start over.
+                        self.log("PERSONALITY",
+                                 "persona pack ignored: this node already has a "
+                                 f"character at gen {self.personality_model.generation}",
+                                 level="WARN")
                     self.log("PERSONALITY", "resumed at gen "
                              f"{self.personality_model.generation}")
                 # Downstream consumers (prompt builder) stay unchanged:
@@ -2149,6 +2170,45 @@ class AndroidAgent:
         self.log("PROACTIVE",
                  f"arrival ({previous or 'unknown'} -> {current}) as {kind}"
                  f"{'' if delivered else ' (not delivered)'}: {line}")
+
+    def _adopt_persona_pack(self) -> Optional[Any]:
+        """Seed the living model from a persona pack, or None to birth a blank one.
+
+        Only ever called when this node has no character yet (see the boot path): a
+        pack *seeds* a character and never replaces one that has lived. Every refusal
+        is logged with the reason the boundary gave, and a refusal is not fatal — the
+        node falls back to a blank birth, which is what it would have done anyway.
+        """
+        if not self.persona_pack:
+            return None
+        from personality.persona_pack import PersonaError, birth, load
+        try:
+            pack = load(self.persona_pack)
+            model, report = birth(pack, self.personality)
+        except PersonaError as exc:
+            self.log("PERSONALITY", f"persona pack refused: {exc.reason}",
+                     level="WARN")
+            return None
+        except Exception as exc:
+            self.log("PERSONALITY",
+                     f"persona pack failed: {type(exc).__name__}: {exc}",
+                     level="WARN")
+            return None
+        self.log("PERSONALITY",
+                 f"adopted persona {report['pack']} "
+                 f"(digest {str(report['digest'])[:12]}): "
+                 f"traits={report['traits']} added={report['added_traits']}"
+                 f"{' wording=' + str(report['wording']) if report['wording'] else ''}")
+        for item in report["reinforced"]:
+            self.log("PERSONALITY", f"persona reinforced {item}")
+        # A refusal is the interesting half: it is an artifact asking for something
+        # this node will not give it, and it belongs in the log where an operator
+        # can see what was declined on their behalf.
+        for item in report["refused"]:
+            self.log("PERSONALITY", f"persona refused {item}", level="WARN")
+        for item in report["warnings"]:
+            self.log("PERSONALITY", f"persona {item}", level="WARN")
+        return model
 
     def _handle_conversational_input(self, observation: Dict[str, Any]) -> None:
         """Fast path for responding to user speech.
@@ -5077,7 +5137,8 @@ def create_agent(device_caps: Optional[str] = None,
                  mesh_priority: int = 500,
                  node_role: str = "primary-capable",
                  local_model: bool = True,
-                 persona_shaper: Optional[Any] = None) -> AndroidAgent:
+                 persona_shaper: Optional[Any] = None,
+                 persona_pack: Optional[str] = None) -> AndroidAgent:
     """Build an AndroidAgent. The bearer token is forwarded to the
     AndroidBackend so token-protected desktop servers can be paired
     without --allow-unauthenticated. mesh_node_id / mesh_priority feed the
@@ -5094,4 +5155,5 @@ def create_agent(device_caps: Optional[str] = None,
                         mesh_node_id=mesh_node_id,
                         mesh_priority=mesh_priority,
                         node_role=node_role, local_model=local_model,
-                        persona_shaper=persona_shaper)
+                        persona_shaper=persona_shaper,
+                        persona_pack=persona_pack)

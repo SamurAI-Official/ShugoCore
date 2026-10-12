@@ -257,6 +257,46 @@ into `agent.personality`; an arrival greets exactly once across repeated ticks;
 `greet_on_arrival: false` is silent; `offer_help` stays silent at trait 0.30 and
 speaks at 0.50; the cooldown holds an immediate re-arrival; an unknown kind is denied.
 
+### Accepting a personality from outside: persona packs
+
+ShugoCore does not train personality models and does not produce weights — the trainer
+and any tuned weights live in their own repository. What it does is **accept** them,
+and `personality/persona_pack.py` is the boundary that decides whether a given pack
+may be adopted. A pack is a versioned, hash-pinned JSON artifact (`config/personas/`,
+licence discipline in MODELS.md); a node takes one at boot with `persona_pack=<path>`
+(`create_agent(..., persona_pack=...)`).
+
+Open-ended in three places, because a character produced elsewhere cannot be assumed
+to look exactly like one produced here:
+
+| Open | Why |
+|---|---|
+| `traits` is an open vocabulary | a trainer that learns `playfulness` is not blocked by a governor that only knows six. Unknown traits are kept and grown; no rule consults them yet, and adoption says so in its warnings |
+| `voice_model` is a reference, not weights | `kind`/`uri`/`sha256`/`base`/`licence` for an adapter or gguf, recorded on the model so the origin is auditable. Nothing is fetched or verified here |
+| `schema` is versioned | an unrecognised schema is refused *by name* rather than half-understood |
+
+**Additive-only where safety is at stake.** A pack may give a node more perimeters and
+never fewer: `never_say` is unioned, every boundary boolean is OR-ed, and the
+proactivity permissions are not touchable at all — they are the operator's grant, and a
+pack able to grant `offer_help` would be an artifact that changes what a node is
+allowed to *do*. A pack owns the trait vector, the voice params and the wording
+outright, because those *are* the character.
+
+**Adoption seeds; it never overwrites.** `_adopt_persona_pack()` runs only when the
+node has no `personality_model.json` yet. A node that already has a character ignores
+the pack — loudly — because adopting over a lived model would throw away every
+generation it grew. A refused pack is not fatal either: the node logs the reason and
+births a blank character, which is what it would have done anyway. The generation
+starts at 0 and the history's first entry reads `adopted persona <id>@<version>`, so a
+trained character never carries a blank birth record.
+
+Measured (`runtime/phase0_evidence/persona_lifecycle_probe.py`, 11 checks): the
+reference pack seeds a real agent; its unknown trait `playfulness` comes along; the
+provenance is on the model and survives a save/load; the adopted wording is what the
+node would say; a second boot ignores the pack rather than re-adopting; a tampered
+pack (content no longer matching its hash) is refused by reason and the node still
+boots blank; a node given no pack behaves exactly as before.
+
 ## Derived artifacts — never edit the copy
 
 | Artifact | Source | Guard |

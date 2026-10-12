@@ -47,3 +47,31 @@ NonCommercial nor ShareAlike terms on the model itself — which is exactly what
 stack shippable when BirdNET's weights were not.
 
 See **THIRD_PARTY.md** for the attribution surface this belongs in.
+
+## Persona packs are model artifacts too
+
+A *persona pack* (`config/personas/*.json`, contract in `personality/persona_pack.py`)
+is a versioned, hash-pinned record of a personality — a character produced elsewhere,
+not by this repository. It is a model artifact, so this file is where its licence is
+decided, the same as every other model the project touches.
+
+Rules, matching the ones above:
+
+* **A pack declares its own licence.** `licence.spdx` plus `licence.redistributable`.
+  A pack that says `redistributable: false` may be run locally and **must not be
+  committed here** — `tests/test_persona_pack.py` walks `config/personas/` and fails
+  if any committed pack is non-redistributable, which is the same instinct as
+  hash-pinned fetches keeping NC weights out of an MIT repository.
+* **A pack may reference weights; it never carries them.** `voice_model` records
+  `kind`, `uri`, `sha256`, `base` and a licence for a trained adapter or gguf
+  produced by the personality trainer (its own repository). ShugoCore records what an
+  operator pointed it at and never fetches, converts or produces weights — the scope
+  note in README is unchanged by this contract, and the contract exists to make the
+  boundary explicit rather than implied.
+* **Provenance is required of released packs.** `provenance.produced_by` names what
+  made it, and the node stores the pack's id, version and digest on the model it
+  seeded, so "where did this character come from" is answerable after the fact.
+
+`config/personas/shugo-foundation.json` is the reference pack: its numbers illustrate
+the shape of a trained foundation persona rather than measuring one, and it is pinned
+by hash so that editing it fails the suite until the hash is re-pinned.

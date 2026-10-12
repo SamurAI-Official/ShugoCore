@@ -109,13 +109,20 @@ class PersonalityModel:
                  voice: Dict[str, Any],
                  history: Optional[List[Dict[str, Any]]] = None,
                  created_at: Optional[float] = None,
-                 updated_at: Optional[float] = None):
+                 updated_at: Optional[float] = None,
+                 persona: Optional[Dict[str, Any]] = None):
         self.name = name
         self.generation = int(generation)
         self.policy = policy  # frozen — never mutated by growth
         self.traits = traits
         self.voice = voice  # emergent speech params (max_sentences, style)
         self.history = history if history is not None else []
+        # Which persona pack this character was born from, if any -- the audit link
+        # between a node's behaviour and the artifact someone released. ShugoCore
+        # never trains these; it records what it adopted, with that pack's id,
+        # version and hash, so "where did this character come from" is answerable
+        # after the fact.
+        self.persona = dict(persona) if persona else None
         self.created_at = (created_at if created_at is not None
                            else time.time())
         self.updated_at = (updated_at if updated_at is not None
@@ -249,6 +256,7 @@ class PersonalityModel:
             "traits": {t: s.to_dict() for t, s in self.traits.items()},
             "voice": self.voice,
             "history": self.history,
+            "persona": self.persona,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -270,7 +278,8 @@ class PersonalityModel:
                        voice=dict(data.get("voice") or {}),
                        history=history,
                        created_at=data.get("created_at"),
-                       updated_at=data.get("updated_at"))
+                       updated_at=data.get("updated_at"),
+                       persona=dict(data.get("persona") or {}) or None)
         except (KeyError, TypeError, AttributeError):
             return None
 

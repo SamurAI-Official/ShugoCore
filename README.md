@@ -3,7 +3,7 @@
 > A continuous orchestration layer for synthetic functional agency.
 
 [![PyPI](https://img.shields.io/pypi/v/shugocore)](https://pypi.org/project/shugocore/)
-![Release](https://img.shields.io/badge/release-v1.30.35-blue)
+![Release](https://img.shields.io/badge/release-v1.30.36-blue)
 ![Tests](https://img.shields.io/badge/tests-1105%20passing-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.9%E2%80%933.13-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android%20%28Termux%2FChaquopy%29-lightgrey)
@@ -33,7 +33,11 @@ that exposes the engine over the Ollama-compatible wire contract.
 
 **Out of scope.** ShugoCore is not a model, a training framework, or an
 inference engine - it orchestrates backends and vendors runtimes (llama.cpp,
-NRR, ONNX Runtime) for the Android node rather than producing weights. It is
+NRR, ONNX Runtime) for the Android node rather than producing weights. Personality
+is the same shape: a node *accepts* a persona pack - a versioned, hash-pinned
+character produced by a trainer that lives in its own repository
+(`personality/persona_pack.py`, `config/personas/`) - and never trains, tunes or
+produces one. It is
 not a general-purpose RPA/iPaaS platform, and it claims no autonomy beyond the
 authority it is given: side effects are bounded by Tier 3 invariants, consent
 grants, operator approval and capability allowlists.

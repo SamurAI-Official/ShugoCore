@@ -55,6 +55,7 @@ class TestAndroidTreeSync(unittest.TestCase):
                      "subconscious.py", "android_inference.py",
                      "telemetry.py", "policy.py", "human_interaction.py",
                      "security.py", "personality/governor.py",
+                     "personality/persona_pack.py",
                      "nrr/__init__.py", "nrr/schema.py",
                      "nrr/descriptor.py", "nrr/result.py",
                      "nrr/protocol.py", "nrr/adapter.py",

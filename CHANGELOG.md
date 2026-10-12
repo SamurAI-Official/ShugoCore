@@ -4,7 +4,71 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
-## [1.30.35] - 2026-10-11 — the wording, and the reasons a silence has
+## [1.30.36] - 2026-10-11 — accepting a personality from outside
+
+### The gap this closes
+
+Every node's `genesis()` was byte-identical: `BASELINE_TRAITS` is a hard-coded
+constant and nothing could ship a *character*. There was no persona artifact, no
+versioning, no provenance, no licence record, and no way to start a node from a
+personality someone else produced — which is what "develop personality models, train
+them, release the foundational models" needs on the consuming side.
+
+ShugoCore still does not train models or produce weights (the trainer lives in its own
+repository). What it does now is **accept** them: `personality/persona_pack.py` is a
+versioned, hash-pinned contract, and a node takes one at boot with
+`create_agent(..., persona_pack="config/personas/shugo-foundation.json")`.
+
+### Open-ended, so an outside model can arrive
+
+| Open | Why it had to be |
+|---|---|
+| `traits` is an open vocabulary | a trainer that learns `playfulness` must not be blocked by a governor that knows six. Unknown traits are kept and grown; no rule consults them *yet*, and adoption says so in its warnings |
+| `voice_model` is a reference | `kind`/`uri`/`sha256`/`base`/`licence` for a trained adapter or gguf, recorded on the model so the origin is auditable. Nothing is fetched, converted or verified here |
+| `schema` is versioned | an unrecognised `shugocore.persona/N` is refused **by name** rather than half-understood |
+
+### Additive-only: an artifact may not widen its own perimeters
+
+The load-bearing rule. A pack owns the trait vector, the voice params and the wording
+outright — those *are* the character — and may only *add* to what a node refuses:
+`never_say` is unioned, every boundary boolean is OR-ed (`refuse_harmful: false` from a
+pack is refused and recorded), and the proactivity permissions are not touchable at
+all. A pack able to grant `offer_help` would be an artifact that changes what a node is
+allowed to *do*.
+
+Every refusal is reported, so the log answers "what did this artifact actually change?"
+— and what it was *declined*.
+
+### Adoption seeds; it never overwrites
+
+`_adopt_persona_pack()` runs only when the node has no `personality_model.json` yet,
+because adopting over a lived model would throw away every generation it grew: a node
+that already has a character ignores the pack, loudly. A refused pack is not fatal
+either — the node logs the reason and births a blank character, which is what it would
+have done anyway. The first history entry reads `adopted persona <id>@<version>`, so a
+trained character never carries a blank-birth record, and the pack's id, version and
+digest are stored on the model.
+
+### Shipped
+
+* `config/personas/shugo-foundation.json` — the reference pack, hash-pinned so editing
+  it fails the suite until the hash is re-pinned. Its numbers illustrate the *shape* of
+  a trained foundation persona rather than measuring one.
+* `MODELS.md` gains a "persona packs are model artifacts too" section: a pack declares
+  its own licence, may be run but **must not be committed** here if
+  `redistributable: false`, and `tests/test_persona_pack.py` walks `config/personas/`
+  and fails if one is. Same instinct as hash-pinned fetches keeping NC weights out of
+  an MIT repository.
+* `README.md`'s scope note now names the boundary: a node *accepts* a persona pack and
+  never trains, tunes or produces one.
+
+Verified: 37 tests in `tests/test_persona_pack.py`, and
+`runtime/phase0_evidence/persona_lifecycle_probe.py` **11/11** against a real agent —
+the pack seeds it, the unknown trait comes along, provenance survives a save/load, the
+adopted wording is what the node would say, a second boot ignores the pack, a tampered
+pack is refused by reason while the node still boots blank, and a node given no pack
+behaves exactly as before.
+
 
 The two open product questions from 1.30.31's `proactivity` wiring. Neither changed a
 default: both make an existing decision editable or explainable.

@@ -75,7 +75,8 @@ def _extract_policy(profile: Any) -> Dict[str, Any]:
     forbidden phrases, consent rules and the operator's speech permissions.
     Everything else about the personality is allowed to grow; this is not.
     """
-    from personality.loader import normalise_proactivity
+    from personality.loader import (DEFAULT_GREETING, DEFAULT_OFFER,
+                                    normalise_proactivity)
     boundaries = dict(getattr(profile, "boundaries", {}) or {})
     speech = dict(getattr(profile, "speech", {}) or {})
     return {
@@ -83,6 +84,12 @@ def _extract_policy(profile: Any) -> Dict[str, Any]:
         "never_say": list(speech.get("never_say") or []),
         "first_person": bool(speech.get("first_person", True)),
         "refuse_harmful": bool(boundaries.get("refuse_harmful", True)),
+        # The wording of the two unprompted lines travels with the policy for the
+        # same reason the switches do: `as_profile()` replaces `self.personality`
+        # at boot, so anything not carried here is config the operator set and
+        # nothing ever reads.
+        "greeting": str(speech.get("greeting") or DEFAULT_GREETING),
+        "offer": str(speech.get("offer") or DEFAULT_OFFER),
         # The proactivity switches are permission, not temperament, so they belong
         # to the frozen perimeters: growth may not invent a permission the operator
         # never gave. Carried here so `as_profile()` can hand them back — the agent
@@ -327,7 +334,9 @@ class PersonalityModel:
         `self.personality` with what this returns — so anything omitted
         here is a config value that reached nothing.
         """
-        from personality.loader import PersonalityProfile, normalise_proactivity
+        from personality.loader import (DEFAULT_GREETING, DEFAULT_OFFER,
+                                        PersonalityProfile,
+                                        normalise_proactivity)
         trait_text = {}
         for trait, state in self.traits.items():
             phrases = self._PHRASES.get(trait)
@@ -343,6 +352,10 @@ class PersonalityModel:
                 "max_sentences": int(self.voice.get("max_sentences", 3)),
                 "first_person": bool(self.policy.get("first_person", True)),
                 "never_say": list(self.policy.get("never_say") or []),
+                # Absent from the policy of a model persisted before these existed,
+                # so fall back to the built-in wording rather than to None.
+                "greeting": str(self.policy.get("greeting") or DEFAULT_GREETING),
+                "offer": str(self.policy.get("offer") or DEFAULT_OFFER),
             },
             boundaries=dict(self.policy.get("boundaries") or {}),
             # Absent from the policy of a model persisted before this existed, so

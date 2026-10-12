@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from personality import (PersonalityModel, PersonalityProfile,
                          personality_system_prompt, GROWTH_RATE)
+from personality.loader import DEFAULT_GREETING, DEFAULT_OFFER
 
 
 def _baby() -> PersonalityModel:
@@ -527,6 +528,34 @@ class ProactivityConfigTestCase(unittest.TestCase):
         self.assertIn("offer help you were not asked for", prompt)
         self.assertNotIn("greet someone when they arrive", prompt)
         self.assertNotIn("Do not volunteer help that was not asked for.", prompt)
+
+    def test_the_unprompted_wording_survives_the_living_model(self):
+        """The same trap as the switches: `as_profile()` replaces `self.personality`.
+
+        The lines the agent says on its own are the ones an operator most wants to
+        word themselves; dropping them here would be config they set and nothing
+        reads.
+        """
+        profile = PersonalityProfile()
+        profile.speech["greeting"] = "Evening, {name}."
+        profile.speech["offer"] = "Need a hand?"
+        rendered = PersonalityModel.genesis(profile).as_profile()
+        self.assertEqual(rendered.speech["greeting"], "Evening, {name}.")
+        self.assertEqual(rendered.speech["offer"], "Need a hand?")
+
+    def test_the_default_wording_is_carried_too(self):
+        self.assertEqual(PersonalityProfile().speech["greeting"], DEFAULT_GREETING)
+        rendered = PersonalityModel.genesis(PersonalityProfile()).as_profile()
+        self.assertEqual(rendered.speech["greeting"], DEFAULT_GREETING)
+        self.assertEqual(rendered.speech["offer"], DEFAULT_OFFER)
+
+    def test_a_model_persisted_before_the_wording_existed_keeps_the_defaults(self):
+        legacy = PersonalityModel.genesis(PersonalityProfile()).to_dict()
+        legacy["policy"].pop("greeting")
+        legacy["policy"].pop("offer")
+        rendered = PersonalityModel.from_dict(legacy).as_profile()
+        self.assertEqual(rendered.speech["greeting"], DEFAULT_GREETING)
+        self.assertEqual(rendered.speech["offer"], DEFAULT_OFFER)
 
     def test_the_model_is_the_prompt_source_the_agent_actually_holds(self):
         """`as_profile()` output is what drives the agent's prompt at boot."""

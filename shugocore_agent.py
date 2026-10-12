@@ -2057,27 +2057,51 @@ class AndroidAgent:
         except Exception:
             return False
 
-    def _arrival_line(self) -> Optional[Tuple[str, str]]:
-        """Which switch to speak under when someone arrives, and what to say.
+    def _proactive_line(self, key: str, name: str) -> str:
+        """The operator's wording for an unprompted line, with `{name}` filled in.
 
-        Returns `(switch, line)` so the caller passes the gate the same kind that
-        granted the line. Returning only the text is a real trap: the greeting
-        branch and the offer branch are permitted by *different* switches, so a
-        caller that always quoted `greet_on_arrival` would have its offer silently
-        rejected -- `offer_help` switched on and doing nothing, which is the exact
-        shape of bug this whole change exists to remove.
+        Wording is config (`speech.greeting` / `speech.offer`), because the lines the
+        agent says on its own are the ones an operator most wants to recognise as
+        theirs. A malformed template must not cost the agent its voice, so a bad
+        format string falls back to the built-in wording instead of raising here.
+        """
+        from personality.loader import DEFAULT_GREETING, DEFAULT_OFFER
+        default = DEFAULT_GREETING if key == "greeting" else DEFAULT_OFFER
+        speech = getattr(getattr(self, "personality", None), "speech", None) or {}
+        template = str(speech.get(key) or default)
+        try:
+            return template.format(name=name)
+        except Exception:
+            self.log("PROACTIVE",
+                     f"the {key} template in personality.json is not a valid format "
+                     f"string; using the built-in wording", level="WARN")
+            return default.format(name=name)
+
+    def _arrival_line(self) -> Tuple[Optional[str], str, str]:
+        """`(switch, line, note)` for an arrival; `switch` is None to stay quiet.
+
+        The note explains a silence. Permission and readiness are different
+        questions and only one of them is the operator's, so an operator who turned
+        `offer_help` on and heard nothing should be able to read *why* instead of
+        concluding the feature is broken.
         """
         name = (getattr(getattr(self, "personality", None), "name", None)
                 or "Shugo")
         if self.proactive_permitted("greet_on_arrival"):
-            return "greet_on_arrival", f"Hello — I'm {name}. Good to see you."
-        # Greeting switched off, but the operator may still have allowed the agent
-        # to acknowledge an arrival by offering help -- and that one is also gated
-        # on the learned trait, because an offer is volunteering.
-        if (self.proactive_permitted("offer_help")
-                and self.proactivity_ready()):
-            return "offer_help", f"{name} here — anything you'd like a hand with?"
-        return None
+            return "greet_on_arrival", self._proactive_line("greeting", name), ""
+        if not self.proactive_permitted("offer_help"):
+            return None, "", ("greet_on_arrival and offer_help are both switched "
+                              "off in personality.json")
+        if not self.proactivity_ready():
+            governor = getattr(self, "personality_governor", None)
+            try:
+                policy = governor.policy
+                detail = (f"learned proactivity {float(policy['proactivity']):.2f} "
+                          f"< threshold {float(policy['proactivity_threshold']):.2f}")
+            except Exception:
+                detail = "there is no personality governor to read readiness from"
+            return None, "", f"offer_help is permitted but not ready ({detail})"
+        return "offer_help", self._proactive_line("offer", name), ""
 
     def _check_arrival_greeting(self) -> None:
         """Speak one unprompted line when a person arrives (proactivity).
@@ -2106,9 +2130,14 @@ class AndroidAgent:
         if now - self._last_proactive_speak_at < _ARRIVAL_GREETING_COOLDOWN_S:
             return
         choice = self._arrival_line()
-        if not choice:
+        kind, line, note = choice
+        if not kind:
+            # A silence is still something the operator needs to be able to read:
+            # the switch may be off, or permission may be waiting on readiness.
+            if note:
+                self.log("PROACTIVE", f"arrival ({previous or 'unknown'} -> "
+                                      f"{current}) but stayed silent: {note}")
             return
-        kind, line = choice
         # Throttle on the attempt, not on delivery: a node that may not speak
         # (a follower with no mouth) must not retry the same arrival every tick.
         self._last_proactive_speak_at = now

@@ -129,6 +129,33 @@ class ArrivalGreetingTestCase(unittest.TestCase):
         agent._check_arrival_greeting()          # must not raise
         self.assertEqual(agent.spoken, [])
 
+    def test_the_operator_can_rewrite_the_greeting(self):
+        """The line the agent says on its own is the operator's to word."""
+        agent = _agent(state=AttentionState.ATTENDING)
+        agent.personality.speech["greeting"] = "Evening, {name}. Come in."
+        agent._check_arrival_greeting()
+        self.assertEqual(agent.spoken, ["Evening, Shugo. Come in."])
+
+    def test_the_operator_can_rewrite_the_offer(self):
+        agent = _agent(profile=_profile(greet_on_arrival=False, offer_help=True),
+                       state=AttentionState.ATTENDING, governor=_governor(0.5))
+        agent.personality.speech["offer"] = "Need a hand, chief?"
+        agent._check_arrival_greeting()
+        self.assertEqual(agent.spoken, ["Need a hand, chief?"])
+
+    def test_a_malformed_template_does_not_cost_the_line(self):
+        """A bad format string falls back to the built-in wording, not a crash."""
+        agent = _agent(state=AttentionState.ATTENDING)
+        agent.personality.speech["greeting"] = "Hello {name} {nonsense}"
+        agent._check_arrival_greeting()
+        self.assertEqual(agent.spoken, [GREETING])
+
+    def test_missing_wording_falls_back_to_the_builtin(self):
+        agent = _agent(state=AttentionState.ATTENDING)
+        agent.personality.speech.pop("greeting", None)
+        agent._check_arrival_greeting()
+        self.assertEqual(agent.spoken, [GREETING])
+
 
 class OfferHelpTestCase(unittest.TestCase):
     """`offer_help` needs permission *and* the learned trait, then speaks."""
@@ -186,6 +213,58 @@ class OfferHelpTestCase(unittest.TestCase):
         agent = _agent(state=AttentionState.ATTENDING, governor=_governor(0.3))
         agent._check_arrival_greeting()
         self.assertEqual(agent.spoken, [GREETING])
+
+
+class ASilenceSaysWhyTestCase(unittest.TestCase):
+    """An operator who hears nothing must be able to read the reason.
+
+    Permission and readiness are different questions and only one of them belongs to
+    the operator, so "I turned `offer_help` on and nothing happens" needs an answer
+    in the log rather than a guess.
+    """
+
+    def test_both_switches_off_explains_itself(self):
+        agent = _agent(profile=_profile(greet_on_arrival=False, offer_help=False),
+                       state=AttentionState.ATTENDING)
+        kind, line, note = agent._arrival_line()
+        self.assertIsNone(kind)
+        self.assertEqual(line, "")
+        self.assertIn("switched off", note)
+
+    def test_permitted_but_not_ready_names_the_threshold(self):
+        agent = _agent(profile=_profile(greet_on_arrival=False, offer_help=True),
+                       state=AttentionState.ATTENDING, governor=_governor(0.3))
+        kind, line, note = agent._arrival_line()
+        self.assertIsNone(kind)
+        self.assertIn("not ready", note)
+        self.assertIn("threshold", note)
+        self.assertIn("0.30", note, "the note should quote the actual trait value")
+
+    def test_no_governor_says_so(self):
+        agent = _agent(profile=_profile(greet_on_arrival=False, offer_help=True),
+                       state=AttentionState.ATTENDING, governor=None)
+        kind, _line, note = agent._arrival_line()
+        self.assertIsNone(kind)
+        self.assertIn("governor", note)
+
+    def test_the_reason_reaches_the_log(self):
+        agent = _agent(profile=_profile(greet_on_arrival=False, offer_help=True),
+                       state=AttentionState.ATTENDING, governor=_governor(0.3))
+        lines = []
+        agent.log = lambda source, message, **kw: lines.append((source, message))
+        agent._check_arrival_greeting()
+        self.assertEqual(agent.spoken, [])
+        self.assertTrue(any("stayed silent" in message for _, message in lines),
+                        lines)
+
+    def test_a_spoken_arrival_is_not_logged_as_silent(self):
+        agent = _agent(state=AttentionState.ATTENDING)
+        lines = []
+        agent.log = lambda source, message, **kw: lines.append((source, message))
+        agent._check_arrival_greeting()
+        self.assertEqual(agent.spoken, [GREETING])
+        self.assertFalse(any("stayed silent" in message for _, message in lines),
+                         lines)
 
 
 class PermissionTestCase(unittest.TestCase):

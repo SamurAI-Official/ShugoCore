@@ -4,7 +4,62 @@ All notable changes are documented here. This project adheres to
 [Semantic Versioning](https://semver.org). The 1.0.0 public API surface is
 frozen: no breaking changes across any 1.x release.
 
-## [1.30.34] - 2026-10-11 — three personality rules that were only written down
+## [1.30.35] - 2026-10-11 — the wording, and the reasons a silence has
+
+The two open product questions from 1.30.31's `proactivity` wiring. Neither changed a
+default: both make an existing decision editable or explainable.
+
+### The greeting was the one thing an operator could not edit
+
+`greet_on_arrival` and `offer_help` produce the only lines the agent says *on its
+own*, and both were hard-coded in the agent — so the unprompted speech an operator
+most wants to recognise as theirs was the one thing `personality.json` could not
+change. They are config now:
+
+```json
+"speech": { "greeting": "Hello — I'm {name}. Good to see you.",
+            "offer": "{name} here — anything you'd like a hand with?" }
+```
+
+`{name}` is substituted. The wording rides the same path as the switches —
+`genesis()` freezes it into the policy, `as_profile()` hands it back — because that is
+the step that silently dropped the switches in the first place; a model persisted
+before these keys existed falls back to the built-in lines. A malformed template (a
+stray `{oops}`) logs a warning and speaks the built-in wording rather than costing the
+agent its voice, and `runtime/phase0_evidence/proactivity_probe.py` checks both.
+
+### A refused arrival said nothing about why
+
+An operator who enabled `offer_help` and heard nothing had no way to tell a switch
+that was off from permission waiting on readiness — the silence was the same either
+way. `_arrival_line()` now returns the reason alongside the line, and a declined
+arrival records it:
+
+```
+PROACTIVE arrival (unknown -> attending) but stayed silent: offer_help is permitted
+but not ready (learned proactivity 0.30 < threshold 0.40)
+```
+
+`greet_on_arrival and offer_help are both switched off` and `there is no personality
+governor to read readiness from` are the other two answers.
+
+### On keeping `offer_help` gated by readiness
+
+The question was whether `offer_help` should need permission *only*, rather than
+permission **and** the learned `proactivity` trait clearing the governor's threshold
+(0.40, against a fresh node's 0.30). Kept as permission **and** readiness, on the
+grounds that permission is the operator's to give while readiness is what the trait
+vector was grown for: a greeting is a social convention the operator asked for by
+name, but an unrequested offer *is* volunteering, which is exactly the axis
+`proactivity` learns. The real objection was never the policy but the invisibility of
+it — which the reason above fixes. If the switch should be sufficient on its own
+regardless of the grown trait, that is now a one-line change in `_arrival_line()`, and
+the test that pins the current behaviour names it
+(`test_permitted_but_not_ready_names_the_threshold`).
+
+Measured: `runtime/phase0_evidence/proactivity_probe.py` **10/10** (was 7/7; three new
+checks for configured wording, a malformed template, and the recorded reason), and the
+default wording is unchanged, so no existing behaviour moved.
 
 Verifying the personality layer against its own documentation by construction rather
 than by reading it (`runtime/phase0_evidence/personality_verification_probe.py`,

@@ -16,7 +16,9 @@
       "I'm just an AI",
       "I don't have feelings",
       "As a language model"
-    ]
+    ],
+    "greeting": "Hello — I'm {name}. Good to see you.",
+    "offer": "{name} here — anything you'd like a hand with?"
   },
   "boundaries": {
     "refuse_harmful": true,

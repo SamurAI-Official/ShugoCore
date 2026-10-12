@@ -231,6 +231,17 @@ of leaving a greeting in the log that never left the node. `ask_follow_up` is
 deliberately not an utterance: a follow-up question belongs inside the model's own
 reply, so it is consumed by the prompt rather than by injecting a second spoken line.
 
+The wording of those two lines is config as well — `speech.greeting` and
+`speech.offer` in `personality.json`, with `{name}` substituted — because the lines the
+agent says on its own are the ones an operator most wants to recognise as theirs, and
+hard-coding them made the only unprompted thing an operator could *see* the one thing
+they could not edit. A malformed template falls back to the built-in wording rather
+than costing the agent its voice. Silence is explained, too: a declined arrival logs
+*why* (`greet_on_arrival and offer_help are both switched off`, or
+`offer_help is permitted but not ready (learned proactivity 0.30 < threshold 0.40)`), so
+an operator who enabled the switch and heard nothing can read the answer instead of
+concluding the feature is broken.
+
 Permission and *readiness* are different questions, and only one of them is the
 operator's. `offer_help` additionally requires the learned `proactivity` trait to
 clear `PersonalityGovernor.policy["proactivity_threshold"]` (0.40) — the same value

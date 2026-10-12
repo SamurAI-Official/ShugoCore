@@ -36,6 +36,16 @@ PROACTIVITY_DEFAULTS: Dict[str, bool] = {
     "offer_help": False,
 }
 
+# The two lines the agent speaks *unprompted*, when the switches above permit it
+# (see `proactivity` on the profile). `{name}` is substituted with the character's
+# name. They live in `speech` because that is the block the prompt layer and
+# `PersonalityModel.as_profile()` already carry end to end -- and because the
+# wording is part of the character, not of the code: hard-coding these meant the
+# one thing an operator could *see* the agent say on its own was the one thing they
+# could not edit.
+DEFAULT_GREETING = "Hello — I'm {name}. Good to see you."
+DEFAULT_OFFER = "{name} here — anything you'd like a hand with?"
+
 
 def normalise_proactivity(raw: Any) -> Dict[str, bool]:
     """Fold a config block onto the known switches, dropping anything else.
@@ -65,6 +75,8 @@ class PersonalityProfile:
         "max_sentences": 3,
         "first_person": True,
         "never_say": ["As an AI", "I'm just an AI", "I don't have feelings"],
+        "greeting": DEFAULT_GREETING,
+        "offer": DEFAULT_OFFER,
     })
     boundaries: Dict[str, Any] = field(default_factory=lambda: {
         "refuse_harmful": True,

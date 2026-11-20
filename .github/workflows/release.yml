@@ -70,7 +70,7 @@ jobs:
         with:
           attestations: true
       - name: Attach SBOM + signatures to the GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           # `.sigstore.json`, not `.sigstore`: the earlier pattern matched
           # nothing, so the release shipped without the signatures that the
